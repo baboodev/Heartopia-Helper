@@ -17261,6 +17261,12 @@ namespace HeartopiaMod
                 case 13:
                     if (this.TryOpenShopPanelByStoreId(54, 0, "Pet Store")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
+                case 14:
+                    if (this.TryOpenShopPanelByStoreId(82, 0, "Special Home Decor Store")) { status = this.forceOpenShopStatus; return true; }
+                    status = this.forceOpenShopStatus; return false;
+                case 15:
+                    if (this.TryOpenShopPanelByStoreId(7, 0, "Showroom")) { status = this.forceOpenShopStatus; return true; }
+                    status = this.forceOpenShopStatus; return false;
                 default:
                     status = "Unsupported shop selection.";
                     this.LogForceOpenShop("Unsupported shop selection index: " + this.forceOpenShopSelectedIndex);
@@ -19800,6 +19806,45 @@ namespace HeartopiaMod
             {
                 this.forceOpenShopStatus = "Opened " + label + " (storeId " + storeId + ").";
             }
+            return opened;
+        }
+
+        private bool TryOpenForceShopByManualStoreId(out string status)
+        {
+            status = "Enter a positive store id.";
+            string raw = (this.forceOpenShopManualStoreIdInput ?? string.Empty).Trim();
+            if (!int.TryParse(raw, out int storeId) || storeId <= 0)
+            {
+                this.LogForceOpenShop("Manual store id invalid: '" + raw + "'");
+                return false;
+            }
+
+            this.LogForceOpenShop("Manual store id open requested: storeId=" + storeId);
+            bool opened = this.TryOpenShopPanelByStoreId(storeId, 0, "Manual store " + storeId);
+            status = this.forceOpenShopStatus;
+            return opened;
+        }
+
+        private bool TryOpenForceShopByManualStoreName(out string status)
+        {
+            status = "Enter a store name.";
+            string rawName = (this.forceOpenShopManualStoreNameInput ?? string.Empty).Trim();
+            if (rawName.Length < 2)
+            {
+                this.LogForceOpenShop("Manual store name invalid: '" + rawName + "'");
+                return false;
+            }
+
+            if (!this.TryResolveStoreIdByKeywords(new string[] { rawName }, out int storeId, out string matchedName))
+            {
+                status = "Store name not found: " + rawName;
+                this.LogForceOpenShop(status);
+                return false;
+            }
+
+            this.LogForceOpenShop("Manual store name resolved '" + rawName + "' to storeId=" + storeId + " name='" + matchedName + "'");
+            bool opened = this.TryOpenShopPanelByStoreId(storeId, 0, matchedName);
+            status = this.forceOpenShopStatus;
             return opened;
         }
 
@@ -23892,7 +23937,7 @@ namespace HeartopiaMod
                 }
 
                 num += 36;
-                float forcePanelHeight = 228f + (this.forceOpenShopDropdownOpen ? (this.forceOpenShopOptions.Length * 28f) + 12f : 0f);
+                float forcePanelHeight = 330f + (this.forceOpenShopDropdownOpen ? (this.forceOpenShopOptions.Length * 28f) + 12f : 0f);
                 Rect forcePanel = new Rect(left, (float)num, panelWidth, forcePanelHeight);
                 this.DrawExentriSectionPanel(forcePanel, accent, panelFill, panelLine);
                 GUI.Label(new Rect(forcePanel.x + 14f, forcePanel.y + 12f, forcePanel.width - 28f, 18f), this.L("FORCE OPEN SHOP"), sectionStyle);
@@ -23974,6 +24019,48 @@ namespace HeartopiaMod
                     }
                 }
                 num += 46;
+
+                GUI.Label(new Rect(forceLeft, (float)num, forceWidth, 20f), this.L("Manual Store ID"), bodyStyle);
+                num += 24;
+                this.forceOpenShopManualStoreIdInput = GUI.TextField(
+                    new Rect(forceLeft, (float)num, 120f, 28f),
+                    this.forceOpenShopManualStoreIdInput ?? string.Empty,
+                    8);
+                if (this.DrawPrimaryActionButton(new Rect(forceLeft + 130f, (float)num, 120f, 28f), "OPEN ID"))
+                {
+                    if (this.TryOpenForceShopByManualStoreId(out string manualIdStatus))
+                    {
+                        this.forceOpenShopStatus = manualIdStatus;
+                        this.AddMenuNotification(manualIdStatus, new Color(0.45f, 1f, 0.55f));
+                    }
+                    else
+                    {
+                        this.forceOpenShopStatus = manualIdStatus;
+                        this.AddMenuNotification(manualIdStatus, new Color(1f, 0.55f, 0.55f));
+                    }
+                }
+                num += 38;
+
+                GUI.Label(new Rect(forceLeft, (float)num, forceWidth, 20f), this.L("Manual Store Name"), bodyStyle);
+                num += 24;
+                this.forceOpenShopManualStoreNameInput = GUI.TextField(
+                    new Rect(forceLeft, (float)num, 240f, 28f),
+                    this.forceOpenShopManualStoreNameInput ?? string.Empty,
+                    64);
+                if (this.DrawPrimaryActionButton(new Rect(forceLeft + 250f, (float)num, 130f, 28f), "OPEN NAME"))
+                {
+                    if (this.TryOpenForceShopByManualStoreName(out string manualNameStatus))
+                    {
+                        this.forceOpenShopStatus = manualNameStatus;
+                        this.AddMenuNotification(manualNameStatus, new Color(0.45f, 1f, 0.55f));
+                    }
+                    else
+                    {
+                        this.forceOpenShopStatus = manualNameStatus;
+                        this.AddMenuNotification(manualNameStatus, new Color(1f, 0.55f, 0.55f));
+                    }
+                }
+                num += 42;
 
                 GUI.Label(new Rect(forceLeft, (float)num, forceWidth, 40f), this.forceOpenShopStatus ?? "No shop selected.", mutedStyle);
                 num += 52;
@@ -57298,6 +57385,8 @@ namespace HeartopiaMod
         };
         private int forceOpenShopSelectedIndex = 0;
         private bool forceOpenShopDropdownOpen = false;
+        private string forceOpenShopManualStoreIdInput = string.Empty;
+        private string forceOpenShopManualStoreNameInput = string.Empty;
         private string forceOpenShopStatus = "No shop selected.";
         private readonly Dictionary<string, int> forceOpenShopResolvedStoreIds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private readonly string[] forceOpenShopOptions = new string[]
@@ -57315,7 +57404,9 @@ namespace HeartopiaMod
             "Garden Store",
             "General Store",
             "Insect Catching Store",
-            "Pet Store"
+            "Pet Store",
+            "Special Home Decor Store",
+            "Showroom"
         };
 
         // Hardcoded resource position arrays (ported from decompiled map data)
