@@ -1,5 +1,4 @@
 using System;
-using MelonLoader;
 using UnityEngine;
 
 namespace HeartopiaMod
@@ -1076,7 +1075,7 @@ namespace HeartopiaMod
                 return;
             }
 
-            MelonLogger.Msg("[AutoFishingFarm] " + message);
+            ModLogger.Msg("[AutoFishingFarm] " + message);
         }
     }
 }

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using MelonLoader;
 using UnityEngine;
 
 namespace HeartopiaMod
@@ -227,7 +226,7 @@ namespace HeartopiaMod
             {
                 return;
             }
-            MelonLogger.Msg("[InsectFarmNet] " + message);
+            ModLogger.Msg("[InsectFarmNet] " + message);
         }
 
         public static float DrawSection(HeartopiaComplete host, int startY)

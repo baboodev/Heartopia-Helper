@@ -1,7 +1,6 @@
 ﻿using HarmonyLib;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
-using MelonLoader;
 using System;
 using System.IO;
 using System.Collections;
@@ -23,9 +22,6 @@ using Il2CppPropertyInfo = Il2CppSystem.Reflection.PropertyInfo;
 using Il2CppBindingFlags = Il2CppSystem.Reflection.BindingFlags;
 using Il2CppObject = Il2CppSystem.Object;
 using Object = UnityEngine.Object;
-
-[assembly: MelonInfo(typeof(HeartopiaMod.HeartopiaComplete), "Heartopia Helper", "1.0.0", "HeartopiaMod")]
-[assembly: MelonGame(null, null)]
 
 namespace HeartopiaMod
 {
@@ -67,7 +63,7 @@ namespace HeartopiaMod
     // Toast hook moved to ToastHook.cs
 
     // Token: 0x02000004 RID: 4
-    public partial class HeartopiaComplete : MelonMod
+    public partial class HeartopiaComplete
     {
         // Token: 0x06000003 RID: 3 RVA: 0x0000206C File Offset: 0x0000026C
         private void ScanMeteorites()
@@ -156,7 +152,7 @@ namespace HeartopiaMod
                 return;
             }
 
-            MelonLogger.Msg("[AutoFishing] " + message);
+            ModLogger.Msg("[AutoFishing] " + message);
         }
 
         private void StrangerChatLog(string message)
@@ -166,7 +162,7 @@ namespace HeartopiaMod
                 return;
             }
 
-            MelonLogger.Msg("[StrangerChat] " + message);
+            ModLogger.Msg("[StrangerChat] " + message);
         }
         
         // --- WINDOWS API FOR ESC KEY ---
@@ -829,7 +825,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error loading unified config: " + ex.Message);
+                ModLogger.Msg("Error loading unified config: " + ex.Message);
                 return null;
             }
         }
@@ -1238,7 +1234,7 @@ namespace HeartopiaMod
                 UnifiedConfigData data = this.LoadOrCreateUnifiedConfig();
                 this.PopulateAllConfigSections(data);
                 this.SaveUnifiedConfig(data);
-                MelonLogger.Msg("Keybinds Saved!");
+                ModLogger.Msg("Keybinds Saved!");
                 if (showNotification)
                 {
                     this.AddMenuNotification("Keybinds saved", new Color(0.55f, 0.88f, 1f));
@@ -1246,7 +1242,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error Saving Keybinds: " + ex.Message);
+                ModLogger.Msg("Error Saving Keybinds: " + ex.Message);
                 this.AddMenuNotification("Failed to save keybinds", new Color(1f, 0.4f, 0.4f));
             }
         }
@@ -1265,7 +1261,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[Config] SaveAllSettings error: " + ex.Message);
+                ModLogger.Msg("[Config] SaveAllSettings error: " + ex.Message);
             }
         }
 
@@ -1277,7 +1273,7 @@ namespace HeartopiaMod
                 if (config != null)
                 {
                     this.ApplyKeybindConfig(config.Keybinds);
-                    MelonLogger.Msg("Keybinds Loaded.");
+                    ModLogger.Msg("Keybinds Loaded.");
                     this.AddMenuNotification("Keybinds loaded", new Color(0.55f, 0.88f, 1f));
                     return;
                 }
@@ -1374,13 +1370,13 @@ namespace HeartopiaMod
                         else if (line.Contains("collectBurdock")) this.collectEventResources = this.collectEventResources || (GetJsonInt(line, "\"collectBurdock\":") != 0);
                         else if (line.Contains("collectMustardGreens")) this.collectEventResources = this.collectEventResources || (GetJsonInt(line, "\"collectMustardGreens\":") != 0);
                     }
-                    MelonLogger.Msg("Keybinds Loaded.");
+                    ModLogger.Msg("Keybinds Loaded.");
                     this.AddMenuNotification("Keybinds loaded", new Color(0.55f, 0.88f, 1f));
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error Loading Keybinds: " + ex.Message);
+                ModLogger.Msg("Error Loading Keybinds: " + ex.Message);
                 this.AddMenuNotification("Failed to load keybinds", new Color(1f, 0.4f, 0.4f));
             }
         }
@@ -1440,12 +1436,12 @@ namespace HeartopiaMod
                 UnifiedConfigData data = this.LoadOrCreateUnifiedConfig();
                 this.PopulateAllConfigSections(data);
                 this.SaveUnifiedConfig(data);
-                MelonLogger.Msg("UI Theme Saved.");
+                ModLogger.Msg("UI Theme Saved.");
                 this.AddMenuNotification("UI theme saved", new Color(0.55f, 0.88f, 1f));
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error Saving UI Theme: " + ex.Message);
+                ModLogger.Msg("Error Saving UI Theme: " + ex.Message);
                 this.AddMenuNotification("Failed to save UI theme", new Color(1f, 0.4f, 0.4f));
             }
         }
@@ -1460,7 +1456,7 @@ namespace HeartopiaMod
                     this.ApplyUiThemeConfig(config.UiTheme);
                     this.InvalidateThemeCache();
                     this.uiThemeHexInput = this.ColorToHex(this.GetUiThemeColorTargetValue(this.uiThemeColorTarget));
-                    MelonLogger.Msg("UI Theme Loaded.");
+                    ModLogger.Msg("UI Theme Loaded.");
                     this.AddMenuNotification("UI theme loaded", new Color(0.55f, 0.88f, 1f));
                     return;
                 }
@@ -1528,12 +1524,12 @@ namespace HeartopiaMod
 
                 this.InvalidateThemeCache();
                 this.uiThemeHexInput = this.ColorToHex(this.GetUiThemeColorTargetValue(this.uiThemeColorTarget));
-                MelonLogger.Msg("UI Theme Loaded.");
+                ModLogger.Msg("UI Theme Loaded.");
                 this.AddMenuNotification("UI theme loaded", new Color(0.55f, 0.88f, 1f));
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error Loading UI Theme: " + ex.Message);
+                ModLogger.Msg("Error Loading UI Theme: " + ex.Message);
                 this.AddMenuNotification("Failed to load UI theme", new Color(1f, 0.4f, 0.4f));
             }
         }
@@ -1550,11 +1546,11 @@ namespace HeartopiaMod
                 UnifiedConfigData data = this.LoadOrCreateUnifiedConfig();
                 this.PopulateAllConfigSections(data);
                 this.SaveUnifiedConfig(data);
-                MelonLogger.Msg("Radar settings saved.");
+                ModLogger.Msg("Radar settings saved.");
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error Saving Radar Settings: " + ex.Message);
+                ModLogger.Msg("Error Saving Radar Settings: " + ex.Message);
                 this.AddMenuNotification(this.L("Failed to save radar settings"), new Color(1f, 0.4f, 0.4f));
             }
         }
@@ -1584,7 +1580,7 @@ namespace HeartopiaMod
                 if (config != null)
                 {
                     this.ApplyRadarConfig(config.Radar);
-                    MelonLogger.Msg("Radar settings loaded.");
+                    ModLogger.Msg("Radar settings loaded.");
                     return;
                 }
                 string path = this.GetRadarSettingsPath();
@@ -1618,11 +1614,11 @@ namespace HeartopiaMod
                         this.priorityMustardGreens = GetJsonFloat(line, "\"priorityMustardGreens\":") != 0f;
                     }
                 }
-                MelonLogger.Msg("Radar settings loaded.");
+                ModLogger.Msg("Radar settings loaded.");
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error Loading Radar Settings: " + ex.Message);
+                ModLogger.Msg("Error Loading Radar Settings: " + ex.Message);
             }
         }
 
@@ -1634,12 +1630,12 @@ namespace HeartopiaMod
                 if (config?.BirdFarm != null)
                 {
                     BirdNetFarm.ApplyBirdFarmConfig(config.BirdFarm);
-                    MelonLogger.Msg("Bird farm settings loaded.");
+                    ModLogger.Msg("Bird farm settings loaded.");
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error loading bird farm settings: " + ex.Message);
+                ModLogger.Msg("Error loading bird farm settings: " + ex.Message);
             }
         }
 
@@ -1663,12 +1659,12 @@ namespace HeartopiaMod
             }
         }
 
-        public override void OnInitializeMelon()
+        public void OnInitializeMelon()
         {
             this.ApplyMasterConsoleVisibility();
             HeartopiaComplete.Instance = this;
             HeartopiaComplete.harmonyInstance = new HarmonyLib.Harmony("com.heartopia.teleport");
-            MelonLogger.Msg("Heartopia Helper initialized!");
+            ModLogger.Msg("Heartopia Helper initialized!");
             this.InitializeLocalization();
             this.LoadRadarSpeciesIconIndex();
             this.LoadCustomTeleports();
@@ -1677,7 +1673,7 @@ namespace HeartopiaMod
             this.LoadPatrolPoints();
             this.LoadRadarSettings();
             this.LoadBirdFarmSettings();
-            MelonLogger.Msg("=== Attempting Harmony Patches ===");
+            ModLogger.Msg("=== Attempting Harmony Patches ===");
             try
             {
                 MethodInfo method = typeof(CharacterController).GetMethod("Move", new Type[]
@@ -1689,16 +1685,16 @@ namespace HeartopiaMod
                 if (flag)
                 {
                     HeartopiaComplete.harmonyInstance.Patch(method, new HarmonyMethod(method2), null, null, null, null);
-                    MelonLogger.Msg("[OK] Successfully patched CharacterController.Move!");
+                    ModLogger.Msg("[OK] Successfully patched CharacterController.Move!");
                 }
                 else
                 {
-                    MelonLogger.Msg($"[ERR] Failed to find methods - ccMove: {method != null}, prefix: {method2 != null}");
+                    ModLogger.Msg($"[ERR] Failed to find methods - ccMove: {method != null}, prefix: {method2 != null}");
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[ERR] CharacterController.Move patch failed: " + ex.Message);
+                ModLogger.Msg("[ERR] CharacterController.Move patch failed: " + ex.Message);
             }
             try
             {
@@ -1708,16 +1704,16 @@ namespace HeartopiaMod
                 if (flag2)
                 {
                     HeartopiaComplete.harmonyInstance.Patch(setMethod, new HarmonyMethod(method3), null, null, null, null);
-                    MelonLogger.Msg("[OK] Successfully patched Transform.position setter!");
+                    ModLogger.Msg("[OK] Successfully patched Transform.position setter!");
                 }
                 else
                 {
-                    MelonLogger.Msg($"[ERR] Failed to find methods - setPos: {setMethod != null}, prefix: {method3 != null}");
+                    ModLogger.Msg($"[ERR] Failed to find methods - setPos: {setMethod != null}, prefix: {method3 != null}");
                 }
             }
             catch (Exception ex2)
             {
-                MelonLogger.Msg("[ERR] Transform.position patch failed: " + ex2.Message);
+                ModLogger.Msg("[ERR] Transform.position patch failed: " + ex2.Message);
             }
             try
             {
@@ -1727,16 +1723,16 @@ namespace HeartopiaMod
                 if (flag3)
                 {
                     HeartopiaComplete.harmonyInstance.Patch(setMethod2, new HarmonyMethod(method4), null, null, null, null);
-                    MelonLogger.Msg("[OK] Successfully patched Transform.rotation setter!");
+                    ModLogger.Msg("[OK] Successfully patched Transform.rotation setter!");
                 }
                 else
                 {
-                    MelonLogger.Msg($"[ERR] Failed to find rotation methods - setRot: {setMethod2 != null}, prefix: {method4 != null}");
+                    ModLogger.Msg($"[ERR] Failed to find rotation methods - setRot: {setMethod2 != null}, prefix: {method4 != null}");
                 }
             }
             catch (Exception ex3)
             {
-                MelonLogger.Msg("[ERR] Transform.rotation patch failed: " + ex3.Message);
+                ModLogger.Msg("[ERR] Transform.rotation patch failed: " + ex3.Message);
             }
             try
             {
@@ -1746,16 +1742,16 @@ namespace HeartopiaMod
                 if (flag5)
                 {
                     HeartopiaComplete.harmonyInstance.Patch(setMethod3, new HarmonyMethod(method5), null, null, null, null);
-                    MelonLogger.Msg("[OK] Successfully patched Transform.rotation setter for Character Rotation!");
+                    ModLogger.Msg("[OK] Successfully patched Transform.rotation setter for Character Rotation!");
                 }
                 else
                 {
-                    MelonLogger.Msg($"[ERR] Failed to find character rotation methods - setRot: {setMethod3 != null}, prefix: {method5 != null}");
+                    ModLogger.Msg($"[ERR] Failed to find character rotation methods - setRot: {setMethod3 != null}, prefix: {method5 != null}");
                 }
             }
             catch (Exception ex4)
             {
-                MelonLogger.Msg("[ERR] Character rotation patch failed: " + ex4.Message);
+                ModLogger.Msg("[ERR] Character rotation patch failed: " + ex4.Message);
             }
             try
             {
@@ -1765,16 +1761,16 @@ namespace HeartopiaMod
                 if (flag4)
                 {
                     HeartopiaComplete.harmonyInstance.Patch(spriteSetMethod, null, new HarmonyMethod(spritePatchMethod), null, null, null);
-                    MelonLogger.Msg("[OK] Successfully patched Image.sprite setter for Bulk Selector!");
+                    ModLogger.Msg("[OK] Successfully patched Image.sprite setter for Bulk Selector!");
                 }
                 else
                 {
-                    MelonLogger.Msg($"[ERR] Failed to find sprite methods - setter: {spriteSetMethod != null}, patch: {spritePatchMethod != null}");
+                    ModLogger.Msg($"[ERR] Failed to find sprite methods - setter: {spriteSetMethod != null}, patch: {spritePatchMethod != null}");
                 }
             }
             catch (Exception ex4)
             {
-                MelonLogger.Msg("[ERR] Image.sprite patch failed: " + ex4.Message);
+                ModLogger.Msg("[ERR] Image.sprite patch failed: " + ex4.Message);
             }
 
             try
@@ -1786,28 +1782,28 @@ namespace HeartopiaMod
                     if (target != null && patch != null)
                     {
                         HeartopiaComplete.harmonyInstance.Patch(target, null, new HarmonyMethod(patch), null, null, null);
-                        MelonLogger.Msg($"[OK] Patched {label}");
+                        ModLogger.Msg($"[OK] Patched {label}");
                     }
                     else
                     {
-                        MelonLogger.Msg($"[ERR] Failed to patch {label} - target: {target != null}, patch: {patch != null}");
+                        ModLogger.Msg($"[ERR] Failed to patch {label} - target: {target != null}, patch: {patch != null}");
                     }
                 };
 
-                MelonLogger.Msg("AutoFish input patch registration skipped.");
+                ModLogger.Msg("AutoFish input patch registration skipped.");
             }
             catch (Exception ex5)
             {
-                MelonLogger.Msg("[ERR] AutoFish input patch registration failed: " + ex5.Message);
+                ModLogger.Msg("[ERR] AutoFish input patch registration failed: " + ex5.Message);
             }
 
-            MelonLogger.Msg("=== Patch Attempt Complete ===");
+            ModLogger.Msg("=== Patch Attempt Complete ===");
 
-            MelonLogger.Msg("AutoFish subsystem disabled.");
+            ModLogger.Msg("AutoFish subsystem disabled.");
 
             try
             {
-                MelonCoroutines.Start(this.NetCookCoroutineWarmupRoutine());
+                ModCoroutines.Start(this.NetCookCoroutineWarmupRoutine());
             }
             catch
             {
@@ -1815,7 +1811,7 @@ namespace HeartopiaMod
         }
 
         // Token: 0x06000004 RID: 4 RVA: 0x00002390 File Offset: 0x00000590
-        public override void OnLateUpdate()
+        public void OnLateUpdate()
         {
             this.UpdateDirectMouseLookCamera(this.mouseLookCaptureActive);
 
@@ -1830,7 +1826,7 @@ namespace HeartopiaMod
                     bool flag3 = Vector3.Distance(position, this.lastKnownPosition) > 0.01f;
                     if (flag3)
                     {
-                        MelonLogger.Msg($"[POSITION CHANGED] From {this.lastKnownPosition} to {position}");
+                        ModLogger.Msg($"[POSITION CHANGED] From {this.lastKnownPosition} to {position}");
                         this.lastKnownPosition = position;
                     }
                 }
@@ -1861,7 +1857,7 @@ namespace HeartopiaMod
         }
 
         // Token: 0x06000005 RID: 5 RVA: 0x000024C0 File Offset: 0x000006C0
-        public override void OnUpdate()
+        public void OnUpdate()
         {
             if (BirdNetFarm.IsEnabled)
             {
@@ -2098,7 +2094,7 @@ namespace HeartopiaMod
                 if (Input.GetKeyDown(this.keyBypassUI))
                 {
                     this.bypassEnabled = !this.bypassEnabled;
-                    MelonLogger.Msg("Bypass UI/Skeleton " + (this.bypassEnabled ? "Enabled" : "Disabled"));
+                    ModLogger.Msg("Bypass UI/Skeleton " + (this.bypassEnabled ? "Enabled" : "Disabled"));
                     this.RunBypassLogic(this.bypassEnabled);
                     this.AddMenuNotification($"Bypass UI {(this.bypassEnabled ? "Enabled" : "Disabled")}", this.bypassEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
@@ -2153,10 +2149,10 @@ namespace HeartopiaMod
                     SimulateFKeyDown = false;
                     SimulateFKeyUp = false;
                     this.fKeySimFrame = 0;
-                    try { InsectNetFarm.ForceStop(); } catch (Exception ex) { MelonLogger.Msg("[DisableAll] Failed to stop Insect Farm: " + ex.Message); }
-                    try { BirdNetFarm.ForceStop(this); } catch (Exception ex) { MelonLogger.Msg("[DisableAll] Failed to stop Bird Farm: " + ex.Message); }
-                    try { this.ForceStopPuzzleAuto(); } catch (Exception ex) { MelonLogger.Msg("[DisableAll] Failed to stop Puzzle: " + ex.Message); }
-                    MelonLogger.Msg("All features disabled and game speed reset");
+                    try { InsectNetFarm.ForceStop(); } catch (Exception ex) { ModLogger.Msg("[DisableAll] Failed to stop Insect Farm: " + ex.Message); }
+                    try { BirdNetFarm.ForceStop(this); } catch (Exception ex) { ModLogger.Msg("[DisableAll] Failed to stop Bird Farm: " + ex.Message); }
+                    try { this.ForceStopPuzzleAuto(); } catch (Exception ex) { ModLogger.Msg("[DisableAll] Failed to stop Puzzle: " + ex.Message); }
+                    ModLogger.Msg("All features disabled and game speed reset");
                     this.AddMenuNotification("All features disabled", new Color(1f, 0.55f, 0.55f));
                 }
                 if (Input.GetKeyDown(this.keyInspectPlayer))
@@ -2410,7 +2406,7 @@ namespace HeartopiaMod
                     if (nearestPlayer < cookingPlayerAlertRadius)
                     {
                         this.cookingCleanupMode = true;
-                        MelonLogger.Msg($"[Cooking] PLAYER DETECTED ({nearestPlayer:F0}m) - Starting cleanup!");
+                        ModLogger.Msg($"[Cooking] PLAYER DETECTED ({nearestPlayer:F0}m) - Starting cleanup!");
                     }
                 }
 
@@ -2505,22 +2501,22 @@ namespace HeartopiaMod
             {
                 this.UpdateAuraFarm();
                 // Insect farm periodic update (from separate module)
-                try { BirdNetFarm.Update(this); } catch (Exception ex) { MelonLogger.Msg("[BirdNetFarm] Update error: " + ex.Message); }
-                try { InsectNetFarm.Update(this); } catch (Exception ex) { MelonLogger.Msg("[InsectNetFarm] Update error: " + ex.Message); }
-                try { this.UpdatePuzzleAutomation(); } catch (Exception ex) { MelonLogger.Msg("[PuzzleNet] Update error: " + ex.Message); }
+                try { BirdNetFarm.Update(this); } catch (Exception ex) { ModLogger.Msg("[BirdNetFarm] Update error: " + ex.Message); }
+                try { InsectNetFarm.Update(this); } catch (Exception ex) { ModLogger.Msg("[InsectNetFarm] Update error: " + ex.Message); }
+                try { this.UpdatePuzzleAutomation(); } catch (Exception ex) { ModLogger.Msg("[PuzzleNet] Update error: " + ex.Message); }
                 // Resource farm periodic update
-                try { this.UpdateResourceFarm(); } catch (Exception ex) { MelonLogger.Msg("[ResourceFarm] Update error: " + ex.Message); }
+                try { this.UpdateResourceFarm(); } catch (Exception ex) { ModLogger.Msg("[ResourceFarm] Update error: " + ex.Message); }
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("? AutoFish update error: " + ex.Message);
+                ModLogger.Msg("? AutoFish update error: " + ex.Message);
             }
 
             this.UpdateVisualDebugEsp();
         }
 
         // Token: 0x06000006 RID: 6 RVA: 0x000027FC File Offset: 0x000009FC
-        public override void OnGUI()
+        public void OnGUI()
         {
             GUI.color = Color.white;
             GUI.backgroundColor = Color.white;
@@ -3472,7 +3468,7 @@ namespace HeartopiaMod
         {
             if (AutoEatRepairLogsEnabled && !string.IsNullOrEmpty(message))
             {
-                MelonLogger.Msg(message);
+                ModLogger.Msg(message);
             }
         }
 
@@ -3499,7 +3495,7 @@ namespace HeartopiaMod
             }
 
             this.nextAutoEatRepairSlowRuntimeLogAt = Time.unscaledTime + AutoEatRepairSlowRuntimeLogCooldown;
-            MelonLogger.Msg($"[AutoEatRepairPerf] Slow {label}: {elapsedMs:F1}ms");
+            ModLogger.Msg($"[AutoEatRepairPerf] Slow {label}: {elapsedMs:F1}ms");
         }
 
         private void SetGameSpeed(float speed)
@@ -5783,7 +5779,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[RadarIconESP] Failed to load species icon index: " + ex.Message);
+                ModLogger.Msg("[RadarIconESP] Failed to load species icon index: " + ex.Message);
             }
         }
 
@@ -5801,7 +5797,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[RadarIconESP] Failed to save species icon index: " + ex.Message);
+                ModLogger.Msg("[RadarIconESP] Failed to save species icon index: " + ex.Message);
             }
         }
 
@@ -5853,7 +5849,7 @@ namespace HeartopiaMod
             }
 
             this.radarSpeciesDebugNextLogAt[key] = now + Mathf.Max(0.5f, cooldownSeconds);
-            MelonLogger.Msg("[RadarIconESP] " + message);
+            ModLogger.Msg("[RadarIconESP] " + message);
         }
 
         private void BubbleRadarLog(string message)
@@ -5863,7 +5859,7 @@ namespace HeartopiaMod
                 return;
             }
 
-            MelonLogger.Msg("[BubbleRadar] " + message);
+            ModLogger.Msg("[BubbleRadar] " + message);
         }
 
         private void BubbleRadarLogThrottled(string key, string message, float cooldownSeconds = 4f)
@@ -5880,7 +5876,7 @@ namespace HeartopiaMod
             }
 
             this.bubbleRadarDebugNextLogAt[key] = now + Mathf.Max(0.5f, cooldownSeconds);
-            MelonLogger.Msg("[BubbleRadar] " + message);
+            ModLogger.Msg("[BubbleRadar] " + message);
         }
 
         private string TryGetRadarIconKeyFromTargetName(string canonicalLabel, GameObject targetObject)
@@ -11894,7 +11890,7 @@ namespace HeartopiaMod
                 return;
             }
 
-            MelonLogger.Msg("[InsectFarmNet] " + message);
+            ModLogger.Msg("[InsectFarmNet] " + message);
         }
 
         private void BirdFarmNetLog(string message)
@@ -11923,7 +11919,7 @@ namespace HeartopiaMod
                 return;
             }
 
-            MelonLogger.Msg("[BirdFarmNet] " + message);
+            ModLogger.Msg("[BirdFarmNet] " + message);
         }
 
         private bool TryResolveBirdNetId(GameObject target, out uint netId, out string source)
@@ -15462,7 +15458,7 @@ namespace HeartopiaMod
                 {
                     HeartopiaComplete.harmonyInstance.Patch(directTarget, null, new HarmonyMethod(directPostfix), null, null, null);
                     this.birdFarmMaxPhotoPatchApplied = true;
-                    MelonLogger.Msg("[BirdFarm] Patched BirdWatchingSystem.InformUiResult for direct MaxPhoto auto-scare.");
+                    ModLogger.Msg("[BirdFarm] Patched BirdWatchingSystem.InformUiResult for direct MaxPhoto auto-scare.");
                     return;
                 }
 
@@ -15486,7 +15482,7 @@ namespace HeartopiaMod
 
                 HeartopiaComplete.harmonyInstance.Patch(toastTarget, null, new HarmonyMethod(toastPostfix), null, null, null);
                 this.birdFarmMaxPhotoPatchApplied = true;
-                MelonLogger.Msg("[BirdFarm] Patched BirdPhotoErrorToast for MaxPhoto auto-scare.");
+                ModLogger.Msg("[BirdFarm] Patched BirdPhotoErrorToast for MaxPhoto auto-scare.");
             }
             catch (Exception ex)
             {
@@ -21229,7 +21225,7 @@ namespace HeartopiaMod
         {
             if (this.forceOpenShopLogsEnabled && !string.IsNullOrWhiteSpace(message))
             {
-                MelonLogger.Msg("[ForceOpenShop] " + message);
+                ModLogger.Msg("[ForceOpenShop] " + message);
             }
         }
 
@@ -22286,11 +22282,11 @@ namespace HeartopiaMod
                     string[] methods = { "OverlapBoxNonAlloc", "OverlapSphereNonAlloc" };
                     foreach (var m in t.GetMethods().Where(x => methods.Contains(x.Name))) this.bypassHarmony.Patch(m, p);
                     this.bypassOverlapPatched = true;
-                    MelonLoader.MelonLogger.Msg("Bypass overlap patch applied.");
+                    ModLogger.Msg("Bypass overlap patch applied.");
                 }
                 catch (Exception ex)
                 {
-                    MelonLoader.MelonLogger.Msg("Bypass patch failed: " + ex.Message);
+                    ModLogger.Msg("Bypass patch failed: " + ex.Message);
                 }
             }
         }
@@ -24873,7 +24869,7 @@ namespace HeartopiaMod
                 return;
             }
 
-            this.netCookCleanupCoroutine = MelonCoroutines.Start(this.NetCookCleanupRoutine());
+            this.netCookCleanupCoroutine = ModCoroutines.Start(this.NetCookCleanupRoutine());
         }
 
         private System.Collections.IEnumerator NetCookCleanupRoutine()
@@ -24974,13 +24970,13 @@ namespace HeartopiaMod
 
             if (this.netCookCleanupCoroutine != null)
             {
-                MelonCoroutines.Stop(this.netCookCleanupCoroutine);
+                ModCoroutines.Stop(this.netCookCleanupCoroutine);
                 this.netCookCleanupCoroutine = null;
             }
 
             if (this.netCookCaptureCoroutine != null)
             {
-                MelonCoroutines.Stop(this.netCookCaptureCoroutine);
+                ModCoroutines.Stop(this.netCookCaptureCoroutine);
                 this.netCookCaptureCoroutine = null;
             }
 
@@ -26106,7 +26102,7 @@ namespace HeartopiaMod
             }
 
             int captureGeneration = ++this.netCookCaptureGeneration;
-            this.netCookCaptureCoroutine = MelonCoroutines.Start(this.NetCookDeferredOwnerWindowExpansionRoutine(desiredCookerStaticId, desiredCookerType, forceBroadRefresh, captureGeneration));
+            this.netCookCaptureCoroutine = ModCoroutines.Start(this.NetCookDeferredOwnerWindowExpansionRoutine(desiredCookerStaticId, desiredCookerType, forceBroadRefresh, captureGeneration));
         }
 
         private System.Collections.IEnumerator NetCookCoroutineWarmupRoutine()
@@ -33869,7 +33865,7 @@ namespace HeartopiaMod
 
             try
             {
-                MelonLogger.Msg("[NetCook] " + message);
+                ModLogger.Msg("[NetCook] " + message);
             }
             catch
             {
@@ -33885,7 +33881,7 @@ namespace HeartopiaMod
 
             try
             {
-                MelonLogger.Msg("[AutoFarm] " + message);
+                ModLogger.Msg("[AutoFarm] " + message);
             }
             catch
             {
@@ -34424,14 +34420,14 @@ namespace HeartopiaMod
             this.autoCookEnabled = true;
             this.cookingCleanupMode = false;
             this.SetGameSpeed(this.cookingAutoSpeed);
-            MelonLogger.Msg($"[Cooking] Bot STARTED (Auto Speed x{this.cookingAutoSpeed:F1})");
+            ModLogger.Msg($"[Cooking] Bot STARTED (Auto Speed x{this.cookingAutoSpeed:F1})");
             this.AddMenuNotification("Auto Cook Enabled", new Color(0.45f, 1f, 0.55f));
 
             if (cookingPatrolEnabled && cookingPatrolPoints.Count > 0 && !isCookingPatrolActive)
             {
                 isCookingPatrolActive = true;
-                cookingPatrolCoroutine = MelonCoroutines.Start(CookingPatrolRoutine());
-                MelonLogger.Msg("[Cooking Patrol] STARTED");
+                cookingPatrolCoroutine = ModCoroutines.Start(CookingPatrolRoutine());
+                ModLogger.Msg("[Cooking Patrol] STARTED");
             }
             // Setup auto-stop timer if enabled
             int autoStopSeconds = this.GetAutoCookAutoStopSeconds();
@@ -34455,13 +34451,13 @@ namespace HeartopiaMod
             isCookingPatrolActive = false;
             if (cookingPatrolCoroutine != null)
             {
-                MelonCoroutines.Stop(cookingPatrolCoroutine);
+                ModCoroutines.Stop(cookingPatrolCoroutine);
                 cookingPatrolCoroutine = null;
             }
 
             if (wasEnabled)
             {
-                MelonLogger.Msg("[Cooking] Bot STOPPED: " + reason);
+                ModLogger.Msg("[Cooking] Bot STOPPED: " + reason);
                 this.AddMenuNotification("Auto Cook " + reason, new Color(1f, 0.7f, 0.45f));
             }
         }
@@ -37276,7 +37272,7 @@ namespace HeartopiaMod
             float now = Time.unscaledTime;
             cooldownSets[bestGroup][bestIndex] = now + cooldownDurations[bestGroup];
             hideSets[bestGroup][bestIndex] = now + 10f;
-            MelonLogger.Msg($"[AutoFarm] {labels[bestGroup]} #{bestIndex} marked collected; cooldown {cooldownDurations[bestGroup]:F1}s");
+            ModLogger.Msg($"[AutoFarm] {labels[bestGroup]} #{bestIndex} marked collected; cooldown {cooldownDurations[bestGroup]:F1}s");
         }
 
         private bool HasReadyAutoCollectPrompt()
@@ -37434,7 +37430,7 @@ namespace HeartopiaMod
             }
 
             this.lastLoggedInteractSpriteName = spriteName;
-            MelonLogger.Msg("[AutoCollectDebug] Interact sprite: " + spriteName);
+            ModLogger.Msg("[AutoCollectDebug] Interact sprite: " + spriteName);
         }
 
         private bool ShouldAutoCollectBySprite(string spriteName)
@@ -37677,7 +37673,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg($"[ClickButtonIfExists] Error clicking path '{path}': {ex.Message}");
+                ModLogger.Msg($"[ClickButtonIfExists] Error clicking path '{path}': {ex.Message}");
                 this.lastAutoCookException = ex.Message;
             }
         }
@@ -38000,7 +37996,7 @@ namespace HeartopiaMod
             bool clicked = this.TryEquipStatusBarItemBySpriteAny(needles);
             if (clicked)
             {
-                MelonLogger.Msg("[Tools] Equip click sent from status bar for " + friendlyName);
+                ModLogger.Msg("[Tools] Equip click sent from status bar for " + friendlyName);
                 this.AddMenuNotification($"Equip click: {friendlyName}", new Color(0.45f, 1f, 0.55f));
                 this.pendingToolEquipType = 0;
                 return;
@@ -38020,7 +38016,7 @@ namespace HeartopiaMod
 
             if (clicked)
             {
-                MelonLogger.Msg("[Tools] Equip click sent for " + friendlyName);
+                ModLogger.Msg("[Tools] Equip click sent for " + friendlyName);
                 this.AddMenuNotification($"Equip click: {friendlyName}", new Color(0.45f, 1f, 0.55f));
                 this.CloseToolboxIfOpen();
                 this.pendingToolEquipType = 0;
@@ -38274,7 +38270,7 @@ namespace HeartopiaMod
             this.autoResourceFarmEnabled = !this.autoResourceFarmEnabled;
             if (this.autoResourceFarmEnabled)
             {
-                MelonLogger.Msg("[ResourceFarm] ENABLED! Make sure you're holding an axe/pickaxe!");
+                ModLogger.Msg("[ResourceFarm] ENABLED! Make sure you're holding an axe/pickaxe!");
                 this.ResetResourceFarmState();
                 int autoStopSeconds = this.GetAutoResourceFarmAutoStopSeconds();
                 if (this.autoResourceFarmAutoStopEnabled && autoStopSeconds > 0)
@@ -38289,7 +38285,7 @@ namespace HeartopiaMod
             }
             else
             {
-                MelonLogger.Msg("[ResourceFarm] DISABLED!");
+                ModLogger.Msg("[ResourceFarm] DISABLED!");
                 this.ResetResourceFarmState();
                 this.resourceJustArrived = false;
                 SimulateFKeyHeld = false;
@@ -38325,7 +38321,7 @@ namespace HeartopiaMod
             this.orangeTreeHideUntil.Clear();
             this.resourceMarkersNeedShuffle = true;
             this.visitedResourceMarkerIndices.Clear();
-            MelonLogger.Msg("[ResourceFarm] All cooldowns reset!");
+            ModLogger.Msg("[ResourceFarm] All cooldowns reset!");
         }
 
         public void OnTeleportArrivedResource()
@@ -38333,7 +38329,7 @@ namespace HeartopiaMod
             this.isResourceFarmTeleport = false;
             this.resourceJustArrived = true;
             this.resourceArrivalTime = Time.unscaledTime;
-            MelonLogger.Msg($"[ResourceFarm] Arrived! Will press F for {this.resourceClickDuration}s (after {this.resourceArrivalDelay}s delay)");
+            ModLogger.Msg($"[ResourceFarm] Arrived! Will press F for {this.resourceClickDuration}s (after {this.resourceArrivalDelay}s delay)");
         }
 
         public void UpdateResourceFarm()
@@ -38343,7 +38339,7 @@ namespace HeartopiaMod
             // Auto-stop check
             if (this.autoResourceFarmAutoStopEnabled && this.autoResourceFarmAutoStopAt > 0f && Time.unscaledTime >= this.autoResourceFarmAutoStopAt)
             {
-                MelonLogger.Msg("[ResourceFarm] Auto-stop timer reached. Stopping resource farm.");
+                ModLogger.Msg("[ResourceFarm] Auto-stop timer reached. Stopping resource farm.");
                 this.AddMenuNotification("Resource Farm auto-stopped", new Color(0.9f, 0.55f, 0.55f));
                 this.autoResourceFarmEnabled = false;
                 this.ResetResourceFarmState();
@@ -38383,7 +38379,7 @@ namespace HeartopiaMod
                     {
                         this.MarkResourceCollected(player.transform.position);
                     }
-                    MelonLogger.Msg("[ResourceFarm] Done pressing F, ready for next resource");
+                    ModLogger.Msg("[ResourceFarm] Done pressing F, ready for next resource");
                 }
                 else if (dt > this.resourceArrivalDelay)
                 {
@@ -38442,7 +38438,7 @@ namespace HeartopiaMod
             GameObject p = this.FindPlayerRoot();
             if (p == null)
             {
-                MelonLogger.Warning("[ResourceFarm] Cannot find player!");
+                ModLogger.Warning("[ResourceFarm] Cannot find player!");
                 return;
             }
             Vector3 pos = p.transform.position;
@@ -38459,7 +38455,7 @@ namespace HeartopiaMod
                 this.visitedResourceMarkerIndices.Clear();
                 this.resourceMarkersNeedShuffle = true;
                 this.currentResourceMarkerIndex = -1;
-                MelonLogger.Msg("[ResourceFarm] Returning to start position...");
+                ModLogger.Msg("[ResourceFarm] Returning to start position...");
             }
             else
             {
@@ -38471,7 +38467,7 @@ namespace HeartopiaMod
                     this.visitedResourceMarkerIndices.Clear();
                     this.resourceMarkersNeedShuffle = true;
                     this.currentResourceMarkerIndex = -1;
-                    MelonLogger.Msg($"[ResourceFarm] All {this.resourceMarkerPositions.Count} resources visited! Returning to start...");
+                    ModLogger.Msg($"[ResourceFarm] All {this.resourceMarkerPositions.Count} resources visited! Returning to start...");
                     return;
                 }
                 int idx = this.instanceRng.Next(0, notVisited.Count);
@@ -38479,7 +38475,7 @@ namespace HeartopiaMod
                 this.visitedResourceMarkerIndices.Add(chosen);
                 this.currentResourceMarkerIndex = chosen;
                 targetPos = this.resourceMarkerPositions[chosen];
-                MelonLogger.Msg($"[ResourceFarm] Teleporting to resource {this.visitedResourceMarkerIndices.Count}/{this.resourceMarkerPositions.Count} (index:{chosen})");
+                ModLogger.Msg($"[ResourceFarm] Teleporting to resource {this.visitedResourceMarkerIndices.Count}/{this.resourceMarkerPositions.Count} (index:{chosen})");
             }
 
             this.isResourceFarmTeleport = true;
@@ -38591,7 +38587,7 @@ namespace HeartopiaMod
                 }
                 this.resourceMarkersNeedShuffle = false;
                 this.visitedResourceMarkerIndices.Clear();
-                MelonLogger.Msg($"[ResourceFarm] Shuffled markers: {this.resourceMarkerPositions.Count} available");
+                ModLogger.Msg($"[ResourceFarm] Shuffled markers: {this.resourceMarkerPositions.Count} available");
             }
         }
 
@@ -38636,7 +38632,7 @@ namespace HeartopiaMod
                 {
                     this.rockCooldowns[idx] = Time.time + this.rockCooldownDuration;
                     this.rockHideUntil[idx] = Time.time + hide;
-                    MelonLogger.Msg($"[ResourceFarm] Rock #{idx} collected, cooldown {this.rockCooldownDuration}s");
+                    ModLogger.Msg($"[ResourceFarm] Rock #{idx} collected, cooldown {this.rockCooldownDuration}s");
                 }
             }
             if (this.farmOres)
@@ -38646,7 +38642,7 @@ namespace HeartopiaMod
                 {
                     this.oreCooldowns[idx] = Time.time + this.oreCooldownDuration;
                     this.oreHideUntil[idx] = Time.time + hide;
-                    MelonLogger.Msg($"[ResourceFarm] Ore #{idx} collected, cooldown {this.oreCooldownDuration}s");
+                    ModLogger.Msg($"[ResourceFarm] Ore #{idx} collected, cooldown {this.oreCooldownDuration}s");
                 }
             }
             if (this.farmTrees)
@@ -38656,7 +38652,7 @@ namespace HeartopiaMod
                 {
                     this.treeCooldowns_res[idx] = Time.time + this.treeCooldownDuration_res;
                     this.treeHideUntil_res[idx] = Time.time + hide;
-                    MelonLogger.Msg($"[ResourceFarm] Tree #{idx} collected, cooldown {this.treeCooldownDuration_res}s");
+                    ModLogger.Msg($"[ResourceFarm] Tree #{idx} collected, cooldown {this.treeCooldownDuration_res}s");
                 }
             }
             if (this.farmRareTrees)
@@ -38666,7 +38662,7 @@ namespace HeartopiaMod
                 {
                     this.rareTreeCooldowns_res[idx] = Time.time + this.rareTreeCooldownDuration_res;
                     this.rareTreeHideUntil_res[idx] = Time.time + hide;
-                    MelonLogger.Msg($"[ResourceFarm] Rare Tree #{idx} collected, cooldown {this.rareTreeCooldownDuration_res}s");
+                    ModLogger.Msg($"[ResourceFarm] Rare Tree #{idx} collected, cooldown {this.rareTreeCooldownDuration_res}s");
                 }
             }
             if (this.farmAppleTrees)
@@ -38676,7 +38672,7 @@ namespace HeartopiaMod
                 {
                     this.appleTreeCooldowns_res[idx] = Time.time + this.appleTreeCooldownDuration_res;
                     this.appleTreeHideUntil_res[idx] = Time.time + hide;
-                    MelonLogger.Msg($"[ResourceFarm] Apple Tree #{idx} collected, cooldown {this.appleTreeCooldownDuration_res}s");
+                    ModLogger.Msg($"[ResourceFarm] Apple Tree #{idx} collected, cooldown {this.appleTreeCooldownDuration_res}s");
                 }
             }
             if (this.farmOrangeTrees)
@@ -38686,7 +38682,7 @@ namespace HeartopiaMod
                 {
                     this.orangeTreeCooldowns_res[idx] = Time.time + this.orangeTreeCooldownDuration_res;
                     this.orangeTreeHideUntil_res[idx] = Time.time + hide;
-                    MelonLogger.Msg($"[ResourceFarm] Mandarin Tree #{idx} collected, cooldown {this.orangeTreeCooldownDuration_res}s");
+                    ModLogger.Msg($"[ResourceFarm] Mandarin Tree #{idx} collected, cooldown {this.orangeTreeCooldownDuration_res}s");
                 }
             }
         }
@@ -39004,7 +39000,7 @@ namespace HeartopiaMod
                             if (nowInteract != this.swingConfirmStartBtnInteract)
                             {
                                 confirmed = true;
-                                MelonLogger.Msg("[TreeFarm] Swing confirmed by button interactable change (async)");
+                                ModLogger.Msg("[TreeFarm] Swing confirmed by button interactable change (async)");
                             }
                         }
                     }
@@ -39025,13 +39021,13 @@ namespace HeartopiaMod
                         this.awaitingSwingConfirm = false;
                         this.treeFarmNoPromptAttempts++;
                         this.treeFarmNextActionAt = Time.time + 0.15f;
-                        MelonLogger.Msg("[TreeFarm] Swing confirmation timed out (async)");
+                        ModLogger.Msg("[TreeFarm] Swing confirmation timed out (async)");
                         return;
                     }
                 }
                 catch (Exception ex)
                 {
-                    MelonLogger.Msg("[TreeFarm] Async confirm error: " + ex.Message);
+                    ModLogger.Msg("[TreeFarm] Async confirm error: " + ex.Message);
                     this.awaitingSwingConfirm = false;
                 }
             }
@@ -39138,7 +39134,7 @@ namespace HeartopiaMod
                         targetPos = point.Position.ToVector3();
                         targetRot = point.Rotation.ToQuaternion();
                     }
-                    MelonLogger.Msg($"[TreeFarm] Teleporting to point {this.treeFarmCurrentIndex + 1}/{this.treeFarmPoints.Count} at {targetPos}");
+                    ModLogger.Msg($"[TreeFarm] Teleporting to point {this.treeFarmCurrentIndex + 1}/{this.treeFarmPoints.Count} at {targetPos}");
                     this.TeleportToLocation(targetPos, targetRot);
                     this.treeFarmStatus = $"Teleported to tree point {this.treeFarmCurrentIndex + 1}/{this.treeFarmPoints.Count}";
                     this.treeFarmState = HeartopiaComplete.TreeFarmState.WaitAfterTeleport;
@@ -39150,7 +39146,7 @@ namespace HeartopiaMod
                     if (player != null)
                     {
                         Vector3 currentPos = player.transform.position;
-                        MelonLogger.Msg($"[TreeFarm] After teleport, current position: {currentPos}");
+                        ModLogger.Msg($"[TreeFarm] After teleport, current position: {currentPos}");
                     }
                     this.treeFarmChopSent = 0;
                     this.treeFarmNoPromptAttempts = 0;
@@ -39211,14 +39207,14 @@ namespace HeartopiaMod
                         }
                     }
 
-                    MelonLogger.Msg($"[TreeFarm] Chop attempt {this.treeFarmChopSent}/{this.treeFarmChopPressCount} - Success: {chopped}, NoPromptAttempts: {this.treeFarmNoPromptAttempts}");
+                    ModLogger.Msg($"[TreeFarm] Chop attempt {this.treeFarmChopSent}/{this.treeFarmChopPressCount} - Success: {chopped}, NoPromptAttempts: {this.treeFarmNoPromptAttempts}");
                     this.treeFarmStatus = chopped
                         ? $"Chopping {this.treeFarmChopSent}/{this.treeFarmChopPressCount}..."
                         : "Waiting for chop prompt...";
 
                     if (this.treeFarmChopSent >= Math.Max(1, this.treeFarmChopPressCount))
                     {
-                        MelonLogger.Msg($"[TreeFarm] Finished chopping at point {this.treeFarmCurrentIndex + 1}, moving to next");
+                        ModLogger.Msg($"[TreeFarm] Finished chopping at point {this.treeFarmCurrentIndex + 1}, moving to next");
                         // If using hardcoded resource-style mode, mark the closest tree as collected so cooldowns apply
                         if (this.treeFarmUseHardcoded)
                         {
@@ -39232,7 +39228,7 @@ namespace HeartopiaMod
                             }
                             catch (Exception ex)
                             {
-                                MelonLogger.Msg("[TreeFarm] MarkTreeCollected error: " + ex.Message);
+                                ModLogger.Msg("[TreeFarm] MarkTreeCollected error: " + ex.Message);
                             }
                         }
                         this.treeFarmState = HeartopiaComplete.TreeFarmState.WaitNextPoint;
@@ -39240,7 +39236,7 @@ namespace HeartopiaMod
                     }
                     else if (this.treeFarmNoPromptAttempts >= 20)
                     {
-                        MelonLogger.Msg($"[TreeFarm] No chop action after 20 attempts at point {this.treeFarmCurrentIndex + 1}, skipping");
+                        ModLogger.Msg($"[TreeFarm] No chop action after 20 attempts at point {this.treeFarmCurrentIndex + 1}, skipping");
                         this.treeFarmStatus = "No chop action, skipping point...";
                         this.treeFarmState = HeartopiaComplete.TreeFarmState.WaitNextPoint;
                         this.treeFarmNextActionAt = Time.time + 0.3f;
@@ -39291,7 +39287,7 @@ namespace HeartopiaMod
             {
                 this.treeCooldowns[idx] = Time.time + this.treeCooldownDuration;
                 this.treeHideUntil[idx] = Time.time + hideDelay;
-                MelonLogger.Msg($"[TreeFarm] Tree #{idx} collected, cooldown {this.treeCooldownDuration}s");
+                ModLogger.Msg($"[TreeFarm] Tree #{idx} collected, cooldown {this.treeCooldownDuration}s");
             }
 
             int idx2 = this.FindClosestItemIndexLocal(playerPos, RareTreePositions);
@@ -39299,7 +39295,7 @@ namespace HeartopiaMod
             {
                 this.rareTreeCooldowns[idx2] = Time.time + this.rareTreeCooldownDuration;
                 this.rareTreeHideUntil[idx2] = Time.time + hideDelay;
-                MelonLogger.Msg($"[TreeFarm] Rare Tree #{idx2} collected, cooldown {this.rareTreeCooldownDuration}s");
+                ModLogger.Msg($"[TreeFarm] Rare Tree #{idx2} collected, cooldown {this.rareTreeCooldownDuration}s");
             }
 
             int idx3 = this.FindClosestItemIndexLocal(playerPos, AppleTreePositions);
@@ -39307,7 +39303,7 @@ namespace HeartopiaMod
             {
                 this.appleTreeCooldowns[idx3] = Time.time + this.appleTreeCooldownDuration;
                 this.appleTreeHideUntil[idx3] = Time.time + hideDelay;
-                MelonLogger.Msg($"[TreeFarm] Apple Tree #{idx3} collected, cooldown {this.appleTreeCooldownDuration}s");
+                ModLogger.Msg($"[TreeFarm] Apple Tree #{idx3} collected, cooldown {this.appleTreeCooldownDuration}s");
             }
 
             int idx4 = this.FindClosestItemIndexLocal(playerPos, OrangeTreePositions);
@@ -39315,7 +39311,7 @@ namespace HeartopiaMod
             {
                 this.orangeTreeCooldowns[idx4] = Time.time + this.orangeTreeCooldownDuration;
                 this.orangeTreeHideUntil[idx4] = Time.time + hideDelay;
-                MelonLogger.Msg($"[TreeFarm] Mandarin Tree #{idx4} collected, cooldown {this.orangeTreeCooldownDuration}s");
+                ModLogger.Msg($"[TreeFarm] Mandarin Tree #{idx4} collected, cooldown {this.orangeTreeCooldownDuration}s");
             }
         }
 
@@ -39326,14 +39322,14 @@ namespace HeartopiaMod
                 GameObject statusPanel = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Status/StatusPanel(Clone)");
                 if (statusPanel == null || !statusPanel.activeInHierarchy)
                 {
-                    MelonLogger.Msg("[TreeFarm] IsHoldingTool: Status panel not found or not active");
+                    ModLogger.Msg("[TreeFarm] IsHoldingTool: Status panel not found or not active");
                     return false;
                 }
 
                 Image[] images = statusPanel.GetComponentsInChildren<Image>(true);
                 if (images == null || images.Length == 0)
                 {
-                    MelonLogger.Msg("[TreeFarm] IsHoldingTool: No images in status panel");
+                    ModLogger.Msg("[TreeFarm] IsHoldingTool: No images in status panel");
                     return false;
                 }
 
@@ -39349,15 +39345,15 @@ namespace HeartopiaMod
                         fullPath.Contains("/CommonIconForTool(Clone)/") &&
                         fullPath.Contains("/icon@img@btn"))
                     {
-                        MelonLogger.Msg($"[TreeFarm] IsHoldingTool: Found tool image at {fullPath}");
+                        ModLogger.Msg($"[TreeFarm] IsHoldingTool: Found tool image at {fullPath}");
                         return true; // Holding a tool
                     }
                 }
-                MelonLogger.Msg("[TreeFarm] IsHoldingTool: No tool images found");
+                ModLogger.Msg("[TreeFarm] IsHoldingTool: No tool images found");
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg($"[TreeFarm] IsHoldingTool error: {ex.Message}");
+                ModLogger.Msg($"[TreeFarm] IsHoldingTool error: {ex.Message}");
             }
             return false;
         }
@@ -39406,14 +39402,14 @@ namespace HeartopiaMod
                 {
                     if (this.TryActivateTriggerByName(candidate))
                     {
-                        MelonLogger.Msg($"[TreeFarm] Activated trigger '{candidate}'");
+                        ModLogger.Msg($"[TreeFarm] Activated trigger '{candidate}'");
                         return true;
                     }
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg($"[TreeFarm] Trigger scan error: {ex.Message}");
+                ModLogger.Msg($"[TreeFarm] Trigger scan error: {ex.Message}");
             }
 
             // Fallback: try the tracking panel interact button
@@ -39434,7 +39430,7 @@ namespace HeartopiaMod
                                 fullPath.Contains("/tracking_common@list/IconsBarWidget(Clone)/") &&
                                 fullPath.Contains("/CommonIconForInteract(Clone)/root_visible@go/icon@img@btn"))
                             {
-                                MelonLogger.Msg("[TreeFarm] Found interact button in tracking panel, clicking");
+                                ModLogger.Msg("[TreeFarm] Found interact button in tracking panel, clicking");
                                 btn.onClick.Invoke();
                                 return true;
                             }
@@ -39444,25 +39440,25 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg($"[TreeFarm] Error searching tracking panel: {ex.Message}");
+                ModLogger.Msg($"[TreeFarm] Error searching tracking panel: {ex.Message}");
             }
 
             // Try fixed path interact button
             if (this.ClickButtonIfExistsReturn(INTERACT_PROMPT_BUTTON_PATH))
             {
-                MelonLogger.Msg("[TreeFarm] Clicked interact button via path");
+                ModLogger.Msg("[TreeFarm] Clicked interact button via path");
                 return true;
             }
 
             // Try swing button
             if (this.ClickButtonIfExistsReturn("GameApp/startup_root(Clone)/XDUIRoot/Bottom/TrackingPanel(Clone)/tracking_bar@w/tracking_sand_swing@go@w/root_visible@go/swing@btn"))
             {
-                MelonLogger.Msg("[TreeFarm] Clicked swing button for interaction");
+                ModLogger.Msg("[TreeFarm] Clicked swing button for interaction");
                 return true;
             }
 
             // Last resort: send the F key simulation
-            MelonLogger.Msg("[TreeFarm] No UI trigger found, sending F key");
+            ModLogger.Msg("[TreeFarm] No UI trigger found, sending F key");
             this.SendFMessage();
             return true;
         }
@@ -39472,7 +39468,7 @@ namespace HeartopiaMod
             // Use EventSystem.current; if none exists, we cannot simulate UI clicks safely
             if (EventSystem.current == null)
             {
-                MelonLogger.Msg("[Trigger] EventSystem.current is null; cannot activate UI triggers.");
+                ModLogger.Msg("[Trigger] EventSystem.current is null; cannot activate UI triggers.");
                 return false;
             }
 
@@ -39486,7 +39482,7 @@ namespace HeartopiaMod
                     if (obj.name == null) continue;
                     if (!obj.name.Contains(partialName)) continue;
 
-                    MelonLogger.Msg($"[Trigger] Found object matching '{partialName}': {obj.name} - attempting activation");
+                    ModLogger.Msg($"[Trigger] Found object matching '{partialName}': {obj.name} - attempting activation");
 
                     // If object has a Button component, invoke it directly
                     Button btn = obj.GetComponent<Button>();
@@ -39510,7 +39506,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg($"[Trigger] Error activating '{partialName}': {ex.Message}");
+                ModLogger.Msg($"[Trigger] Error activating '{partialName}': {ex.Message}");
             }
             return false;
         }
@@ -39535,7 +39531,7 @@ namespace HeartopiaMod
                     string n = obj.name.ToLowerInvariant();
                     if (!(n.Contains("main_joy@go@w") || n.Contains("skill_main_hold@go@w") || n.Contains("gatherselectwidget"))) continue;
 
-                    MelonLogger.Msg($"[TreeFarm] PerformAutoSwing found trigger object: {obj.name}");
+                    ModLogger.Msg($"[TreeFarm] PerformAutoSwing found trigger object: {obj.name}");
 
                     Button btn = obj.GetComponent<Button>();
                     if (btn == null) btn = obj.GetComponentInParent<Button>();
@@ -39561,17 +39557,17 @@ namespace HeartopiaMod
                 // Try swing button path
                 if (this.ClickButtonIfExistsReturn(this.swingButtonPath))
                 {
-                    MelonLogger.Msg("[TreeFarm] Performed fallback swing by clicking swing button");
+                    ModLogger.Msg("[TreeFarm] Performed fallback swing by clicking swing button");
                     return true;
                 }
                 // Last resort: send F
-                MelonLogger.Msg("[TreeFarm] No UI trigger - sending F key as fallback");
+                ModLogger.Msg("[TreeFarm] No UI trigger - sending F key as fallback");
                 this.SendFMessage();
                 return true;
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[TreeFarm] PerformAutoSwing error: " + ex.Message);
+                ModLogger.Msg("[TreeFarm] PerformAutoSwing error: " + ex.Message);
             }
             return false;
         }
@@ -41026,7 +41022,7 @@ namespace HeartopiaMod
             }
 
             bestHideUntil[bestIndex] = hideUntil;
-            MelonLogger.Msg($"[AutoFarm] Visit fallback cooldown stamped: {bestLabel} #{bestIndex} ({Math.Max(1f, bestDuration):F1}s)");
+            ModLogger.Msg($"[AutoFarm] Visit fallback cooldown stamped: {bestLabel} #{bestIndex} ({Math.Max(1f, bestDuration):F1}s)");
             if (this.isRadarActive)
             {
                 this.RunRadar();
@@ -41238,7 +41234,7 @@ namespace HeartopiaMod
                 this.bubbleRadarHasLastScanOrigin = false;
                 this.RunRadar();
             }
-            MelonLogger.Msg(this.isRadarActive ? "Radar Active" : "Radar Cleaned Up");
+            ModLogger.Msg(this.isRadarActive ? "Radar Active" : "Radar Cleaned Up");
         }
 
         private bool AnyRadarLootToggleEnabled()
@@ -41394,7 +41390,7 @@ namespace HeartopiaMod
             {
                 this.isRadarActive = false;
                 this.Cleanup();
-                MelonLogger.Msg("Radar Auto-Disabled");
+                ModLogger.Msg("Radar Auto-Disabled");
             }
             bool flag4 = !this.autoFarmActive;
             if (flag4)
@@ -41425,7 +41421,7 @@ namespace HeartopiaMod
                 this.SetAuraFarmEnabled(false);
             }
 
-            MelonLogger.Msg("Auto Collect " + (this.autoFarmEnabled ? "Enabled" : "Disabled"));
+            ModLogger.Msg("Auto Collect " + (this.autoFarmEnabled ? "Enabled" : "Disabled"));
             if (notify)
             {
                 this.AddMenuNotification($"Auto Collect {(this.autoFarmEnabled ? "enabled" : "disabled")}", this.autoFarmEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
@@ -41501,7 +41497,7 @@ namespace HeartopiaMod
                     this.autoFarmAutoStopAt = -1f;
                 }
 
-                MelonLogger.Msg("[AUTO FARM] Enabled");
+                ModLogger.Msg("[AUTO FARM] Enabled");
             }
             else
             {
@@ -41516,7 +41512,7 @@ namespace HeartopiaMod
                 this.lastTeleportWasPriorityLocation = false;
                 this.autoFarmAutoStopAt = -1f;
                 this.AutoFarmLog("Stopped. reason=manual-toggle");
-                MelonLogger.Msg("[AUTO FARM] Disabled");
+                ModLogger.Msg("[AUTO FARM] Disabled");
             }
         }
 
@@ -42065,7 +42061,7 @@ namespace HeartopiaMod
                                 }
                                 catch (System.Exception ex)
                                 {
-                                    MelonLogger.Msg($"Error processing item {num6}: {ex.Message}");
+                                    ModLogger.Msg($"Error processing item {num6}: {ex.Message}");
                                 }
                             }
                         }
@@ -42297,7 +42293,7 @@ namespace HeartopiaMod
             if (text2 == "Mushroom" && text.Contains("dynamicbush") && !this.loggedUnknownForageMeshNames.Contains(meshName))
             {
                 this.loggedUnknownForageMeshNames.Add(meshName);
-                MelonLogger.Msg("[RadarDebug] Unmapped forage mesh: " + meshName);
+                ModLogger.Msg("[RadarDebug] Unmapped forage mesh: " + meshName);
             }
             string canonicalLabel = text2;
             string specificIconKey = string.Empty;
@@ -43326,14 +43322,14 @@ namespace HeartopiaMod
             bool flag = gameObject == null;
             if (flag)
             {
-                MelonLogger.Msg("Player not found!");
+                ModLogger.Msg("Player not found!");
             }
             else
             {
                 this.homePosition = gameObject.transform.position;
                 this.homePositionSet = true;
                 this.autoHomeStatus = "Manual home saved";
-                MelonLogger.Msg($"[HOME] Home position set to: {this.homePosition}");
+                ModLogger.Msg($"[HOME] Home position set to: {this.homePosition}");
             }
         }
 
@@ -43348,17 +43344,17 @@ namespace HeartopiaMod
             {
                 this.TeleportToLocation(this.autoHomePosition);
                 this.autoHomeStatus = "Home Ready";
-                MelonLogger.Msg($"[HOME] Teleported to auto home [{this.autoHomeNetId}]: {this.autoHomePosition}");
+                ModLogger.Msg($"[HOME] Teleported to auto home [{this.autoHomeNetId}]: {this.autoHomePosition}");
             }
             else if (this.homePositionSet)
             {
                 this.TeleportToLocation(this.homePosition);
                 this.autoHomeStatus = "Teleported to manual home";
-                MelonLogger.Msg($"[HOME] Teleported to home: {this.homePosition}");
+                ModLogger.Msg($"[HOME] Teleported to home: {this.homePosition}");
             }
             else
             {
-                MelonLogger.Msg("[HOME] Home position not set!");
+                ModLogger.Msg("[HOME] Home position not set!");
                 this.autoHomeStatus = "Auto home unavailable";
             }
         }
@@ -43371,7 +43367,7 @@ namespace HeartopiaMod
             bool flag = gameObject == null || gameObject2 == null;
             if (flag)
             {
-                MelonLogger.Msg("[CAMERA] Failed to rotate - player or camera not found");
+                ModLogger.Msg("[CAMERA] Failed to rotate - player or camera not found");
             }
             else
             {
@@ -44720,7 +44716,7 @@ namespace HeartopiaMod
                 return;
             }
             this.nextNpcTeleportDebugLogTime = Time.unscaledTime + 3f;
-            MelonLogger.Msg("[NpcTeleport] " + message);
+            ModLogger.Msg("[NpcTeleport] " + message);
         }
 
         private bool TryGetNpcNetIdViaClientService(int npcId, out uint netId)
@@ -45890,7 +45886,7 @@ namespace HeartopiaMod
             bool flag = gameObject == null;
             if (flag)
             {
-                MelonLogger.Msg("Player not found!");
+                ModLogger.Msg("Player not found!");
             }
             else
             {
@@ -45919,7 +45915,7 @@ namespace HeartopiaMod
             bool flag = gameObject == null;
             if (flag)
             {
-                MelonLogger.Msg("Player not found!");
+                ModLogger.Msg("Player not found!");
             }
             else
             {
@@ -45953,11 +45949,11 @@ namespace HeartopiaMod
             bool flag = gameObject == null;
             if (flag)
             {
-                MelonLogger.Msg("Player not found!");
+                ModLogger.Msg("Player not found!");
             }
             else
             {
-                MelonLogger.Msg("=== PLAYER COMPONENTS (Il2Cpp) ===");
+                ModLogger.Msg("=== PLAYER COMPONENTS (Il2Cpp) ===");
                 Component[] array = gameObject.GetComponents<Component>();
                 foreach (Component component in array)
                 {
@@ -45967,30 +45963,30 @@ namespace HeartopiaMod
                         try
                         {
                             string fullName = component.GetType().FullName;
-                            MelonLogger.Msg("GetType().FullName: " + fullName);
+                            ModLogger.Msg("GetType().FullName: " + fullName);
                             Il2CppType il2CppType = component.GetIl2CppType();
                             bool flag3 = il2CppType != null;
                             if (flag3)
                             {
-                                MelonLogger.Msg("Il2CppType.Name: " + il2CppType.Name);
-                                MelonLogger.Msg("Il2CppType.FullName: " + il2CppType.FullName);
+                                ModLogger.Msg("Il2CppType.Name: " + il2CppType.Name);
+                                ModLogger.Msg("Il2CppType.FullName: " + il2CppType.FullName);
                             }
                             Type baseType = component.GetType().BaseType;
                             bool flag4 = baseType != null;
                             if (flag4)
                             {
-                                MelonLogger.Msg("BaseType: " + baseType.FullName);
+                                ModLogger.Msg("BaseType: " + baseType.FullName);
                             }
-                            MelonLogger.Msg("comp.name: " + component.name);
-                            MelonLogger.Msg("---");
+                            ModLogger.Msg("comp.name: " + component.name);
+                            ModLogger.Msg("---");
                         }
                         catch (Exception ex)
                         {
-                            MelonLogger.Msg("Error inspecting component: " + ex.Message);
+                            ModLogger.Msg("Error inspecting component: " + ex.Message);
                         }
                     }
                 }
-                MelonLogger.Msg("=== END ===");
+                ModLogger.Msg("=== END ===");
             }
         }
 
@@ -45999,7 +45995,7 @@ namespace HeartopiaMod
         {
             if (patrolPoints.Count == 0) return;
             isPatrolActive = true;
-            patrolCoroutine = MelonCoroutines.Start(PatrolRoutine());
+            patrolCoroutine = ModCoroutines.Start(PatrolRoutine());
         }
 
         private System.Collections.IEnumerator PatrolRoutine()
@@ -46531,7 +46527,7 @@ namespace HeartopiaMod
                 }
                 catch (Exception ex)
                 {
-                    MelonLogger.Msg("[AutoSnow] Error: " + ex.Message);
+                    ModLogger.Msg("[AutoSnow] Error: " + ex.Message);
                 }
             }
         }
@@ -46566,7 +46562,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[AutoSnow] Widget click error: " + ex.Message);
+                ModLogger.Msg("[AutoSnow] Widget click error: " + ex.Message);
             }
         }
 
@@ -46584,7 +46580,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[SculptRapid] Error: " + ex.Message);
+                ModLogger.Msg("[SculptRapid] Error: " + ex.Message);
             }
         }
 
@@ -46656,7 +46652,7 @@ namespace HeartopiaMod
         {
             if (this.autoBuyLogsEnabled)
             {
-                MelonLogger.Msg("[AutoBuy] " + message);
+                ModLogger.Msg("[AutoBuy] " + message);
             }
         }
 
@@ -47267,7 +47263,7 @@ namespace HeartopiaMod
                             !trName.Contains("CommonIconForCookDangerDialog") && !trName.Contains("CommonIconForRecycleDialog")) continue;
                         // find a Button or Image child to click
                         var btn = tr.GetComponentInChildren<Button>(true);
-                        if (btn != null && btn.interactable) { btn.onClick.Invoke(); if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Clicked preferred icon '{trName}'"); }
+                        if (btn != null && btn.interactable) { btn.onClick.Invoke(); if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Clicked preferred icon '{trName}'"); }
                             // verify dialogue opened
                             var dlg = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Scene/DialoguePanel(Clone)");
                             if (dlg != null && dlg.activeInHierarchy) return true;
@@ -47275,8 +47271,8 @@ namespace HeartopiaMod
                         var img = tr.GetComponentInChildren<Image>(true);
                         if (img != null)
                         {
-                            if (img.GetComponentInParent<Button>() is Button b && b.interactable) { b.onClick.Invoke(); if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Clicked preferred image button '{trName}'"); } var dlg2 = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Scene/DialoguePanel(Clone)"); if (dlg2 != null && dlg2.activeInHierarchy) return true; }
-                            if (SimulateClick(img.gameObject)) { if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] SimClicked preferred image '{trName}'"); } var dlg3 = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Scene/DialoguePanel(Clone)"); if (dlg3 != null && dlg3.activeInHierarchy) return true; }
+                            if (img.GetComponentInParent<Button>() is Button b && b.interactable) { b.onClick.Invoke(); if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Clicked preferred image button '{trName}'"); } var dlg2 = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Scene/DialoguePanel(Clone)"); if (dlg2 != null && dlg2.activeInHierarchy) return true; }
+                            if (SimulateClick(img.gameObject)) { if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] SimClicked preferred image '{trName}'"); } var dlg3 = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Scene/DialoguePanel(Clone)"); if (dlg3 != null && dlg3.activeInHierarchy) return true; }
                         }
                     }
                     catch { }
@@ -47316,8 +47312,8 @@ namespace HeartopiaMod
                                 {
                                     // likely the bubble icon above this NPC
                                     var btn = im.GetComponentInParent<Button>();
-                                    if (btn != null && btn.interactable) { btn.onClick.Invoke(); if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Clicked nearby UI '{im.name}' near name '{txt}'"); } return true; }
-                                    if (SimulateClick(im.gameObject)) { if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] SimClicked nearby UI '{im.name}' near name '{txt}'"); } return true; }
+                                    if (btn != null && btn.interactable) { btn.onClick.Invoke(); if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Clicked nearby UI '{im.name}' near name '{txt}'"); } return true; }
+                                    if (SimulateClick(im.gameObject)) { if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] SimClicked nearby UI '{im.name}' near name '{txt}'"); } return true; }
                                 }
                             }
                         }
@@ -47360,8 +47356,8 @@ namespace HeartopiaMod
                     if (titleTxt != null && titleTxt.text != null && titleTxt.text.ToLowerInvariant().Contains(lower))
                     {
                         var btn = cell.GetComponentInChildren<Button>(true);
-                        if (btn != null && btn.interactable) { btn.onClick.Invoke(); if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Selected dialog option \"{titleTxt.text}\""); } return true; }
-                        if (SimulateClick(cell.gameObject)) { if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] SimClicked dialog option \"{titleTxt.text}\""); } return true; }
+                        if (btn != null && btn.interactable) { btn.onClick.Invoke(); if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Selected dialog option \"{titleTxt.text}\""); } return true; }
+                        if (SimulateClick(cell.gameObject)) { if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] SimClicked dialog option \"{titleTxt.text}\""); } return true; }
                     }
                 }
             }
@@ -47563,7 +47559,7 @@ namespace HeartopiaMod
                         // "4(Clone)" = theme coin (star - skip)
                         // "2(Clone)" = diamond (skip)
                         bool isGold = spriteName.StartsWith("1");
-                        if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Currency sprite: {spriteName}, isGold={isGold}"); }
+                        if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Currency sprite: {spriteName}, isGold={isGold}"); }
                         return isGold;
                     }
                     else
@@ -47580,7 +47576,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] IsGoldCurrencyItem error: {ex.Message}"); }
+                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] IsGoldCurrencyItem error: {ex.Message}"); }
             }
             // Default to true (allow) if we can't determine currency type
             return true;
@@ -47627,15 +47623,15 @@ namespace HeartopiaMod
                     // Only click if this is a gold currency item (not star currency)
                     if (!IsGoldCurrencyItem(gw))
                     {
-                        if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Skipping {txtVal} - not gold currency (star/diamond item)"); }
+                        if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Skipping {txtVal} - not gold currency (star/diamond item)"); }
                         continue;
                     }
                     Transform card = gw.Find("AniRoot@ani/card@btn") ?? gw.Find("card@btn");
                     if (card != null)
                     {
                         var b = card.GetComponent<Button>() ?? card.GetComponentInChildren<Button>(true);
-                        if (b != null && b.interactable) { b.onClick.Invoke(); if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Clicked item {txtVal}"); } return true; }
-                        if (SimulateClick(card.gameObject)) { if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] SimClicked item {txtVal}"); } return true; }
+                        if (b != null && b.interactable) { b.onClick.Invoke(); if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Clicked item {txtVal}"); } return true; }
+                        if (SimulateClick(card.gameObject)) { if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] SimClicked item {txtVal}"); } return true; }
                     }
                 }
             }
@@ -48018,7 +48014,7 @@ namespace HeartopiaMod
                             // go to purchase dialog handling substate
                             this.autoBuySubState = 41; // purchase dialog
                             this.autoBuyStepTimer = now + 0.12f;
-                            if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Opened purchase dialog for {match}"); }
+                            if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Opened purchase dialog for {match}"); }
                         }
                         else
                         {
@@ -48028,7 +48024,7 @@ namespace HeartopiaMod
                             if (shopProbe != null && contentProbe != null && contentProbe.childCount == 0)
                             {
                                 // shop present but not populated yet - retry this ingredient shortly
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Shop content empty for item {match}, retrying shortly"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Shop content empty for item {match}, retrying shortly"); }
                                 this.autoBuyStepTimer = now + 0.25f;
                             }
                             else if (this.autoBuyShopScrollStep >= 0 && this.autoBuyShopScrollStep < 12)
@@ -48038,7 +48034,7 @@ namespace HeartopiaMod
                             else
                             {
                                 // truly not found or sold out; move to next
-                                this.autoBuyPurchasedCount = 0; this.autoBuyCurrentIngredientIndex++; this.autoBuyShopScrollStep = -1; this.autoBuyStepTimer = now + 0.2f; if (this.autoBuyLogsEnabled) { MelonLogger.Msg("[AutoBuy] Item " + match + " not found or sold out, skipping"); }
+                                this.autoBuyPurchasedCount = 0; this.autoBuyCurrentIngredientIndex++; this.autoBuyShopScrollStep = -1; this.autoBuyStepTimer = now + 0.2f; if (this.autoBuyLogsEnabled) { ModLogger.Msg("[AutoBuy] Item " + match + " not found or sold out, skipping"); }
                             }
                         }
                         break;
@@ -48066,7 +48062,7 @@ namespace HeartopiaMod
                             if (ClickSalePurchase(sale))
                             {
                                 this.autoBuyPurchasedCount = currentCount;
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Purchased {currentCount} items (target: {effectiveMax})"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Purchased {currentCount} items (target: {effectiveMax})"); }
                             }
                             // after purchase, proceed to next ingredient
                             this.autoBuyPurchasedCount = 0; this.autoBuyCurrentIngredientIndex++; this.autoBuyShopScrollStep = -1; this.autoBuySubState = 4; this.autoBuyStepTimer = now + 0.25f;
@@ -48090,7 +48086,7 @@ namespace HeartopiaMod
                             if (currentCount > 0 && ClickSalePurchase(sale))
                             {
                                 this.autoBuyPurchasedCount = currentCount;
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[AutoBuy] Purchased {currentCount} items (shop stock limited, target was {effectiveMax})"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[AutoBuy] Purchased {currentCount} items (shop stock limited, target was {effectiveMax})"); }
                             }
                             else
                             {
@@ -48289,7 +48285,7 @@ namespace HeartopiaMod
                             this.autoBuyBirdShopScrollStep = -1;
                             this.autoBuyBirdSubState = 41;
                             this.autoBuyBirdStepTimer = now + 0.12f;
-                            if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Birdwatching] Opened purchase dialog for {match}"); }
+                            if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Birdwatching] Opened purchase dialog for {match}"); }
                         }
                         else
                         {
@@ -48297,7 +48293,7 @@ namespace HeartopiaMod
                             Transform contentProbe = shopProbe != null ? shopProbe.transform.Find("goods@scroll/Content") : null;
                             if (shopProbe != null && contentProbe != null && contentProbe.childCount == 0)
                             {
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Birdwatching] Shop content empty for item {match}, retrying shortly"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Birdwatching] Shop content empty for item {match}, retrying shortly"); }
                                 this.autoBuyBirdStepTimer = now + 0.25f;
                             }
                             else if (this.autoBuyBirdShopScrollStep >= 0 && this.autoBuyBirdShopScrollStep < 12)
@@ -48307,7 +48303,7 @@ namespace HeartopiaMod
                             else
                             {
                                 this.autoBuyBirdPurchasedCount = 0; this.autoBuyBirdCurrentItemIndex++; this.autoBuyBirdShopScrollStep = -1; this.autoBuyBirdStepTimer = now + 0.2f;
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg("[Birdwatching] Item " + match + " not found or sold out, skipping"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg("[Birdwatching] Item " + match + " not found or sold out, skipping"); }
                             }
                         }
                         break;
@@ -48329,7 +48325,7 @@ namespace HeartopiaMod
                             if (ClickSalePurchase(sale))
                             {
                                 this.autoBuyBirdPurchasedCount = currentCount;
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Birdwatching] Purchased {currentCount} items (target: {effectiveMax})"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Birdwatching] Purchased {currentCount} items (target: {effectiveMax})"); }
                             }
                             this.autoBuyBirdPurchasedCount = 0; this.autoBuyBirdCurrentItemIndex++; this.autoBuyBirdShopScrollStep = -1; this.autoBuyBirdSubState = 4; this.autoBuyBirdStepTimer = now + 0.25f;
                             break;
@@ -48348,7 +48344,7 @@ namespace HeartopiaMod
                             if (currentCount > 0 && ClickSalePurchase(sale))
                             {
                                 this.autoBuyBirdPurchasedCount = currentCount;
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Birdwatching] Purchased {currentCount} items (shop stock limited, target was {effectiveMax})"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Birdwatching] Purchased {currentCount} items (shop stock limited, target was {effectiveMax})"); }
                             }
                             else
                             {
@@ -48545,7 +48541,7 @@ namespace HeartopiaMod
                             this.autoBuyGardenShopScrollStep = -1;
                             this.autoBuyGardenSubState = 41;
                             this.autoBuyGardenStepTimer = now + 0.12f;
-                            if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Garden] Opened purchase dialog for {match}"); }
+                            if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Garden] Opened purchase dialog for {match}"); }
                         }
                         else
                         {
@@ -48553,7 +48549,7 @@ namespace HeartopiaMod
                             Transform contentProbe = shopProbe != null ? shopProbe.transform.Find("goods@scroll/Content") : null;
                             if (shopProbe != null && contentProbe != null && contentProbe.childCount == 0)
                             {
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Garden] Shop content empty for item {match}, retrying shortly"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Garden] Shop content empty for item {match}, retrying shortly"); }
                                 this.autoBuyGardenStepTimer = now + 0.25f;
                             }
                             else if (this.autoBuyGardenShopScrollStep >= 0 && this.autoBuyGardenShopScrollStep < 12)
@@ -48563,7 +48559,7 @@ namespace HeartopiaMod
                             else
                             {
                                 this.autoBuyGardenPurchasedCount = 0; this.autoBuyGardenCurrentItemIndex++; this.autoBuyGardenShopScrollStep = -1; this.autoBuyGardenStepTimer = now + 0.2f;
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg("[Garden] Item " + match + " not found or sold out, skipping"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg("[Garden] Item " + match + " not found or sold out, skipping"); }
                             }
                         }
                         break;
@@ -48585,7 +48581,7 @@ namespace HeartopiaMod
                             if (ClickSalePurchase(sale))
                             {
                                 this.autoBuyGardenPurchasedCount = currentCount;
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Garden] Purchased {currentCount} items (target: {effectiveMax})"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Garden] Purchased {currentCount} items (target: {effectiveMax})"); }
                             }
                             this.autoBuyGardenPurchasedCount = 0; this.autoBuyGardenCurrentItemIndex++; this.autoBuyGardenShopScrollStep = -1; this.autoBuyGardenSubState = 4; this.autoBuyGardenStepTimer = now + 0.25f;
                             break;
@@ -48604,7 +48600,7 @@ namespace HeartopiaMod
                             if (currentCount > 0 && ClickSalePurchase(sale))
                             {
                                 this.autoBuyGardenPurchasedCount = currentCount;
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Garden] Purchased {currentCount} items (shop stock limited, target was {effectiveMax})"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Garden] Purchased {currentCount} items (shop stock limited, target was {effectiveMax})"); }
                             }
                             else
                             {
@@ -48801,7 +48797,7 @@ namespace HeartopiaMod
                             this.autoBuyFishingShopScrollStep = -1;
                             this.autoBuyFishingSubState = 41;
                             this.autoBuyFishingStepTimer = now + 0.12f;
-                            if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Fishing] Opened purchase dialog for {match}"); }
+                            if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Fishing] Opened purchase dialog for {match}"); }
                         }
                         else
                         {
@@ -48809,7 +48805,7 @@ namespace HeartopiaMod
                             Transform contentProbe = shopProbe != null ? shopProbe.transform.Find("goods@scroll/Content") : null;
                             if (shopProbe != null && contentProbe != null && contentProbe.childCount == 0)
                             {
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Fishing] Shop content empty for item {match}, retrying shortly"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Fishing] Shop content empty for item {match}, retrying shortly"); }
                                 this.autoBuyFishingStepTimer = now + 0.25f;
                             }
                             else if (this.autoBuyFishingShopScrollStep >= 0 && this.autoBuyFishingShopScrollStep < 12)
@@ -48818,7 +48814,7 @@ namespace HeartopiaMod
                             }
                             else
                             {
-                                this.autoBuyFishingPurchasedCount = 0; this.autoBuyFishingCurrentItemIndex++; this.autoBuyFishingShopScrollStep = -1; this.autoBuyFishingStepTimer = now + 0.2f; if (this.autoBuyLogsEnabled) { MelonLogger.Msg("[Fishing] Item " + match + " not found or sold out, skipping"); }
+                                this.autoBuyFishingPurchasedCount = 0; this.autoBuyFishingCurrentItemIndex++; this.autoBuyFishingShopScrollStep = -1; this.autoBuyFishingStepTimer = now + 0.2f; if (this.autoBuyLogsEnabled) { ModLogger.Msg("[Fishing] Item " + match + " not found or sold out, skipping"); }
                             }
                         }
                         break;
@@ -48839,7 +48835,7 @@ namespace HeartopiaMod
                             if (ClickSalePurchase(sale))
                             {
                                 this.autoBuyFishingPurchasedCount = currentCount;
-                                if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Fishing] Purchased {currentCount} items"); }
+                                if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Fishing] Purchased {currentCount} items"); }
                             }
                             this.autoBuyFishingPurchasedCount = 0; this.autoBuyFishingCurrentItemIndex++; this.autoBuyFishingShopScrollStep = -1; this.autoBuyFishingSubState = 4; this.autoBuyFishingStepTimer = now + 0.25f;
                         }
@@ -48858,7 +48854,7 @@ namespace HeartopiaMod
                                 if (currentCount > 0 && ClickSalePurchase(sale))
                                 {
                                     this.autoBuyFishingPurchasedCount = currentCount;
-                                    if (this.autoBuyLogsEnabled) { MelonLogger.Msg($"[Fishing] Purchased {currentCount} items (shop stock limited)"); }
+                                    if (this.autoBuyLogsEnabled) { ModLogger.Msg($"[Fishing] Purchased {currentCount} items (shop stock limited)"); }
                                 }
                                 else
                                 {
@@ -48891,11 +48887,11 @@ namespace HeartopiaMod
                 UnifiedConfigData config = this.LoadOrCreateUnifiedConfig();
                 this.PopulateAllConfigSections(config);
                 this.SaveUnifiedConfig(config);
-                MelonLogger.Msg("Patrol points saved!");
+                ModLogger.Msg("Patrol points saved!");
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error saving patrol points: " + ex.Message);
+                ModLogger.Msg("Error saving patrol points: " + ex.Message);
             }
         }
 
@@ -48911,7 +48907,7 @@ namespace HeartopiaMod
                     {
                         if (point != null) patrolPoints.Add(point.ToVector3());
                     }
-                    MelonLogger.Msg($"Loaded {patrolPoints.Count} patrol points.");
+                    ModLogger.Msg($"Loaded {patrolPoints.Count} patrol points.");
                     return;
                 }
                 string path = this.GetPatrolPath();
@@ -48929,11 +48925,11 @@ namespace HeartopiaMod
                         patrolPoints.Add(new Vector3(x, y, z));
                     }
                 }
-                MelonLogger.Msg($"Loaded {patrolPoints.Count} patrol points.");
+                ModLogger.Msg($"Loaded {patrolPoints.Count} patrol points.");
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error loading patrol points: " + ex.Message);
+                ModLogger.Msg("Error loading patrol points: " + ex.Message);
             }
         }
 
@@ -49030,7 +49026,7 @@ namespace HeartopiaMod
                         return false;
                     }
                     this.SaveUnifiedConfig(config);
-                    MelonLogger.Msg($"Deleted cooking patrol save '{safeName}'.");
+                    ModLogger.Msg($"Deleted cooking patrol save '{safeName}'.");
                     this.AddMenuNotification($"Deleted: {safeName}", new Color(1f, 0.75f, 0.45f));
                     return true;
                 }
@@ -49041,13 +49037,13 @@ namespace HeartopiaMod
                     return false;
                 }
                 File.Delete(path);
-                MelonLogger.Msg($"Deleted cooking patrol save '{safeName}'.");
+                ModLogger.Msg($"Deleted cooking patrol save '{safeName}'.");
                 this.AddMenuNotification($"Deleted: {safeName}", new Color(1f, 0.75f, 0.45f));
                 return true;
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error deleting cooking patrol save: " + ex.Message);
+                ModLogger.Msg("Error deleting cooking patrol save: " + ex.Message);
                 this.AddMenuNotification("Failed to delete patrol save", new Color(1f, 0.4f, 0.4f));
                 return false;
             }
@@ -49072,12 +49068,12 @@ namespace HeartopiaMod
                 UnifiedConfigData config = this.LoadOrCreateUnifiedConfig();
                 this.PopulateAllConfigSections(config);
                 this.SaveUnifiedConfig(config);
-                MelonLogger.Msg($"Cooking patrol points saved to '{safeName}'! ({cookingPatrolPoints.Count} points with rotations)");
+                ModLogger.Msg($"Cooking patrol points saved to '{safeName}'! ({cookingPatrolPoints.Count} points with rotations)");
                 this.AddMenuNotification($"Cooking patrol saved: {safeName}", new Color(0.55f, 0.88f, 1f));
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error saving cooking patrol points: " + ex.Message);
+                ModLogger.Msg("Error saving cooking patrol points: " + ex.Message);
                 this.AddMenuNotification("Failed to save cooking patrol", new Color(1f, 0.4f, 0.4f));
             }
         }
@@ -49099,7 +49095,7 @@ namespace HeartopiaMod
                     NamedCookingPatrolSave save = config.CookingPatrolSaves.FirstOrDefault(s => string.Equals(this.SanitizeCookingPatrolSaveName(s?.Name), safeName, StringComparison.OrdinalIgnoreCase));
                     if (save == null)
                     {
-                        MelonLogger.Msg($"Cooking patrol slot '{safeName}' not found.");
+                        ModLogger.Msg($"Cooking patrol slot '{safeName}' not found.");
                         this.AddMenuNotification($"Patrol save not found: {safeName}", new Color(1f, 0.5f, 0.5f));
                         return;
                     }
@@ -49108,14 +49104,14 @@ namespace HeartopiaMod
                     {
                         if (point != null) cookingPatrolPoints.Add(point);
                     }
-                    MelonLogger.Msg($"Loaded {cookingPatrolPoints.Count} cooking patrol points from '{safeName}' (with rotations: true).");
+                    ModLogger.Msg($"Loaded {cookingPatrolPoints.Count} cooking patrol points from '{safeName}' (with rotations: true).");
                     this.AddMenuNotification($"Cooking patrol loaded: {safeName}", new Color(0.55f, 0.88f, 1f));
                     return;
                 }
                 string path = this.GetCookingPatrolPath(safeName);
                 if (!File.Exists(path))
                 {
-                    MelonLogger.Msg($"Cooking patrol slot '{safeName}' not found.");
+                    ModLogger.Msg($"Cooking patrol slot '{safeName}' not found.");
                     this.AddMenuNotification($"Patrol save not found: {safeName}", new Color(1f, 0.5f, 0.5f));
                     return;
                 }
@@ -49189,12 +49185,12 @@ namespace HeartopiaMod
                         cookingPatrolPoints.Add(new CookingPatrolPoint(new Vector3(x, y, z), Quaternion.identity));
                     }
                 }
-                MelonLogger.Msg($"Loaded {cookingPatrolPoints.Count} cooking patrol points from '{safeName}' (with rotations: {hasRotation}).");
+                ModLogger.Msg($"Loaded {cookingPatrolPoints.Count} cooking patrol points from '{safeName}' (with rotations: {hasRotation}).");
                 this.AddMenuNotification($"Cooking patrol loaded: {safeName}", new Color(0.55f, 0.88f, 1f));
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error loading cooking patrol points: " + ex.Message);
+                ModLogger.Msg("Error loading cooking patrol points: " + ex.Message);
                 this.AddMenuNotification("Failed to load cooking patrol", new Color(1f, 0.4f, 0.4f));
             }
         }
@@ -49206,12 +49202,12 @@ namespace HeartopiaMod
                 UnifiedConfigData config = this.LoadOrCreateUnifiedConfig();
                 this.PopulateAllConfigSections(config);
                 this.SaveUnifiedConfig(config);
-                MelonLogger.Msg($"Tree farm patrol points saved! ({treeFarmPoints.Count} points with rotations)");
+                ModLogger.Msg($"Tree farm patrol points saved! ({treeFarmPoints.Count} points with rotations)");
                 this.AddMenuNotification($"Tree farm points saved ({treeFarmPoints.Count})", new Color(0.55f, 0.88f, 1f));
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error saving tree farm patrol points: " + ex.Message);
+                ModLogger.Msg("Error saving tree farm patrol points: " + ex.Message);
                 this.AddMenuNotification("Failed to save tree farm points", new Color(1f, 0.4f, 0.4f));
             }
         }
@@ -49228,13 +49224,13 @@ namespace HeartopiaMod
                     {
                         if (point != null) treeFarmPoints.Add(point);
                     }
-                    MelonLogger.Msg($"Loaded {treeFarmPoints.Count} tree farm patrol points (with rotations: true).");
+                    ModLogger.Msg($"Loaded {treeFarmPoints.Count} tree farm patrol points (with rotations: true).");
                     return;
                 }
                 string path = this.GetTreeFarmPatrolPath();
                 if (!File.Exists(path))
                 {
-                    MelonLogger.Msg("Tree farm patrol points file not found.");
+                    ModLogger.Msg("Tree farm patrol points file not found.");
                     this.AddMenuNotification("No saved tree farm points found", new Color(1f, 0.55f, 0.55f));
                     return;
                 }
@@ -49308,12 +49304,12 @@ namespace HeartopiaMod
                         treeFarmPoints.Add(new TreeFarmPatrolPoint(new Vector3(x, y, z), Quaternion.identity));
                     }
                 }
-                MelonLogger.Msg($"Loaded {treeFarmPoints.Count} tree farm patrol points (with rotations: {hasRotation}).");
+                ModLogger.Msg($"Loaded {treeFarmPoints.Count} tree farm patrol points (with rotations: {hasRotation}).");
                 this.AddMenuNotification($"Tree farm points loaded ({treeFarmPoints.Count})", new Color(0.45f, 1f, 0.55f));
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error loading tree farm patrol points: " + ex.Message);
+                ModLogger.Msg("Error loading tree farm patrol points: " + ex.Message);
                 this.AddMenuNotification("Failed to load tree farm points", new Color(1f, 0.4f, 0.4f));
             }
         }
@@ -50131,7 +50127,7 @@ namespace HeartopiaMod
         {
             if (AutoSellLogsEnabled)
             {
-                MelonLogger.Msg("[AutoSell] " + message);
+                ModLogger.Msg("[AutoSell] " + message);
             }
         }
 
@@ -53288,7 +53284,7 @@ namespace HeartopiaMod
                             }
                             catch (Exception texEx)
                             {
-                                MelonLogger.Msg($"[BagScan] Failed to copy texture for {spriteName}: {texEx.Message}");
+                                ModLogger.Msg($"[BagScan] Failed to copy texture for {spriteName}: {texEx.Message}");
                             }
                         }
                     }
@@ -54524,7 +54520,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg((logPrefix ?? "[BagScan]") + " Failed to copy texture: " + ex.Message);
+                ModLogger.Msg((logPrefix ?? "[BagScan]") + " Failed to copy texture: " + ex.Message);
                 return null;
             }
         }
@@ -54699,7 +54695,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[IconCache] Failed to save item icon: " + ex.Message);
+                ModLogger.Msg("[IconCache] Failed to save item icon: " + ex.Message);
             }
         }
 
@@ -55068,7 +55064,7 @@ namespace HeartopiaMod
         {
             if (!HeartopiaComplete.slotCache.ContainsKey(this.selectedBulkItemID))
             {
-                MelonLogger.Msg("[BULK SELECTOR] No slots found for selected item!");
+                ModLogger.Msg("[BULK SELECTOR] No slots found for selected item!");
                 return;
             }
             
@@ -55091,7 +55087,7 @@ namespace HeartopiaMod
             }
             
             string displayName = this.selectedBulkItemID.Replace("ui_item_normal_p_", "").Replace("ui_item_normal_", "");
-            MelonLogger.Msg($"[BULK SELECTOR] Executed 200 clicks on {clickedSlots} slots for {displayName}");
+            ModLogger.Msg($"[BULK SELECTOR] Executed 200 clicks on {clickedSlots} slots for {displayName}");
         }
         
         // Token: 0x06000026D - Execute Bulk Sell
@@ -55102,7 +55098,7 @@ namespace HeartopiaMod
             
             if (sellButton == null || !sellButton.activeInHierarchy)
             {
-                MelonLogger.Msg("[BULK SELL] Sell panel not found or not active! Make sure sell panel is open.");
+                ModLogger.Msg("[BULK SELL] Sell panel not found or not active! Make sure sell panel is open.");
                 return;
             }
             
@@ -55112,7 +55108,7 @@ namespace HeartopiaMod
             ExecuteEvents.Execute(sellButton, pointerData, ExecuteEvents.pointerClickHandler);
             
             string displayName = this.selectedBulkItemID.Replace("ui_item_normal_p_", "").Replace("ui_item_normal_", "");
-            MelonLogger.Msg($"[BULK SELL] Clicked sell button for {displayName}");
+            ModLogger.Msg($"[BULK SELL] Clicked sell button for {displayName}");
         }
         
         // Token: 0x06000026E - Refresh Bulk Selector Cache
@@ -55153,7 +55149,7 @@ namespace HeartopiaMod
                 }
             }
             
-            MelonLogger.Msg($"[BULK SELECTOR] Cache refreshed! Found {foundItems} unique items from {HeartopiaComplete.discoveredItems.Count} total detections.");
+            ModLogger.Msg($"[BULK SELECTOR] Cache refreshed! Found {foundItems} unique items from {HeartopiaComplete.discoveredItems.Count} total detections.");
         }
 
         private float DrawSettingsTab(int startY)
@@ -56406,7 +56402,7 @@ namespace HeartopiaMod
                 if (p != null)
                 {
                     patrolPoints.Add(p.transform.position);
-                    MelonLogger.Msg("Added patrol point at current position.");
+                    ModLogger.Msg("Added patrol point at current position.");
                 }
             }
             num += 50;
@@ -56414,7 +56410,7 @@ namespace HeartopiaMod
             if (GUI.Button(new Rect(20f, (float)num, 260f, 35f), "CLEAR ALL"))
             {
                 patrolPoints.Clear();
-                MelonLogger.Msg("Cleared all patrol points.");
+                ModLogger.Msg("Cleared all patrol points.");
             }
             num += 45;
 
@@ -56431,10 +56427,10 @@ namespace HeartopiaMod
                     isPatrolActive = false;
                     if (patrolCoroutine != null)
                     {
-                        MelonCoroutines.Stop(patrolCoroutine);
+                        ModCoroutines.Stop(patrolCoroutine);
                         patrolCoroutine = null;
                     }
-                    MelonLogger.Msg("Patrol stopped.");
+                    ModLogger.Msg("Patrol stopped.");
                 }
                 else
                 {
@@ -56453,7 +56449,7 @@ namespace HeartopiaMod
             bool flag = gameObject == null;
             if (flag)
             {
-                MelonLogger.Msg("Player not found!");
+                ModLogger.Msg("Player not found!");
             }
             else
             {
@@ -56476,34 +56472,34 @@ namespace HeartopiaMod
                 bool flag4 = component == null;
                 if (flag4)
                 {
-                    MelonLogger.Msg("DynamicMonoBehaviour not found!");
+                    ModLogger.Msg("DynamicMonoBehaviour not found!");
                 }
                 else
                 {
-                    MelonLogger.Msg($"=== DynamicMonoBehaviour INSPECTION ===");
+                    ModLogger.Msg($"=== DynamicMonoBehaviour INSPECTION ===");
                     FieldInfo[] fields = component.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    MelonLogger.Msg($"Total fields: {fields.Length}");
+                    ModLogger.Msg($"Total fields: {fields.Length}");
                     foreach (FieldInfo fieldInfo in fields)
                     {
                         try
                         {
                             object value = fieldInfo.GetValue(component);
-                            MelonLogger.Msg($"Field: {fieldInfo.Name} = {value} ({fieldInfo.FieldType.Name})");
+                            ModLogger.Msg($"Field: {fieldInfo.Name} = {value} ({fieldInfo.FieldType.Name})");
                         }
                         catch
                         {
-                            MelonLogger.Msg("Field: " + fieldInfo.Name + " (couldn't read value)");
+                            ModLogger.Msg("Field: " + fieldInfo.Name + " (couldn't read value)");
                         }
                     }
                     MethodInfo[] methods = component.GetType().GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    MelonLogger.Msg($"\nTotal methods: {methods.Length}");
+                    ModLogger.Msg($"\nTotal methods: {methods.Length}");
                     foreach (MethodInfo methodInfo in methods)
                     {
                         string value2 = string.Join(", ", from p in methodInfo.GetParameters()
                                                           select p.ParameterType.Name);
-                        MelonLogger.Msg($"Method: {methodInfo.ReturnType.Name} {methodInfo.Name}({value2})");
+                        ModLogger.Msg($"Method: {methodInfo.ReturnType.Name} {methodInfo.Name}({value2})");
                     }
-                    MelonLogger.Msg("=== END ===");
+                    ModLogger.Msg("=== END ===");
                 }
             }
         }
@@ -58135,11 +58131,11 @@ namespace HeartopiaMod
                 UnifiedConfigData config = this.LoadOrCreateUnifiedConfig();
                 this.PopulateAllConfigSections(config);
                 this.SaveUnifiedConfig(config);
-                MelonLogger.Msg("Custom Teleports Saved!");
+                ModLogger.Msg("Custom Teleports Saved!");
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error Saving Teleports: " + ex.Message);
+                ModLogger.Msg("Error Saving Teleports: " + ex.Message);
             }
         }
 
@@ -58155,7 +58151,7 @@ namespace HeartopiaMod
                     {
                         if (entry != null) this.customTeleportList.Add(entry);
                     }
-                    MelonLogger.Msg($"Loaded {this.customTeleportList.Count} custom teleports.");
+                    ModLogger.Msg($"Loaded {this.customTeleportList.Count} custom teleports.");
                     return;
                 }
                 string path = this.GetCustomTeleportPath();
@@ -58180,12 +58176,12 @@ namespace HeartopiaMod
                             catch {}
                         }
                     }
-                    MelonLogger.Msg($"Loaded {this.customTeleportList.Count} custom teleports.");
+                    ModLogger.Msg($"Loaded {this.customTeleportList.Count} custom teleports.");
                 }
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("Error Loading Teleports: " + ex.Message);
+                ModLogger.Msg("Error Loading Teleports: " + ex.Message);
             }
         }
 
@@ -58228,7 +58224,7 @@ namespace HeartopiaMod
             return 0f;
         }
 
-        public override void OnDeinitializeMelon()
+        public void OnDeinitializeMelon()
         {
             if (this.eventSystemBlockedByMenu)
             {
@@ -58243,7 +58239,7 @@ namespace HeartopiaMod
 
             if (patrolCoroutine != null)
             {
-                MelonCoroutines.Stop(patrolCoroutine);
+                ModCoroutines.Stop(patrolCoroutine);
                 patrolCoroutine = null;
             }
             isPatrolActive = false;
@@ -58418,7 +58414,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[OnToastDetected] Error: " + ex.Message);
+                ModLogger.Msg("[OnToastDetected] Error: " + ex.Message);
             }
         }
 
@@ -58504,7 +58500,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg("[CheckToastPanel] error: " + ex.Message);
+                ModLogger.Msg("[CheckToastPanel] error: " + ex.Message);
             }
         }
 

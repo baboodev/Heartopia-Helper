@@ -1,15 +1,39 @@
-Require's [MelonLoader](https://melonloader.co/download.html) to use.
- - Install MelonLoader to Heartopia. 
- - Put the dll in the mods folder in heartopia's game folder
- - Play game, highly reccomended in a private town. 
+# Heartopia Helper
 
-[Insert] Key to show/Hide the UI.
+Automation and utility mod for [Heartopia](https://store.steampowered.com/app/heartopia). Supports **MelonLoader** or **BepInEx IL2CPP** (build once per loader — use **only one** in the game).
 
-Credits to kaikai2020 from uc forum and other members that shared codes on this thread. 
-"https://www.unknowncheats.me/forum/other-games/736498-heartopia-buddy-teleport-auto-farm.html"
+## Quick start
 
-## ⚠️ Disclaimer
+1. Install [MelonLoader](https://melonloader.co/download.html) **or** [BepInEx](https://docs.bepinex.dev/) for Heartopia.
+2. Build or download `buddy.dll` (see [docs/BUILD_AND_RUN.md](docs/BUILD_AND_RUN.md)).
+3. Deploy:
+   - **MelonLoader:** `<Game>/Mods/buddy.dll`
+   - **BepInEx:** `<Game>/BepInEx/plugins/buddy.dll`
+4. Launch the game. Press **Insert** to toggle the menu.
 
-This project is intended for educational and research purposes only.
+Recommended: play in a **private town** when using automation.
 
-By using this software, you agree that you are solely responsible for any actions taken and any consequences that may occur, including account restrictions, bans, or other penalties.
+## Build (both loaders)
+
+```bat
+cd buddy
+build-all.bat
+```
+
+Configure your game path: copy `buddy/Directory.Build.props.example` → `buddy/Directory.Build.props`.
+
+## Documentation
+
+| Document | Contents |
+|----------|----------|
+| [docs/BUILD_AND_RUN.md](docs/BUILD_AND_RUN.md) | Prerequisites, build, deploy, logs |
+| [docs/FEATURES.md](docs/FEATURES.md) | Menu tabs and features |
+| [docs/TECHNICAL.md](docs/TECHNICAL.md) | Architecture, patches, config |
+
+## Credits
+
+kaikai2020 and contributors from the [UnknownCheats thread](https://www.unknowncheats.me/forum/other-games/736498-heartopia-buddy-teleport-auto-farm.html).
+
+## Disclaimer
+
+This project is for educational and research purposes only. You are solely responsible for any account restrictions or penalties resulting from use of this software.

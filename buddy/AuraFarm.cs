@@ -1,5 +1,4 @@
 using HarmonyLib;
-using MelonLoader;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -393,7 +392,7 @@ namespace HeartopiaMod
                 this.AddMenuNotification(ready ? "Aura Farm enabled" : "Aura Farm enabled, resolver incomplete", ready ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.75f, 0.45f));
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Enabled. MethodsReady=" + ready + " MonoFallbacks=" + AuraUseMonoTargetFallbacks);
+                    ModLogger.Msg("[AuraFarm] Enabled. MethodsReady=" + ready + " MonoFallbacks=" + AuraUseMonoTargetFallbacks);
                 }
             }
             else
@@ -401,7 +400,7 @@ namespace HeartopiaMod
                 this.AddMenuNotification("Aura Farm disabled", new Color(1f, 0.55f, 0.55f));
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Disabled.");
+                    ModLogger.Msg("[AuraFarm] Disabled.");
                 }
             }
         }
@@ -444,7 +443,7 @@ namespace HeartopiaMod
                 if (AuraFarmDebugLogs && Time.unscaledTime - this.auraLastEmptyStateLogAt >= 1f)
                 {
                     this.auraLastEmptyStateLogAt = Time.unscaledTime;
-                    MelonLogger.Msg("[AuraFarm] Tick alive but found 0 targets. LastError=" + (string.IsNullOrEmpty(this.auraLastError) ? "<none>" : this.auraLastError));
+                    ModLogger.Msg("[AuraFarm] Tick alive but found 0 targets. LastError=" + (string.IsNullOrEmpty(this.auraLastError) ? "<none>" : this.auraLastError));
                 }
                 return;
             }
@@ -524,7 +523,7 @@ namespace HeartopiaMod
                     this.auraLastLoggedTreeHits = treeHits;
                     this.auraLastLoggedStoneHits = stoneHits;
                     this.auraLastLoggedBushPicks = bushPicks;
-                    MelonLogger.Msg("[AuraFarm] Targets=" + this.auraLastTargetCount + " TreeHits=" + treeHits + " StoneHits=" + stoneHits + " BushPicks=" + bushPicks);
+                    ModLogger.Msg("[AuraFarm] Targets=" + this.auraLastTargetCount + " TreeHits=" + treeHits + " StoneHits=" + stoneHits + " BushPicks=" + bushPicks);
                 }
             }
         }
@@ -598,7 +597,7 @@ namespace HeartopiaMod
                 {
                     if (AuraFarmDebugLogs)
                     {
-                        MelonLogger.Msg("[AuraFarm] Skipping live-cold resource ownerNetId=" + ownerNetId);
+                        ModLogger.Msg("[AuraFarm] Skipping live-cold resource ownerNetId=" + ownerNetId);
                     }
 
                     return false;
@@ -801,7 +800,7 @@ namespace HeartopiaMod
 
             if (AuraFarmDebugLogs)
             {
-                MelonLogger.Msg("[AuraFarm] Fallback cooldown stamped: " + bestLabel + " #" + bestIndex + " (" + Math.Max(1f, bestDuration).ToString("F1") + "s)");
+                ModLogger.Msg("[AuraFarm] Fallback cooldown stamped: " + bestLabel + " #" + bestIndex + " (" + Math.Max(1f, bestDuration).ToString("F1") + "s)");
             }
         }
 
@@ -1417,14 +1416,14 @@ namespace HeartopiaMod
                             + ",ownerResolver=" + (this.auraMonoEntityHelperGetLevelObjectOwnerMethodPtr != IntPtr.Zero) + ")";
                     }
 
-                    MelonLogger.Msg("[AuraFarm] Runtime resolver ready. Resource=" + resourceState + " Interact=" + interactState);
+                    ModLogger.Msg("[AuraFarm] Runtime resolver ready. Resource=" + resourceState + " Interact=" + interactState);
                 }
             }
             catch (Exception ex)
             {
                 this.auraLastError = "ResolveAuraFarmRuntimeMethods failed: " + ex.Message;
                 this.auraFarmMethodsReady = false;
-                MelonLogger.Msg("[AuraFarm] " + this.auraLastError);
+                ModLogger.Msg("[AuraFarm] " + this.auraLastError);
             }
 
             return this.auraFarmMethodsReady;
@@ -1450,7 +1449,7 @@ namespace HeartopiaMod
                 this.auraLastError = "SendPickBushCommand failed: " + ex.Message;
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] " + this.auraLastError);
+                    ModLogger.Msg("[AuraFarm] " + this.auraLastError);
                 }
             }
 
@@ -1477,7 +1476,7 @@ namespace HeartopiaMod
                 this.auraLastError = "SendAttackTreeCommand failed: " + ex.Message;
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] " + this.auraLastError);
+                    ModLogger.Msg("[AuraFarm] " + this.auraLastError);
                 }
             }
 
@@ -1504,7 +1503,7 @@ namespace HeartopiaMod
                 this.auraLastError = "SendHitStoneCommand failed: " + ex.Message;
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] " + this.auraLastError);
+                    ModLogger.Msg("[AuraFarm] " + this.auraLastError);
                 }
             }
 
@@ -1649,12 +1648,12 @@ namespace HeartopiaMod
                 }
                 else if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Managed select priority collection is not enumerable: " + rawCollection.GetType().FullName);
+                    ModLogger.Msg("[AuraFarm] Managed select priority collection is not enumerable: " + rawCollection.GetType().FullName);
                 }
 
                 if (AuraFarmDebugLogs && output.Count > 0)
                 {
-                    MelonLogger.Msg("[AuraFarm] Managed select priority path produced " + output.Count + " targets.");
+                    ModLogger.Msg("[AuraFarm] Managed select priority path produced " + output.Count + " targets.");
                 }
             }
             catch (Exception ex)
@@ -1692,7 +1691,7 @@ namespace HeartopiaMod
                     {
                         this.auraLastMonoFallbackLogAt = now;
                         this.auraLastLoggedMonoFallbackTargetCount = fallbackCount;
-                        MelonLogger.Msg("[AuraFarm] Throttled mono fallback targets=" + fallbackCount);
+                        ModLogger.Msg("[AuraFarm] Throttled mono fallback targets=" + fallbackCount);
                     }
                 }
             }
@@ -2110,7 +2109,7 @@ namespace HeartopiaMod
             this.auraLastLoggedTargetDetailKey = key;
             this.auraLastTargetDetailLogAt = now;
 
-            MelonLogger.Msg("[AuraFarm] Target " + source
+            ModLogger.Msg("[AuraFarm] Target " + source
                 + " resourceNetId=" + info.ResourceNetId
                 + " targetNetId=" + info.TargetNetId
                 + " ownerNetId=" + info.OwnerNetId
@@ -2272,7 +2271,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] SphereQuery skipped: selfPlayerMethod="
+                    ModLogger.Msg("[AuraFarm] SphereQuery skipped: selfPlayerMethod="
                         + (this.auraEntityUtilGetSelfPlayerEntityMethod != null)
                         + " sphereQueryMethod=" + (this.auraEntitiesSphereQueryEntitiesMethod != null));
                 }
@@ -2288,7 +2287,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] SphereQuery self entity lookup failed: " + ex.Message);
+                    ModLogger.Msg("[AuraFarm] SphereQuery self entity lookup failed: " + ex.Message);
                 }
                 return;
             }
@@ -2297,7 +2296,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] SphereQuery self entity lookup returned null.");
+                    ModLogger.Msg("[AuraFarm] SphereQuery self entity lookup returned null.");
                 }
                 return;
             }
@@ -2306,7 +2305,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] SphereQuery self entity position lookup failed.");
+                    ModLogger.Msg("[AuraFarm] SphereQuery self entity position lookup failed.");
                 }
                 return;
             }
@@ -2330,7 +2329,7 @@ namespace HeartopiaMod
 
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] SphereQueryEntities count=" + count);
+                    ModLogger.Msg("[AuraFarm] SphereQueryEntities count=" + count);
                 }
 
                 IEnumerable enumerable = results as IEnumerable;
@@ -2363,14 +2362,14 @@ namespace HeartopiaMod
 
                 if (output.Count > 0 && AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] SphereQuery path produced " + output.Count + " targets.");
+                    ModLogger.Msg("[AuraFarm] SphereQuery path produced " + output.Count + " targets.");
                 }
             }
             catch (Exception ex)
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] SphereQueryEntities failed: " + ex.Message);
+                    ModLogger.Msg("[AuraFarm] SphereQueryEntities failed: " + ex.Message);
                 }
             }
         }
@@ -2463,7 +2462,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Managed AxeChecker skipped: interactSystem="
+                    ModLogger.Msg("[AuraFarm] Managed AxeChecker skipped: interactSystem="
                         + (interactSystem != null)
                         + " physicalSelect=" + (this.auraAxeCheckerPhysicalSelectMethod != null)
                         + " shapeMember=" + (this.auraSelectPriorityInfoShapeField != null || this.auraSelectPriorityInfoShapeProperty != null));
@@ -2477,7 +2476,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Managed AxeChecker skipped: checker=" + (checkerObj != null) + " player=" + (playerObj != null));
+                    ModLogger.Msg("[AuraFarm] Managed AxeChecker skipped: checker=" + (checkerObj != null) + " player=" + (playerObj != null));
                 }
                 return;
             }
@@ -2501,7 +2500,7 @@ namespace HeartopiaMod
 
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Managed AxeChecker PhysicalSelect count=" + count);
+                    ModLogger.Msg("[AuraFarm] Managed AxeChecker PhysicalSelect count=" + count);
                 }
 
                 if (count <= 0)
@@ -2556,7 +2555,7 @@ namespace HeartopiaMod
 
                 if (AuraFarmDebugLogs && output.Count > 0)
                 {
-                    MelonLogger.Msg("[AuraFarm] Managed AxeChecker path produced " + output.Count + " targets.");
+                    ModLogger.Msg("[AuraFarm] Managed AxeChecker path produced " + output.Count + " targets.");
                 }
             }
             catch (Exception ex)
@@ -2576,7 +2575,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] AxeChecker skipped: interactSystem="
+                    ModLogger.Msg("[AuraFarm] AxeChecker skipped: interactSystem="
                         + (interactObj != IntPtr.Zero)
                         + " axeCheckerType=" + (this.auraMonoAxeCheckerClassPtr != IntPtr.Zero)
                         + " physicalSelect=" + (this.auraMonoAxeCheckerPhysicalSelectMethodPtr != IntPtr.Zero)
@@ -2589,7 +2588,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] AxeChecker skipped: mono thread/vtable/api unavailable.");
+                    ModLogger.Msg("[AuraFarm] AxeChecker skipped: mono thread/vtable/api unavailable.");
                 }
                 return;
             }
@@ -2599,7 +2598,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] AxeChecker skipped: class vtable null.");
+                    ModLogger.Msg("[AuraFarm] AxeChecker skipped: class vtable null.");
                 }
                 return;
             }
@@ -2638,7 +2637,7 @@ namespace HeartopiaMod
                 {
                     if (AuraFarmDebugLogs)
                     {
-                        MelonLogger.Msg("[AuraFarm] AxeChecker skipped: instance null.");
+                        ModLogger.Msg("[AuraFarm] AxeChecker skipped: instance null.");
                     }
                     return;
                 }
@@ -2650,7 +2649,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] AxeChecker skipped: player lookup failed.");
+                    ModLogger.Msg("[AuraFarm] AxeChecker skipped: player lookup failed.");
                 }
                 return;
             }
@@ -2660,7 +2659,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] AxeChecker skipped: SelectPriorityInfo list unavailable.");
+                    ModLogger.Msg("[AuraFarm] AxeChecker skipped: SelectPriorityInfo list unavailable.");
                 }
                 return;
             }
@@ -2679,7 +2678,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] AxeChecker failed: PhysicalSelect threw.");
+                    ModLogger.Msg("[AuraFarm] AxeChecker failed: PhysicalSelect threw.");
                 }
                 return;
             }
@@ -2691,7 +2690,7 @@ namespace HeartopiaMod
             {
                 this.auraLastAxeCheckerLogAt = now;
                 this.auraLastLoggedAxeCheckerPhysicalCount = count;
-                MelonLogger.Msg("[AuraFarm] AxeChecker PhysicalSelect count=" + count);
+                ModLogger.Msg("[AuraFarm] AxeChecker PhysicalSelect count=" + count);
             }
 
             for (int i = 0; i < count; i++)
@@ -2749,7 +2748,7 @@ namespace HeartopiaMod
                 {
                     this.auraLastAxeCheckerLogAt = now;
                     this.auraLastLoggedAxeCheckerTargetCount = output.Count;
-                    MelonLogger.Msg("[AuraFarm] AxeChecker path produced " + output.Count + " targets.");
+                    ModLogger.Msg("[AuraFarm] AxeChecker path produced " + output.Count + " targets.");
                 }
             }
         }
@@ -2813,7 +2812,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Cylinder scan skipped: levelObjectManagerType="
+                    ModLogger.Msg("[AuraFarm] Cylinder scan skipped: levelObjectManagerType="
                         + (this.auraLevelObjectManagerType != null)
                         + " cylinderMethod=" + (this.auraLevelObjectManagerCylinderOverlapNonAllocMethod != null)
                         + " selfPlayerMethod=" + (this.auraEntityUtilGetSelfPlayerEntityMethod != null)
@@ -2828,7 +2827,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Cylinder scan skipped: LevelObjectManager.Instance null.");
+                    ModLogger.Msg("[AuraFarm] Cylinder scan skipped: LevelObjectManager.Instance null.");
                 }
                 return;
             }
@@ -2842,7 +2841,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Cylinder scan self entity lookup failed: " + ex.Message);
+                    ModLogger.Msg("[AuraFarm] Cylinder scan self entity lookup failed: " + ex.Message);
                 }
                 return;
             }
@@ -2851,7 +2850,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Cylinder scan missing self entity position.");
+                    ModLogger.Msg("[AuraFarm] Cylinder scan missing self entity position.");
                 }
                 return;
             }
@@ -2893,7 +2892,7 @@ namespace HeartopiaMod
                 {
                     if (AuraFarmDebugLogs)
                     {
-                        MelonLogger.Msg("[AuraFarm] Cylinder scan missing LevelObject type.");
+                        ModLogger.Msg("[AuraFarm] Cylinder scan missing LevelObject type.");
                     }
                     return;
                 }
@@ -2910,7 +2909,7 @@ namespace HeartopiaMod
                 int count = rawCount is int ? (int)rawCount : 0;
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] CylinderOverlapNonAlloc count=" + count);
+                    ModLogger.Msg("[AuraFarm] CylinderOverlapNonAlloc count=" + count);
                 }
 
                 if (results is IEnumerable enumerable)
@@ -2936,7 +2935,7 @@ namespace HeartopiaMod
             {
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Cylinder scan failed: " + ex.Message);
+                    ModLogger.Msg("[AuraFarm] Cylinder scan failed: " + ex.Message);
                 }
             }
         }
@@ -3200,14 +3199,14 @@ namespace HeartopiaMod
             uint currentTargetUInt = currentTargetRaw <= uint.MaxValue ? (uint)currentTargetRaw : 0U;
             if (AuraFarmDebugLogs)
             {
-                MelonLogger.Msg("[AuraFarm] Mono _currentSelectTarget(raw)=" + currentTargetRaw);
+                ModLogger.Msg("[AuraFarm] Mono _currentSelectTarget(raw)=" + currentTargetRaw);
             }
             if (currentTargetUInt != 0U)
             {
                 this.RegisterAuraOwnerOnlyTarget(output, currentTargetUInt, "MonoCurrentTarget");
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Mono current target path -> owner " + currentTargetUInt);
+                    ModLogger.Msg("[AuraFarm] Mono current target path -> owner " + currentTargetUInt);
                 }
                 return;
             }
@@ -3226,7 +3225,7 @@ namespace HeartopiaMod
                 this.TryCollectAuraOwnerTargetsViaMonoFocusLevelObjects(interactObj, output);
                 if (output.Count > 0 && AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Mono _focusLevelObjects path produced " + output.Count + " targets.");
+                    ModLogger.Msg("[AuraFarm] Mono _focusLevelObjects path produced " + output.Count + " targets.");
                 }
             }
             if (output.Count == 0)
@@ -3234,7 +3233,7 @@ namespace HeartopiaMod
                 this.TryCollectAuraOwnerTargetsViaMonoSelectedMap(interactObj, output);
                 if (output.Count > 0 && AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Mono _selected path produced " + output.Count + " targets.");
+                    ModLogger.Msg("[AuraFarm] Mono _selected path produced " + output.Count + " targets.");
                 }
             }
             if (output.Count == 0)
@@ -3285,7 +3284,7 @@ namespace HeartopiaMod
                 }
             }
 
-            MelonLogger.Msg("[AuraFarm] Mono empty state: canCollect="
+            ModLogger.Msg("[AuraFarm] Mono empty state: canCollect="
                 + (canCollect.HasValue ? canCollect.Value.ToString() : "n/a")
                 + " currentHandholdInteract="
                 + (currentHandholdInteract.HasValue ? currentHandholdInteract.Value.ToString() : "n/a"));
@@ -3453,7 +3452,7 @@ namespace HeartopiaMod
             int count = this.GetAuraMonoIntCount(setObj, this.auraMonoFocusSetCountMethodPtr);
             if (AuraFarmDebugLogs)
             {
-                MelonLogger.Msg("[AuraFarm] Mono _focusLevelObjects count=" + count);
+                ModLogger.Msg("[AuraFarm] Mono _focusLevelObjects count=" + count);
             }
             if (count <= 0)
             {
@@ -3498,7 +3497,7 @@ namespace HeartopiaMod
             int count = this.GetAuraMonoIntCount(keysObj, this.auraMonoSelectedKeysCountMethodPtr);
             if (AuraFarmDebugLogs)
             {
-                MelonLogger.Msg("[AuraFarm] Mono _selected.Keys count=" + count);
+                ModLogger.Msg("[AuraFarm] Mono _selected.Keys count=" + count);
             }
             if (count <= 0)
             {
@@ -3753,7 +3752,7 @@ namespace HeartopiaMod
                         {
                             if (this.auraTargetInfoByOwnerId.TryGetValue(ownerId, out info) && info.TargetNetId == levelObjectId)
                             {
-                                MelonLogger.Msg("[AuraFarm] " + label + "[" + i + "] levelObjectId=" + levelObjectId + " ownerId=" + info.OwnerNetId);
+                                ModLogger.Msg("[AuraFarm] " + label + "[" + i + "] levelObjectId=" + levelObjectId + " ownerId=" + info.OwnerNetId);
                                 break;
                             }
                         }
@@ -4487,7 +4486,7 @@ namespace HeartopiaMod
                 auraMonoFieldGetValue(interactObj, this.auraMonoInteractSelectPriorityLengthFieldPtr, (IntPtr)(&length));
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Mono _selectPriorityLength=" + length);
+                    ModLogger.Msg("[AuraFarm] Mono _selectPriorityLength=" + length);
                 }
                 if (length <= 0)
                 {
@@ -4511,7 +4510,7 @@ namespace HeartopiaMod
                 int count = Math.Min(length, (int)Math.Min(arrayLength, 32UL));
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray length=" + arrayLength);
+                    ModLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray length=" + arrayLength);
                 }
 
                 for (int i = 0; i < count; i++)
@@ -4521,7 +4520,7 @@ namespace HeartopiaMod
                     {
                         if (AuraFarmDebugLogs && i < 3)
                         {
-                            MelonLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray[" + i + "] GetValue returned null.");
+                            ModLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray[" + i + "] GetValue returned null.");
                         }
                         continue;
                     }
@@ -4588,7 +4587,7 @@ namespace HeartopiaMod
                     {
                         if (AuraFarmDebugLogs && i < 3)
                         {
-                            MelonLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray[" + i + "] levelObjectId=" + levelObjectId);
+                            ModLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray[" + i + "] levelObjectId=" + levelObjectId);
                         }
                     }
                 }
@@ -4623,7 +4622,7 @@ namespace HeartopiaMod
                 ulong length = auraMonoArrayLength(decisionsArray).ToUInt64();
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] Mono _lookAtDecisions length=" + length);
+                    ModLogger.Msg("[AuraFarm] Mono _lookAtDecisions length=" + length);
                 }
 
                 for (int i = 0; i < (int)Math.Min(length, 32UL); i++)
@@ -4719,7 +4718,7 @@ namespace HeartopiaMod
 
                 if (AuraFarmDebugLogs)
                 {
-                    MelonLogger.Msg("[AuraFarm] " + label + " returnedCount=" + returnedCount + " listCount=" + listCount);
+                    ModLogger.Msg("[AuraFarm] " + label + " returnedCount=" + returnedCount + " listCount=" + listCount);
                 }
 
                 if (finalCount <= 0)
@@ -4741,7 +4740,7 @@ namespace HeartopiaMod
                     {
                         if (AuraFarmDebugLogs && i < 3)
                         {
-                            MelonLogger.Msg("[AuraFarm] " + label + "[" + i + "] levelObjectId=" + levelObjectId);
+                            ModLogger.Msg("[AuraFarm] " + label + "[" + i + "] levelObjectId=" + levelObjectId);
                         }
                     }
                 }
@@ -4761,7 +4760,7 @@ namespace HeartopiaMod
             int listCount = this.GetAuraMonoUInt64ListCount(listObj);
             if (AuraFarmDebugLogs)
             {
-                MelonLogger.Msg("[AuraFarm] " + label + " listCount=" + listCount);
+                ModLogger.Msg("[AuraFarm] " + label + " listCount=" + listCount);
             }
 
             for (int i = 0; i < listCount; i++)
@@ -4778,7 +4777,7 @@ namespace HeartopiaMod
                 {
                     if (AuraFarmDebugLogs && i < 3)
                     {
-                        MelonLogger.Msg("[AuraFarm] " + label + "[" + i + "] levelObjectId=" + levelObjectId);
+                        ModLogger.Msg("[AuraFarm] " + label + "[" + i + "] levelObjectId=" + levelObjectId);
                     }
                 }
             }

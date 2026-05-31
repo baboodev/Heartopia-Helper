@@ -1,4 +1,3 @@
-using MelonLoader;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -128,7 +127,7 @@ namespace HeartopiaMod
 
             this.petFeedAllActiveLabel = label;
             this.petFeedAllBusyUntil = Time.realtimeSinceStartup + PetFeedActionCooldownSeconds;
-            this.petFeedAllCoroutine = MelonCoroutines.Start(this.PetFeedAllStartRoutine(dog));
+            this.petFeedAllCoroutine = ModCoroutines.Start(this.PetFeedAllStartRoutine(dog));
         }
 
         private IEnumerator PetFeedAllStartRoutine(bool dog)
@@ -2163,7 +2162,7 @@ namespace HeartopiaMod
                 target.FavoriteSource = pet.FavoriteSource;
             }
 
-            this.petFeedAllCoroutine = MelonCoroutines.Start(this.PetFeedAllRoutine(pet.IsDog, new List<PetFeedTarget> { target }, foods, visibleCount));
+            this.petFeedAllCoroutine = ModCoroutines.Start(this.PetFeedAllRoutine(pet.IsDog, new List<PetFeedTarget> { target }, foods, visibleCount));
         }
 
         private bool TryGetPetTextureIdManaged(object petData, out string textureId)
@@ -5160,7 +5159,7 @@ namespace HeartopiaMod
 
             try
             {
-                MelonLogger.Msg("[PetFeed] " + message);
+                ModLogger.Msg("[PetFeed] " + message);
             }
             catch
             {

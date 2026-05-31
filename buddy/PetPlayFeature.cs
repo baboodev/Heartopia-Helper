@@ -1,4 +1,3 @@
-using MelonLoader;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -2509,7 +2508,7 @@ namespace HeartopiaMod
 
             try
             {
-                MelonLogger.Msg("[PetPlay] " + message);
+                ModLogger.Msg("[PetPlay] " + message);
             }
             catch
             {

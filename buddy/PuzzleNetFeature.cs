@@ -1,4 +1,3 @@
-using MelonLoader;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -2076,7 +2075,7 @@ namespace HeartopiaMod
             }
 
             this.puzzleSolveRunning = true;
-            this.puzzleSolveCoroutine = MelonCoroutines.Start(this.PuzzleSolveRoutine());
+            this.puzzleSolveCoroutine = ModCoroutines.Start(this.PuzzleSolveRoutine());
             this.PuzzleLog("Puzzle solve coroutine started. pieces=" + this.puzzlePieces.Count);
         }
 
@@ -2102,7 +2101,7 @@ namespace HeartopiaMod
             this.puzzleSolveRunning = false;
             if (this.puzzleSolveCoroutine != null)
             {
-                try { MelonCoroutines.Stop(this.puzzleSolveCoroutine); } catch { }
+                try { ModCoroutines.Stop(this.puzzleSolveCoroutine); } catch { }
                 this.puzzleSolveCoroutine = null;
             }
             this.puzzleStatus = string.IsNullOrWhiteSpace(reason) ? "Stopped." : reason;
@@ -2573,7 +2572,7 @@ namespace HeartopiaMod
 
             try
             {
-                MelonLogger.Msg("[PuzzleNet] " + message);
+                ModLogger.Msg("[PuzzleNet] " + message);
             }
             catch
             {

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using MelonLoader;
 using UnityEngine;
 
 namespace HeartopiaMod
@@ -171,7 +170,7 @@ namespace HeartopiaMod
                 trimmedStatus = trimmedStatus.Substring(0, 120);
             }
 
-            MelonLogger.Msg($"[BirdNetFarmPerf] Slow tick {elapsedMs:F0}ms detected={detectedCount} resolved={resolvedCount} sent={sentCount} status={trimmedStatus}");
+            ModLogger.Msg($"[BirdNetFarmPerf] Slow tick {elapsedMs:F0}ms detected={detectedCount} resolved={resolvedCount} sent={sentCount} status={trimmedStatus}");
         }
 
         private static string GetDisplayStatus(string status)
@@ -306,7 +305,7 @@ namespace HeartopiaMod
                 return;
             }
 
-            MelonLogger.Msg("[BirdNetFarm] " + message);
+            ModLogger.Msg("[BirdNetFarm] " + message);
         }
 
         private static string GetCrashTracePath()
@@ -316,7 +315,13 @@ namespace HeartopiaMod
                 return crashTracePath;
             }
 
+#if MELONLOADER
             string logsDir = Path.Combine(Directory.GetCurrentDirectory(), "MelonLoader", "Logs");
+#elif BEPINEX
+            string logsDir = Path.Combine(Directory.GetCurrentDirectory(), "BepInEx");
+#else
+            string logsDir = Path.Combine(Directory.GetCurrentDirectory(), "UserData");
+#endif
             Directory.CreateDirectory(logsDir);
             crashTracePath = Path.Combine(logsDir, "birdfarm-crashtrace.log");
             return crashTracePath;
@@ -894,7 +899,7 @@ namespace HeartopiaMod
                 Log("Update error: " + ex);
                 if (debugLoggingEnabled)
                 {
-                    MelonLogger.Msg("[BirdNetFarm] Update error: " + ex.Message);
+                    ModLogger.Msg("[BirdNetFarm] Update error: " + ex.Message);
                 }
             }
         }
