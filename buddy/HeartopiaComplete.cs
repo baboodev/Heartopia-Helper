@@ -1,6 +1,9 @@
 ﻿using HarmonyLib;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
+#if BEPINEX
+using Il2CppInterop.Runtime.Runtime;
+#endif
 using System;
 using System.IO;
 using System.Collections;
@@ -436,6 +439,7 @@ namespace HeartopiaMod
             public int autoSellStarFilter;
             public float autoSellInterval;
             public int autoSellScanSource;
+            public bool autoSellFestivalTokensEnabled;
             public bool collectEventResources;
         }
 
@@ -961,6 +965,7 @@ namespace HeartopiaMod
             data.autoSellStarFilter = this.autoSellStarFilter;
             data.autoSellInterval = this.autoSellInterval;
             data.autoSellScanSource = this.autoSellScanSource;
+            data.autoSellFestivalTokensEnabled = this.autoSellFestivalTokensEnabled;
             data.collectEventResources = this.collectEventResources;
         }
 
@@ -1092,6 +1097,7 @@ namespace HeartopiaMod
             this.autoSellStarFilter = Mathf.Clamp(data.autoSellStarFilter, 0, 5);
             this.autoSellInterval = Mathf.Clamp(data.autoSellInterval > 0f ? data.autoSellInterval : 5f, 1f, 120f);
             this.autoSellScanSource = Mathf.Clamp(data.autoSellScanSource, 0, 2);
+            this.autoSellFestivalTokensEnabled = data.autoSellFestivalTokensEnabled;
             this.collectEventResources = data.collectEventResources;
         }
 
@@ -1152,7 +1158,6 @@ namespace HeartopiaMod
             this.uiPanelAlpha = Mathf.Clamp(data.uiPanelAlpha, 0.15f, 1f);
             this.uiContentAlpha = Mathf.Clamp(data.uiContentAlpha, 0.15f, 1f);
             this.uiScale = this.NormalizeUiScale(data.uiScale > 0f ? data.uiScale : 1f);
-            this.uiScaleDragActive = false;
         }
 
         private void PopulateRadarConfig(RadarConfigData data)
@@ -2609,8 +2614,7 @@ namespace HeartopiaMod
                 if (flag2)
                 {
                     Event current = Event.current;
-                    bool flag3 = current != null && current.isMouse;
-                    if (flag3)
+                    if (current != null && current.isMouse && current.type != EventType.Used)
                     {
                         current.Use();
                     }
@@ -3327,16 +3331,23 @@ namespace HeartopiaMod
             return value;
         }
 
-        private float DrawAccentSlider(Rect rect, float value, float min, float max)
+        private float ReadAccentSliderMouseValue(Rect rect, float mouseX, float min, float max, bool integerSteps)
         {
-            Event e = Event.current;
-            if (e != null && e.button == 0 && (e.type == EventType.MouseDown || e.type == EventType.MouseDrag) && rect.Contains(e.mousePosition))
+            float tInput = Mathf.Clamp01((mouseX - rect.x) / Mathf.Max(1f, rect.width));
+            if (!integerSteps || Mathf.Approximately(min, max))
             {
-                float tInput = Mathf.Clamp01((e.mousePosition.x - rect.x) / Mathf.Max(1f, rect.width));
-                value = Mathf.Lerp(min, max, tInput);
-                e.Use();
+                return Mathf.Lerp(min, max, tInput);
             }
 
+            int iMin = Mathf.RoundToInt(min);
+            int iMax = Mathf.RoundToInt(max);
+            int range = Mathf.Max(0, iMax - iMin);
+            int stepped = iMin + Mathf.Clamp(Mathf.FloorToInt(tInput * (range + 1)), 0, range);
+            return stepped;
+        }
+
+        private void DrawAccentSliderVisual(Rect rect, float value, float min, float max)
+        {
             float t = Mathf.InverseLerp(min, max, value);
             float lineY = rect.y + rect.height * 0.5f - 2.5f;
             Rect bgRect = new Rect(rect.x, lineY, rect.width, 5f);
@@ -3352,13 +3363,46 @@ namespace HeartopiaMod
             GUI.color = new Color(0.95f, 0.97f, 1f, 1f);
             GUI.DrawTexture(thumbRect, this.uiCircleTexture);
             GUI.color = Color.white;
+        }
 
-            return Mathf.Clamp(value, min, max);
+        private float DrawAccentSlider(Rect rect, float value, float min, float max, bool integerSteps = false)
+        {
+            int controlId = GUIUtility.GetControlID(FocusType.Passive);
+            Event e = Event.current;
+            if (e != null && e.button == 0)
+            {
+                if (e.type == EventType.MouseDown && rect.Contains(e.mousePosition))
+                {
+                    GUIUtility.hotControl = controlId;
+                    value = this.ReadAccentSliderMouseValue(rect, e.mousePosition.x, min, max, integerSteps);
+                    e.Use();
+                }
+                else if (e.type == EventType.MouseDrag && GUIUtility.hotControl == controlId)
+                {
+                    value = this.ReadAccentSliderMouseValue(rect, e.mousePosition.x, min, max, integerSteps);
+                    e.Use();
+                }
+                else if (e.type == EventType.MouseUp && GUIUtility.hotControl == controlId)
+                {
+                    GUIUtility.hotControl = 0;
+                    e.Use();
+                }
+            }
+
+            value = Mathf.Clamp(value, min, max);
+            this.DrawAccentSliderVisual(rect, value, min, max);
+            return value;
         }
 
         public float UI_DrawAccentSlider(Rect rect, float value, float min, float max)
         {
-            return this.DrawAccentSlider(rect, value, min, max);
+            return this.DrawAccentSlider(rect, value, min, max, false);
+        }
+
+        public int UI_DrawAccentIntSlider(Rect rect, int value, int min, int max)
+        {
+            float raw = this.DrawAccentSlider(rect, value, min, max, true);
+            return Mathf.Clamp(Mathf.RoundToInt(raw), min, max);
         }
 
         public bool UI_DrawSwitchToggle(Rect rect, bool value, string label)
@@ -13152,6 +13196,42 @@ namespace HeartopiaMod
             }
 
             result = IntPtr.Zero;
+            return false;
+        }
+
+        private unsafe bool TryInvokeAuraMonoIntArgReturningBool(IntPtr obj, int argValue, out bool result, params string[] methodNames)
+        {
+            result = false;
+            if (obj == IntPtr.Zero || methodNames == null || methodNames.Length == 0 || auraMonoObjectGetClass == null || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr classPtr = auraMonoObjectGetClass(obj);
+            if (classPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            foreach (string methodName in methodNames)
+            {
+                IntPtr method = this.FindAuraMonoMethodOnHierarchy(classPtr, methodName, 1);
+                if (method == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr exc = IntPtr.Zero;
+                IntPtr* args = stackalloc IntPtr[1];
+                int localArg = argValue;
+                args[0] = (IntPtr)(&localArg);
+                IntPtr boxed = auraMonoRuntimeInvoke(method, obj, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero && boxed != IntPtr.Zero && this.TryUnboxMonoBoolean(boxed, out result))
+                {
+                    return true;
+                }
+            }
+
             return false;
         }
 
@@ -24220,10 +24300,17 @@ namespace HeartopiaMod
             if (Math.Abs(this.autoSellInterval - prevInterval) > 0.001f) { try { this.SaveKeybinds(false); } catch { } }
             GUI.Label(new Rect(settingsCard.x + 12f, settingsCard.y + 126f, 96f, 18f), "Stars", fieldLabelStyle);
             int prevStarFilter = this.autoSellStarFilter;
-            this.autoSellStarFilter = Mathf.Clamp(Mathf.RoundToInt(this.UI_DrawAccentSlider(new Rect(settingsCard.x + 84f, settingsCard.y + 128f, colWidth - 84f, 16f), (float)this.autoSellStarFilter, 0f, 5f)), 0, 5);
+            this.autoSellStarFilter = this.UI_DrawAccentIntSlider(new Rect(settingsCard.x + 84f, settingsCard.y + 128f, colWidth - 84f, 16f), this.autoSellStarFilter, 0, 5);
             if (this.autoSellStarFilter != prevStarFilter) { try { this.SaveKeybinds(false); } catch { } }
             string starLabel = this.autoSellStarFilterLabels[Mathf.Clamp(this.autoSellStarFilter, 0, this.autoSellStarFilterLabels.Length - 1)];
             GUI.Label(new Rect(settingsCard.x + 12f, settingsCard.y + 146f, colWidth, 18f), "Filter: " + starLabel, tinyStyle);
+
+            bool prevFestivalTokens = this.autoSellFestivalTokensEnabled;
+            this.autoSellFestivalTokensEnabled = this.DrawSwitchToggle(new Rect(settingsCard.x + 12f, settingsCard.y + 166f, colWidth, 26f), this.autoSellFestivalTokensEnabled, "Festival For Tokens");
+            if (this.autoSellFestivalTokensEnabled != prevFestivalTokens)
+            {
+                try { this.SaveKeybinds(false); } catch { }
+            }
 
             float toggleX = settingsCard.x + 304f;
             bool prevFullStack = this.autoSellFullStack;
@@ -24246,24 +24333,25 @@ namespace HeartopiaMod
                 ? "Similar: sells same item family, like all birdphotos."
                 : "Exact: sells only this selected item.";
             GUI.Label(new Rect(toggleX, settingsCard.y + 126f, 250f, 16f), sellModeHelp, tinyStyle);
-            GUI.Label(new Rect(toggleX, settingsCard.y + 146f, 120f, 18f), this.autoSellFullStack ? "Cap: ignored" : this.LF("Cap: {0}", this.autoSellMaxPerStack), tinyStyle);
+            GUI.Label(new Rect(toggleX, settingsCard.y + 146f, 108f, 18f), this.autoSellFullStack ? "Cap: ignored" : this.LF("Cap: {0}", this.autoSellMaxPerStack), tinyStyle);
             if (!this.autoSellFullStack)
             {
                 int prevMax = this.autoSellMaxPerStack;
-                this.autoSellMaxPerStack = Mathf.Clamp(Mathf.RoundToInt(this.UI_DrawAccentSlider(new Rect(toggleX + 92f, settingsCard.y + 148f, 148f, 16f), (float)this.autoSellMaxPerStack, 0f, 200f)), 0, 200);
+                this.autoSellMaxPerStack = this.UI_DrawAccentIntSlider(new Rect(toggleX + 110f, settingsCard.y + 148f, 130f, 16f), this.autoSellMaxPerStack, 0, 200);
                 if (this.autoSellMaxPerStack != prevMax) { try { this.SaveKeybinds(false); } catch { } }
             }
-            GUI.Label(new Rect(toggleX, settingsCard.y + 170f, 128f, 18f), this.LF("Keep Per Item: {0}", this.autoSellReserveCount), tinyStyle);
+            GUI.Label(new Rect(toggleX, settingsCard.y + 170f, 108f, 18f), this.LF("Keep Per Item: {0}", this.autoSellReserveCount), tinyStyle);
             int prevReserveCount = this.autoSellReserveCount;
-            this.autoSellReserveCount = Mathf.Clamp(Mathf.RoundToInt(this.UI_DrawAccentSlider(new Rect(toggleX + 116f, settingsCard.y + 172f, 124f, 16f), (float)this.autoSellReserveCount, 0f, 200f)), 0, 200);
+            this.autoSellReserveCount = this.UI_DrawAccentIntSlider(new Rect(toggleX + 110f, settingsCard.y + 172f, 130f, 16f), this.autoSellReserveCount, 0, 200);
             if (this.autoSellReserveCount != prevReserveCount) { try { this.SaveKeybinds(false); } catch { } }
             num += 216;
 
             float sourceRowY = (float)num;
             float sourceDropdownX = left;
             float sourceDropdownWidth = 120f;
-            float actionButtonWidth = 136f;
             float actionGap = 10f;
+            float actionRowHeight = 34f;
+            float actionRowSpacing = 8f;
             Rect sourceDropdownRect = new Rect(sourceDropdownX, sourceRowY, sourceDropdownWidth, 28f);
 
             GUI.Box(sourceDropdownRect, "", this.themeTopTabStyle ?? this.themePanelStyle ?? GUI.skin.box);
@@ -24275,51 +24363,36 @@ namespace HeartopiaMod
             GUI.Label(new Rect(sourceDropdownRect.x + 12f, sourceDropdownRect.y + 1f, sourceDropdownRect.width - 34f, sourceDropdownRect.height - 2f), this.GetAutoSellScanSourceLabel(), dropdownValueStyle);
             GUI.Label(new Rect(sourceDropdownRect.xMax - 24f, sourceDropdownRect.y + 1f, 16f, sourceDropdownRect.height - 2f), this.autoSellScanSourceDropdownOpen ? "^" : "v", dropdownArrowStyle);
 
-            float actionStartX = sourceDropdownRect.xMax + 12f;
-            if (GUI.Button(new Rect(actionStartX, sourceRowY - 3f, actionButtonWidth, 34f), this.L("SELL SELECTED"), this.themePrimaryButtonStyle))
+            float primaryStartX = sourceDropdownRect.xMax + 12f;
+            float primaryAvailableWidth = panelWidth - (primaryStartX - left);
+            float primaryButtonWidth = Mathf.Max(110f, (primaryAvailableWidth - actionGap) * 0.5f);
+            float secondaryRowY = sourceRowY + actionRowHeight + actionRowSpacing;
+            bool blockRowActions = this.autoSellScanSourceDropdownOpen;
+            GUI.enabled = !blockRowActions;
+            if (GUI.Button(new Rect(primaryStartX, sourceRowY - 3f, primaryButtonWidth, actionRowHeight), this.L("SELL SELECTED"), this.themePrimaryButtonStyle))
             {
                 this.ExecuteDirectAutoSell(false);
             }
-            if (this.DrawPrimaryActionButton(new Rect(actionStartX + actionButtonWidth + actionGap, sourceRowY - 3f, actionButtonWidth, 34f), "SCAN ITEMS"))
+            if (this.DrawPrimaryActionButton(new Rect(primaryStartX + primaryButtonWidth + actionGap, sourceRowY - 3f, primaryButtonWidth, actionRowHeight), "SCAN ITEMS"))
             {
                 this.autoSellBagItems = this.ScanBackpackForAutoSellItems();
                 this.autoSellStatus = this.autoSellBagItems.Count > 0
                     ? (this.GetAutoSellScanSourceLabel() + " list refreshed")
                     : ("No " + this.GetAutoSellScanSourceLabel().ToLowerInvariant() + " items found");
             }
-            if (GUI.Button(new Rect(actionStartX + (actionButtonWidth + actionGap) * 2f, sourceRowY - 3f, actionButtonWidth, 34f), this.L("CACHE ICONS"), this.themePrimaryButtonStyle ?? GUI.skin.button))
+            if (GUI.Button(new Rect(left, secondaryRowY - 3f, 160f, actionRowHeight), this.L("CACHE ICONS"), this.themePrimaryButtonStyle ?? GUI.skin.button))
             {
                 OpenInventory();
                 this.autoSellBagScanRetryTime = Time.time + 0.35f;
                 this.autoSellBagScanDeadline = Time.time + 4f;
                 this.autoSellStatus = "Open bag icon cache scheduled";
             }
-            num += 44;
-
+            GUI.enabled = true;
+            num += Mathf.CeilToInt((secondaryRowY - sourceRowY) + actionRowHeight + 6f);
             if (this.autoSellScanSourceDropdownOpen)
             {
                 float panelHeight = this.autoSellScanSourceLabels.Length * 30f + 8f;
-                Rect panelRect = new Rect(sourceDropdownRect.x, sourceDropdownRect.yMax + 4f, sourceDropdownRect.width, panelHeight);
-                GUI.Box(panelRect, "", this.themeContentStyle ?? this.themePanelStyle ?? GUI.skin.box);
-                this.DrawCardOutline(panelRect, 1f);
-                for (int i = 0; i < this.autoSellScanSourceLabels.Length; i++)
-                {
-                    bool selected = this.autoSellScanSource == i;
-                    Rect optionRect = new Rect(panelRect.x + 4f, panelRect.y + 4f + i * 30f, panelRect.width - 8f, 26f);
-                    GUI.Box(optionRect, "", selected ? (this.themeTopTabActiveStyle ?? this.themePrimaryButtonStyle ?? GUI.skin.box) : (this.themeTopTabStyle ?? this.themePanelStyle ?? GUI.skin.box));
-                    if (GUI.Button(optionRect, "", GUIStyle.none))
-                    {
-                        this.autoSellScanSource = i;
-                        this.autoSellScanSourceDropdownOpen = false;
-                        this.autoSellBagItems = null;
-                        this.autoSellBagItemScrollPos = Vector2.zero;
-                        this.autoSellStatus = "Scan source: " + this.GetAutoSellScanSourceLabel();
-                        this.autoSellLastMatchSummary = "Press Scan Items to load " + this.GetAutoSellScanSourceLabel().ToLowerInvariant() + " items.";
-                        try { this.SaveKeybinds(false); } catch { }
-                    }
-                    GUI.Label(optionRect, this.autoSellScanSourceLabels[i], selected ? dropdownOptionActiveStyle : dropdownOptionStyle);
-                }
-                num = Mathf.Max(num, Mathf.CeilToInt(panelRect.yMax + 8f));
+                num = Mathf.Max(num, Mathf.CeilToInt(sourceDropdownRect.yMax + 4f + panelHeight + 8f));
             }
 
             if (this.autoSellBagScanRetryTime > 0f && Time.time >= this.autoSellBagScanRetryTime)
@@ -24457,6 +24530,32 @@ namespace HeartopiaMod
                 try { this.SaveKeybinds(false); } catch { }
             }
             num += 44;
+
+            if (this.autoSellScanSourceDropdownOpen)
+            {
+                float panelHeight = this.autoSellScanSourceLabels.Length * 30f + 8f;
+                Rect panelRect = new Rect(sourceDropdownRect.x, sourceDropdownRect.yMax + 4f, sourceDropdownRect.width, panelHeight);
+                GUI.Box(panelRect, "", this.themeContentStyle ?? this.themePanelStyle ?? GUI.skin.box);
+                this.DrawCardOutline(panelRect, 1f);
+                for (int i = 0; i < this.autoSellScanSourceLabels.Length; i++)
+                {
+                    bool selected = this.autoSellScanSource == i;
+                    Rect optionRect = new Rect(panelRect.x + 4f, panelRect.y + 4f + i * 30f, panelRect.width - 8f, 26f);
+                    GUIStyle optionStyle = selected
+                        ? (this.themeTopTabActiveStyle ?? this.themePrimaryButtonStyle ?? GUI.skin.button)
+                        : (this.themeTopTabStyle ?? this.themePanelStyle ?? GUI.skin.button);
+                    if (GUI.Button(optionRect, this.autoSellScanSourceLabels[i], optionStyle))
+                    {
+                        this.autoSellScanSource = i;
+                        this.autoSellScanSourceDropdownOpen = false;
+                        this.autoSellBagItems = null;
+                        this.autoSellBagItemScrollPos = Vector2.zero;
+                        this.autoSellStatus = "Scan source: " + this.GetAutoSellScanSourceLabel();
+                        this.autoSellLastMatchSummary = "Press Scan Items to load " + this.GetAutoSellScanSourceLabel().ToLowerInvariant() + " items.";
+                        try { this.SaveKeybinds(false); } catch { }
+                    }
+                }
+            }
 
             return (float)num;
         }
@@ -50246,6 +50345,11 @@ namespace HeartopiaMod
             }
         }
 
+        private void AutoSellLogSellResult(string message)
+        {
+            ModLogger.Msg("[AutoSell] " + message);
+        }
+
         private void ProcessAutoSell()
         {
             if (!this.autoSellEnabled)
@@ -50289,10 +50393,15 @@ namespace HeartopiaMod
                 return false;
             }
 
-            Dictionary<uint, int> sellItems = this.BuildDirectSellItemMap();
+            if (this.autoSellFestivalTokensEnabled)
+            {
+                this.TryRefreshDirectBackpackRuntimeSnapshot(false);
+            }
+
+            Dictionary<uint, int> sellItems = this.BuildDirectSellItemMap(out int matchedBagTotal, out int reservedKept);
             if (sellItems.Count == 0)
             {
-                bool reservedAll = this.autoSellReserveCount > 0 && !string.IsNullOrWhiteSpace(this.autoSellLastMatchSummary) && this.autoSellLastMatchSummary.Contains("kept=");
+                bool reservedAll = matchedBagTotal > 0 && reservedKept > 0 && this.autoSellReserveCount > 0 && matchedBagTotal <= reservedKept;
                 this.autoSellStatus = reservedAll
                     ? "Keep Per Item reserved all matches"
                     : string.IsNullOrWhiteSpace(this.NormalizeAutoSellMatchKey(this.autoSellItemKey))
@@ -50311,17 +50420,76 @@ namespace HeartopiaMod
                 totalCount += Math.Max(0, count);
             }
 
-            this.AutoSellLog("QuickSell request. stacks=" + sellItems.Count + " totalCount=" + totalCount + " key=" + this.GetActiveAutoSellMatchKey());
+            this.AutoSellLogSellResult("QuickSell request. stacks=" + sellItems.Count + " totalCount=" + totalCount + " key=" + this.GetActiveAutoSellMatchKey());
             if (!string.IsNullOrWhiteSpace(this.autoSellSelectedDetails))
             {
                 this.AutoSellLog("QuickSell items: " + this.autoSellSelectedDetails);
             }
-            bool sent = this.TryQuickSellItemsBatched(sellItems);
-            this.autoSellStatus = sent ? ("QuickSell sent: " + totalCount + " item(s)") : "QuickSell failed";
+
+            bool sent;
+            if (this.autoSellFestivalTokensEnabled && this.TryGetFestivalSellCurrencyId(out int festivalCurrencyId))
+            {
+                Dictionary<uint, int> festivalItems = new Dictionary<uint, int>();
+                Dictionary<uint, int> coinItems = new Dictionary<uint, int>();
+                string festivalCurrencyStatus = string.Empty;
+                try
+                {
+                    this.SplitSellItemsByPeriodCurrency(festivalCurrencyId, sellItems, out festivalItems, out coinItems, out festivalCurrencyStatus);
+                }
+                catch (Exception ex)
+                {
+                    coinItems = new Dictionary<uint, int>(sellItems);
+                    festivalCurrencyStatus = "split exception: " + ex.GetType().Name + ": " + ex.Message + " -> all coin";
+                    this.AutoSellLogSellResult(festivalCurrencyStatus);
+                }
+
+                int festivalCount = this.SumAutoSellItemCounts(festivalItems);
+                int coinCount = this.SumAutoSellItemCounts(coinItems);
+                this.autoSellLastMatchSummary += "\nSell split: " + festivalItems.Count + " token stack(s), " + coinItems.Count + " coin stack(s)";
+                ModLogger.Msg("[AutoSell] " + festivalCurrencyStatus);
+                this.AutoSellLogSellResult("Festival sell batch count=" + festivalItems.Count + " coin batch count=" + coinItems.Count);
+                bool sentFestival = festivalItems.Count == 0 || this.TryQuickSellItemsBatched(festivalItems, festivalCurrencyId);
+                bool sentCoins = coinItems.Count == 0 || this.TryQuickSellItemsBatched(coinItems, 0);
+                this.AutoSellLogSellResult("Festival sell result tokenOk=" + sentFestival + " coinOk=" + sentCoins);
+                sent = (festivalItems.Count > 0 || coinItems.Count > 0)
+                    && (festivalItems.Count == 0 || sentFestival)
+                    && (coinItems.Count == 0 || sentCoins);
+                if (sent)
+                {
+                    this.autoSellStatus = festivalCount > 0 && coinCount > 0
+                        ? ("Sell sent: " + festivalCount + " token(s), " + coinCount + " coin(s)")
+                        : festivalCount > 0
+                        ? ("Sell sent: " + festivalCount + " festival token item(s)")
+                        : ("Sell sent: " + coinCount + " for coins");
+                }
+                else if (sentCoins && festivalItems.Count > 0)
+                {
+                    this.autoSellStatus = "Sold " + coinCount + " for coins; token sell failed";
+                }
+                else if (sentFestival && coinItems.Count > 0)
+                {
+                    this.autoSellStatus = "Sold " + festivalCount + " for tokens; coin sell failed";
+                }
+                else
+                {
+                    this.autoSellStatus = "Sell failed";
+                }
+            }
+            else if (this.autoSellFestivalTokensEnabled)
+            {
+                sent = this.TryQuickSellItemsBatched(sellItems, 0);
+                this.autoSellStatus = sent ? ("Sell sent for coins (festival currency unavailable)") : "Sell failed";
+            }
+            else
+            {
+                sent = this.TryQuickSellItemsBatched(sellItems, 0);
+                this.autoSellStatus = sent ? ("Sell sent: " + totalCount + " item(s)") : "Sell failed";
+            }
+
             if (!sent && fromAuto)
             {
                 this.autoSellEnabled = false;
-                this.autoSellStatus = "QuickSell failed - auto disabled";
+                this.autoSellStatus = "Sell failed - auto disabled";
                 this.AutoSellLog("Auto sell disabled after failed send to prevent repeated unsafe retries.");
             }
             if (sent && !fromAuto)
@@ -50439,11 +50607,15 @@ namespace HeartopiaMod
             }
         }
 
-        private Dictionary<uint, int> BuildDirectSellItemMap()
+        private Dictionary<uint, int> BuildDirectSellItemMap(out int matchedBagTotal, out int reservedKept)
         {
+            matchedBagTotal = 0;
+            reservedKept = 0;
             Dictionary<uint, int> sellItems = new Dictionary<uint, int>();
+            Dictionary<uint, int> bagCountsByNetId = new Dictionary<uint, int>();
             Dictionary<uint, string> reserveGroupsByNetId = new Dictionary<uint, string>();
             Dictionary<uint, string> sellDetailsByNetId = new Dictionary<uint, string>();
+            this.autoSellCollectedStaticIdsByNetId.Clear();
             string key = this.GetActiveAutoSellMatchKey();
             if (string.IsNullOrWhiteSpace(key) || key.Length < 2)
             {
@@ -50456,17 +50628,25 @@ namespace HeartopiaMod
             List<string> skippedSamples = new List<string>();
             int inspected = 0;
             int skippedStarFilter = 0;
-            bool usedRuntimeSnapshot = this.CollectDirectSellItemsFromRuntimeSnapshot(key, sellItems, reserveGroupsByNetId, sellDetailsByNetId, skippedSamples, ref inspected, ref skippedStarFilter);
-            bool includeBackpackFallback = !usedRuntimeSnapshot;
-            bool includeWarehouseFallback = Mathf.Clamp(this.autoSellScanSource, 0, 2) != 0;
+            bool includeWarehouse = Mathf.Clamp(this.autoSellScanSource, 0, 2) != 0;
 
-            this.CollectDirectSellItemsManaged(key, sellItems, reserveGroupsByNetId, sellDetailsByNetId, skippedSamples, ref inspected, ref skippedStarFilter, includeBackpackFallback, includeWarehouseFallback);
-            if (sellItems.Count == 0)
+            this.TryRefreshDirectBackpackRuntimeSnapshot(true);
+            int runtimeSnapshotItems = this.directBackpackRuntimeItems.Count;
+            this.CollectDirectSellItemsFromRuntimeSnapshot(key, bagCountsByNetId, reserveGroupsByNetId, sellDetailsByNetId, skippedSamples, ref inspected, ref skippedStarFilter);
+            this.CollectDirectSellItemsManaged(key, bagCountsByNetId, reserveGroupsByNetId, sellDetailsByNetId, skippedSamples, ref inspected, ref skippedStarFilter, true, includeWarehouse);
+            this.CollectDirectSellItemsMono(key, bagCountsByNetId, reserveGroupsByNetId, sellDetailsByNetId, skippedSamples, ref inspected, ref skippedStarFilter, true, includeWarehouse);
+
+            int matchedStacks = bagCountsByNetId.Count;
+            foreach (int count in bagCountsByNetId.Values)
             {
-                this.CollectDirectSellItemsMono(key, sellItems, reserveGroupsByNetId, sellDetailsByNetId, skippedSamples, ref inspected, ref skippedStarFilter, includeBackpackFallback, includeWarehouseFallback);
+                matchedBagTotal += Math.Max(0, count);
             }
 
-            int reservedCount = this.ApplyAutoSellReserve(sellItems, reserveGroupsByNetId);
+            reservedKept = this.ApplyAutoSellReserve(sellItems, reserveGroupsByNetId, bagCountsByNetId);
+            if (!this.autoSellAllMatchingStacks && !this.autoSellFestivalTokensEnabled)
+            {
+                this.LimitAutoSellToSingleStack(sellItems);
+            }
             int totalCount = 0;
             foreach (int count in sellItems.Values)
             {
@@ -50480,25 +50660,39 @@ namespace HeartopiaMod
                 finalSellSamples.Add("netId=" + kv.Key + " x" + Math.Max(0, kv.Value) + (string.IsNullOrWhiteSpace(detail) ? "" : " " + detail));
             }
 
-            this.autoSellLastMatchSummary = "Selected stacks=" + sellItems.Count + ", count=" + totalCount + ", inspected=" + inspected + (reservedCount > 0 ? ", kept=" + reservedCount : "") + (skippedStarFilter > 0 ? ", skipped star filter=" + skippedStarFilter : "");
+            this.autoSellLastMatchSummary = "Selected stacks=" + sellItems.Count + ", matchedStacks=" + matchedStacks + ", bag=" + matchedBagTotal + ", sell=" + totalCount + ", inspected=" + inspected + ", runtimeItems=" + runtimeSnapshotItems + (reservedKept > 0 ? ", kept=" + reservedKept : "") + (skippedStarFilter > 0 ? ", skipped star filter=" + skippedStarFilter : "");
             this.autoSellSelectedDetails = finalSellSamples.Count > 0 ? string.Join("; ", finalSellSamples.ToArray()) : "";
             if (finalSellSamples.Count > 0)
             {
                 this.autoSellLastMatchSummary += "\nSelected: " + string.Join("; ", finalSellSamples.Take(3).ToArray());
             }
-            else if (reservedCount > 0)
+            else if (matchedBagTotal > 0 && totalCount == 0)
             {
-                this.autoSellLastMatchSummary += "\nKeep Per Item reserved all matching items. Set Keep Per Item to 0 to sell them.";
+                int keep = Mathf.Clamp(this.autoSellReserveCount, 0, 200);
+                this.autoSellLastMatchSummary += matchedBagTotal <= keep
+                    ? "\nKeep Per Item reserved all matching items. Set Keep Per Item to 0 to sell them."
+                    : "\nNo sellable quantity after Keep Per Item (single-count stacks are skipped). Lower Keep or raise Cap.";
             }
             if (skippedSamples.Count > 0)
             {
                 this.autoSellLastMatchSummary += "\nSkipped: " + string.Join("; ", skippedSamples.Take(3).ToArray());
             }
-            this.AutoSellLog(this.autoSellLastMatchSummary.Replace("\n", " "));
+            this.autoSellLastSellDetailsByNetId = new Dictionary<uint, string>(sellDetailsByNetId);
+            this.AutoSellLogSellResult(this.autoSellLastMatchSummary.Replace("\n", " "));
             return sellItems;
         }
 
-        private bool CollectDirectSellItemsFromRuntimeSnapshot(string normalizedKey, Dictionary<uint, int> sellItems, Dictionary<uint, string> reserveGroupsByNetId, Dictionary<uint, string> sellDetailsByNetId, List<string> skippedSamples, ref int inspected, ref int skippedStarFilter)
+        private void RememberAutoSellCollectedStaticId(uint netId, int staticId)
+        {
+            if (netId == 0U || staticId <= 0)
+            {
+                return;
+            }
+
+            this.autoSellCollectedStaticIdsByNetId[netId] = staticId;
+        }
+
+        private bool CollectDirectSellItemsFromRuntimeSnapshot(string normalizedKey, Dictionary<uint, int> bagCountsByNetId, Dictionary<uint, string> reserveGroupsByNetId, Dictionary<uint, string> sellDetailsByNetId, List<string> skippedSamples, ref int inspected, ref int skippedStarFilter)
         {
             if (Mathf.Clamp(this.autoSellScanSource, 0, 2) == 1)
             {
@@ -50535,95 +50729,155 @@ namespace HeartopiaMod
                     continue;
                 }
 
-                int sellCount = this.GetAutoSellStackSellCount(count);
-                if (sellCount <= 0)
-                {
-                    continue;
-                }
-
-                if (!sellItems.ContainsKey(item.NetId))
-                {
-                    sellItems.Add(item.NetId, sellCount);
-                }
+                this.MergeAutoSellBagCount(bagCountsByNetId, item.NetId, count);
+                this.RememberAutoSellCollectedStaticId(item.NetId, item.StaticId);
                 reserveGroupsByNetId[item.NetId] = this.GetAutoSellReserveGroupKey(descriptor, starRate);
                 sellDetailsByNetId[item.NetId] = (starRate > 0 ? starRate + "* " : "") + descriptor;
-                if (!this.autoSellAllMatchingStacks)
-                {
-                    break;
-                }
             }
 
             return true;
         }
 
-        private int ApplyAutoSellReserve(Dictionary<uint, int> sellItems, Dictionary<uint, string> reserveGroupsByNetId)
+        private void MergeAutoSellBagCount(Dictionary<uint, int> bagCountsByNetId, uint netId, int stackCount)
         {
-            int reserve = Mathf.Clamp(this.autoSellReserveCount, 0, 200);
-            if (reserve <= 0 || sellItems == null || sellItems.Count == 0)
+            if (bagCountsByNetId == null || netId == 0U)
+            {
+                return;
+            }
+
+            int count = Math.Max(1, stackCount);
+            if (bagCountsByNetId.TryGetValue(netId, out int existing))
+            {
+                bagCountsByNetId[netId] = Math.Max(existing, count);
+            }
+            else
+            {
+                bagCountsByNetId[netId] = count;
+            }
+        }
+
+        private int ApplyAutoSellReserve(Dictionary<uint, int> sellItems, Dictionary<uint, string> reserveGroupsByNetId, Dictionary<uint, int> bagCountsByNetId)
+        {
+            sellItems?.Clear();
+            if (sellItems == null || bagCountsByNetId == null || bagCountsByNetId.Count == 0)
             {
                 return 0;
             }
 
+            int reserve = Mathf.Clamp(this.autoSellReserveCount, 0, 200);
             Dictionary<string, List<uint>> groupedNetIds = new Dictionary<string, List<uint>>(StringComparer.OrdinalIgnoreCase);
-            foreach (uint netId in sellItems.Keys.ToList())
+            foreach (KeyValuePair<uint, int> kv in bagCountsByNetId)
             {
+                if (kv.Key == 0U || kv.Value <= 0)
+                {
+                    continue;
+                }
+
                 string groupKey = null;
                 if (reserveGroupsByNetId != null)
                 {
-                    reserveGroupsByNetId.TryGetValue(netId, out groupKey);
+                    reserveGroupsByNetId.TryGetValue(kv.Key, out groupKey);
                 }
+
                 if (string.IsNullOrWhiteSpace(groupKey))
                 {
-                    groupKey = "net:" + netId;
+                    groupKey = "net:" + kv.Key;
                 }
+
                 if (!groupedNetIds.TryGetValue(groupKey, out List<uint> netIds))
                 {
                     netIds = new List<uint>();
                     groupedNetIds[groupKey] = netIds;
                 }
-                netIds.Add(netId);
+
+                netIds.Add(kv.Key);
             }
 
             int reservedTotal = 0;
             foreach (List<uint> netIds in groupedNetIds.Values)
             {
-                int groupTotal = 0;
-                foreach (uint netId in netIds)
+                int totalBag = 0;
+                for (int i = 0; i < netIds.Count; i++)
                 {
-                    if (sellItems.TryGetValue(netId, out int count))
+                    if (bagCountsByNetId.TryGetValue(netIds[i], out int bagCount))
                     {
-                        groupTotal += Math.Max(0, count);
+                        totalBag += Math.Max(0, bagCount);
                     }
                 }
-                if (groupTotal <= 0)
+
+                if (totalBag <= 0)
                 {
                     continue;
                 }
 
-                int remainingReserve = Math.Min(reserve, groupTotal);
-                int reservedForGroup = remainingReserve;
-                foreach (uint netId in netIds.AsEnumerable().Reverse())
+                int reservedForGroup = Math.Min(reserve, totalBag);
+                int sellablePool = Math.Max(0, totalBag - reservedForGroup);
+                reservedTotal += reservedForGroup;
+                netIds.Sort((uint a, uint b) =>
                 {
-                    if (remainingReserve <= 0)
-                    {
-                        break;
-                    }
+                    int countA = bagCountsByNetId.TryGetValue(a, out int bagA) ? bagA : 0;
+                    int countB = bagCountsByNetId.TryGetValue(b, out int bagB) ? bagB : 0;
+                    return countA.CompareTo(countB);
+                });
 
-                    int count = sellItems.TryGetValue(netId, out int sellCount) ? Math.Max(0, sellCount) : 0;
-                    if (count <= remainingReserve)
+                int remainingKeep = reservedForGroup;
+                for (int i = 0; i < netIds.Count && sellablePool > 0; i++)
+                {
+                    uint netId = netIds[i];
+                    if (!bagCountsByNetId.TryGetValue(netId, out int bagCount) || bagCount <= 0)
                     {
-                        sellItems.Remove(netId);
-                        remainingReserve -= count;
                         continue;
                     }
 
-                    sellItems[netId] = count - remainingReserve;
-                    remainingReserve = 0;
+                    int keptFromStack = Math.Min(bagCount, remainingKeep);
+                    remainingKeep -= keptFromStack;
+                    int sellableFromStack = bagCount - keptFromStack;
+                    if (sellableFromStack <= 0)
+                    {
+                        continue;
+                    }
+
+                    int allocateFromStack = Math.Min(sellableFromStack, sellablePool);
+                    int sellCount = this.GetAutoSellStackSellCount(allocateFromStack);
+                    if (sellCount <= 0)
+                    {
+                        continue;
+                    }
+
+                    sellItems[netId] = sellCount;
+                    sellablePool -= allocateFromStack;
                 }
-                reservedTotal += reservedForGroup - remainingReserve;
             }
 
             return reservedTotal;
+        }
+
+        private void LimitAutoSellToSingleStack(Dictionary<uint, int> sellItems)
+        {
+            if (sellItems == null || sellItems.Count <= 1)
+            {
+                return;
+            }
+
+            uint bestNetId = 0U;
+            int bestSellCount = 0;
+            foreach (KeyValuePair<uint, int> kv in sellItems)
+            {
+                if (bestNetId == 0U || kv.Value > bestSellCount)
+                {
+                    bestNetId = kv.Key;
+                    bestSellCount = kv.Value;
+                }
+            }
+
+            if (bestNetId == 0U)
+            {
+                sellItems.Clear();
+                return;
+            }
+
+            sellItems.Clear();
+            sellItems[bestNetId] = bestSellCount;
         }
 
         private string GetAutoSellReserveGroupKey(string descriptor, int starRate)
@@ -50654,7 +50908,7 @@ namespace HeartopiaMod
             return Math.Min(count, cap);
         }
 
-        private void CollectDirectSellItemsManaged(string normalizedKey, Dictionary<uint, int> sellItems, Dictionary<uint, string> reserveGroupsByNetId, Dictionary<uint, string> sellDetailsByNetId, List<string> skippedSamples, ref int inspected, ref int skippedStarFilter, bool includeBackpack = true, bool includeWarehouse = true)
+        private void CollectDirectSellItemsManaged(string normalizedKey, Dictionary<uint, int> bagCountsByNetId, Dictionary<uint, string> reserveGroupsByNetId, Dictionary<uint, string> sellDetailsByNetId, List<string> skippedSamples, ref int inspected, ref int skippedStarFilter, bool includeBackpack = true, bool includeWarehouse = true)
         {
             try
             {
@@ -50723,7 +50977,13 @@ namespace HeartopiaMod
                         }
 
                         int count = 1;
+                        int staticId = 0;
                         this.TryGetManagedBackpackItemCount(item, out count);
+                        this.TryGetManagedInt32Member(item, "staticId", out staticId);
+                        if (staticId <= 0)
+                        {
+                            this.TryGetManagedInt32Member(item, "StaticId", out staticId);
+                        }
                         if (!this.AutoSellManagedItemStarMatches(item, netId, descriptor, count, out int starRate))
                         {
                             skippedStarFilter++;
@@ -50736,21 +50996,10 @@ namespace HeartopiaMod
                             continue;
                         }
 
-                        int sellCount = this.GetAutoSellStackSellCount(count);
-                        if (sellCount <= 0)
-                        {
-                            continue;
-                        }
-                        if (!sellItems.ContainsKey(netId))
-                        {
-                            sellItems.Add(netId, sellCount);
-                        }
+                        this.MergeAutoSellBagCount(bagCountsByNetId, netId, count);
+                        this.RememberAutoSellCollectedStaticId(netId, staticId);
                         reserveGroupsByNetId[netId] = this.GetAutoSellReserveGroupKey(descriptor, starRate);
                         sellDetailsByNetId[netId] = (starRate > 0 ? starRate + "* " : "") + descriptor;
-                        if (!this.autoSellAllMatchingStacks)
-                        {
-                            return;
-                        }
                     }
                 }
             }
@@ -50760,7 +51009,7 @@ namespace HeartopiaMod
             }
         }
 
-        private void CollectDirectSellItemsMono(string normalizedKey, Dictionary<uint, int> sellItems, Dictionary<uint, string> reserveGroupsByNetId, Dictionary<uint, string> sellDetailsByNetId, List<string> skippedSamples, ref int inspected, ref int skippedStarFilter, bool includeBackpack = true, bool includeWarehouse = true)
+        private void CollectDirectSellItemsMono(string normalizedKey, Dictionary<uint, int> bagCountsByNetId, Dictionary<uint, string> reserveGroupsByNetId, Dictionary<uint, string> sellDetailsByNetId, List<string> skippedSamples, ref int inspected, ref int skippedStarFilter, bool includeBackpack = true, bool includeWarehouse = true)
         {
             try
             {
@@ -50831,7 +51080,9 @@ namespace HeartopiaMod
                         }
 
                         int count = 1;
+                        int staticId = 0;
                         this.TryGetDirectBackpackItemCount(itemObj, out count);
+                        this.TryGetDirectBackpackItemStaticId(itemObj, out staticId);
                         if (!this.AutoSellMonoItemStarMatches(itemObj, netId, descriptor, count, out int starRate))
                         {
                             skippedStarFilter++;
@@ -50844,21 +51095,10 @@ namespace HeartopiaMod
                             continue;
                         }
 
-                        int sellCount = this.GetAutoSellStackSellCount(count);
-                        if (sellCount <= 0)
-                        {
-                            continue;
-                        }
-                        if (!sellItems.ContainsKey(netId))
-                        {
-                            sellItems.Add(netId, sellCount);
-                        }
+                        this.MergeAutoSellBagCount(bagCountsByNetId, netId, count);
+                        this.RememberAutoSellCollectedStaticId(netId, staticId);
                         reserveGroupsByNetId[netId] = this.GetAutoSellReserveGroupKey(descriptor, starRate);
                         sellDetailsByNetId[netId] = (starRate > 0 ? starRate + "* " : "") + descriptor;
-                        if (!this.autoSellAllMatchingStacks)
-                        {
-                            return;
-                        }
                     }
                 }
 
@@ -50869,7 +51109,7 @@ namespace HeartopiaMod
             }
             catch (Exception ex)
             {
-                this.AutoSellLog("Mono scan exception: " + ex.Message);
+                this.AutoSellLogSellResult("Mono scan exception: " + ex.Message);
             }
         }
 
@@ -51283,7 +51523,1812 @@ namespace HeartopiaMod
             return false;
         }
 
-        private bool TryQuickSellItemsBatched(Dictionary<uint, int> itemsToSell)
+        // BattlePassSellPanel indexes PeriodCurrencySales by currency, then matches BackpackItem.staticId to row entityId.
+        private void SplitSellItemsByPeriodCurrency(int currencyTypeId, Dictionary<uint, int> sellItems, out Dictionary<uint, int> festivalItems, out Dictionary<uint, int> coinItems, out string diagnostics)
+        {
+            festivalItems = new Dictionary<uint, int>();
+            coinItems = new Dictionary<uint, int>();
+            diagnostics = "festival split unavailable";
+            if (sellItems == null || sellItems.Count == 0)
+            {
+                diagnostics = "no sell stacks";
+                return;
+            }
+
+            if (currencyTypeId <= 0)
+            {
+                foreach (KeyValuePair<uint, int> kv in sellItems)
+                {
+                    if (kv.Key != 0U && kv.Value > 0)
+                    {
+                        coinItems[kv.Key] = kv.Value;
+                    }
+                }
+
+                diagnostics = "currency id unresolved -> all coin";
+                return;
+            }
+
+            HashSet<int> allowedStaticIds = null;
+            string tablePath = "allowlist:unavailable";
+            if (this.TryGetAllowedPeriodCurrencyStaticIds(currencyTypeId, out allowedStaticIds) && allowedStaticIds.Count > 0)
+            {
+                tablePath = "allowlist:" + allowedStaticIds.Count;
+            }
+            else
+            {
+                allowedStaticIds = null;
+            }
+            bool useAllowlist = allowedStaticIds != null;
+            foreach (KeyValuePair<uint, int> kv in sellItems)
+            {
+                if (kv.Key == 0U || kv.Value <= 0)
+                {
+                    continue;
+                }
+                string descriptor = string.Empty;
+                this.autoSellLastSellDetailsByNetId?.TryGetValue(kv.Key, out descriptor);
+                this.ClassifyPeriodCurrencyStack(currencyTypeId, kv.Key, descriptor, allowedStaticIds, useAllowlist, out bool isFestival);
+                if (isFestival)
+                {
+                    festivalItems[kv.Key] = kv.Value;
+                }
+                else
+                {
+                    coinItems[kv.Key] = kv.Value;
+                }
+            }
+            diagnostics = "currency=" + currencyTypeId + " " + tablePath
+                + " tokenStacks=" + festivalItems.Count + " coinStacks=" + coinItems.Count;
+        }
+
+        private void ClassifyPeriodCurrencyStack(int currencyTypeId, uint netId, string descriptor, HashSet<int> allowedStaticIds, bool useAllowlist, out bool isFestival)
+        {
+            isFestival = false;
+            this.CollectPeriodCurrencyCandidateEntityIds(netId, descriptor, allowedStaticIds, out List<int> candidateIds, out _);
+            for (int c = 0; c < candidateIds.Count; c++)
+            {
+                int candidateId = candidateIds[c];
+                if (candidateId <= 0)
+                {
+                    continue;
+                }
+                if (useAllowlist ? allowedStaticIds.Contains(candidateId) : this.TryLookupPeriodCurrencySale(currencyTypeId, candidateId, out _))
+                {
+                    isFestival = true;
+                    return;
+                }
+            }
+        }
+
+        private int SumAutoSellItemCounts(Dictionary<uint, int> items)
+        {
+            if (items == null || items.Count == 0)
+            {
+                return 0;
+            }
+            int total = 0;
+            foreach (int count in items.Values)
+            {
+                total += Math.Max(0, count);
+            }
+            return total;
+        }
+
+        private void CollectPeriodCurrencyCandidateEntityIds(uint netId, string descriptor, HashSet<int> periodAllowlist, out List<int> candidateIds, out string diagnostics)
+        {
+            candidateIds = new List<int>(12);
+            diagnostics = string.Empty;
+            HashSet<int> seen = new HashSet<int>();
+
+            int primaryStaticId = 0;
+            if (this.TryResolveStaticIdForSell(netId, descriptor, out primaryStaticId, out string staticSource))
+            {
+                this.AddPeriodCurrencyCandidate(primaryStaticId, staticSource, seen, candidateIds, ref diagnostics);
+            }
+
+            int descriptorSubId = 0;
+            if (this.TryExtractStaticIdFromAutoSellText(descriptor, out descriptorSubId))
+            {
+                this.AddPeriodCurrencyCandidate(descriptorSubId, "descriptor", seen, candidateIds, ref diagnostics);
+            }
+
+            if (this.TryExtractStaticIdFromAutoSellText(this.autoSellItemKey, out int keyId))
+            {
+                this.AddPeriodCurrencyCandidate(keyId, "matchKey", seen, candidateIds, ref diagnostics);
+            }
+
+            if (periodAllowlist == null || periodAllowlist.Count == 0)
+            {
+                if (primaryStaticId > 0 && this.TryDecodeEntityTypeIdFromStaticId(primaryStaticId, out int decodedTypeId))
+                {
+                    this.AddPeriodCurrencyCandidate(decodedTypeId, "decodedType", seen, candidateIds, ref diagnostics);
+                }
+            }
+            if (primaryStaticId >= 1000)
+            {
+                this.AddPeriodCurrencyCandidate(primaryStaticId % 1000, "mod1000", seen, candidateIds, ref diagnostics);
+                this.AddPeriodCurrencyCandidate(primaryStaticId % 10000, "mod10000", seen, candidateIds, ref diagnostics);
+            }
+
+            this.AddDerivedPeriodCurrencyTableEntityIds(primaryStaticId, descriptorSubId, periodAllowlist, seen, candidateIds, ref diagnostics);
+
+            if (primaryStaticId <= 0 && this.TryResolveStaticIdFromLiveMonoBackpack(netId, out int liveStaticId))
+            {
+                this.AddPeriodCurrencyCandidate(liveStaticId, "liveMono", seen, candidateIds, ref diagnostics);
+                if (this.TryDecodeEntityTypeIdFromStaticId(liveStaticId, out int liveDecoded))
+                {
+                    this.AddPeriodCurrencyCandidate(liveDecoded, "liveDecoded", seen, candidateIds, ref diagnostics);
+                }
+
+                int liveSubId = 0;
+                if (this.TryExtractStaticIdFromAutoSellText(descriptor, out liveSubId))
+                {
+                    this.AddDerivedPeriodCurrencyTableEntityIds(liveStaticId, liveSubId, periodAllowlist, seen, candidateIds, ref diagnostics);
+                }
+            }
+        }
+
+        private void AddDerivedPeriodCurrencyTableEntityIds(int backpackStaticId, int descriptorSubId, HashSet<int> periodAllowlist, HashSet<int> seen, List<int> candidateIds, ref string diagnostics)
+        {
+            int subId = descriptorSubId > 0 ? descriptorSubId : (backpackStaticId > 0 ? backpackStaticId % 1000 : 0);
+            if (subId <= 0)
+            {
+                return;
+            }
+
+            List<int> prefixes = this.GetPeriodCurrencyTableIdPrefixes(periodAllowlist);
+            for (int i = 0; i < prefixes.Count; i++)
+            {
+                int prefix = prefixes[i];
+                if (prefix <= 0)
+                {
+                    continue;
+                }
+
+                int derivedId = prefix + subId;
+                if (periodAllowlist != null && periodAllowlist.Count > 0 && !periodAllowlist.Contains(derivedId))
+                {
+                    continue;
+                }
+
+                this.AddPeriodCurrencyCandidate(derivedId, "table" + prefix + "+" + subId, seen, candidateIds, ref diagnostics);
+            }
+        }
+
+        private List<int> GetPeriodCurrencyTableIdPrefixes(HashSet<int> periodAllowlist)
+        {
+            List<int> prefixes = new List<int>(4);
+            if (periodAllowlist != null && periodAllowlist.Count > 0)
+            {
+                HashSet<int> unique = new HashSet<int>();
+                foreach (int entityId in periodAllowlist)
+                {
+                    if (entityId < 1000)
+                    {
+                        continue;
+                    }
+
+                    int prefix = (entityId / 1000) * 1000;
+                    if (prefix > 0)
+                    {
+                        unique.Add(prefix);
+                    }
+                }
+
+                prefixes.AddRange(unique);
+                prefixes.Sort();
+                if (prefixes.Count > 0)
+                {
+                    return prefixes;
+                }
+            }
+
+            prefixes.Add(732000);
+            prefixes.Add(769000);
+            return prefixes;
+        }
+
+        private void AddPeriodCurrencyCandidate(int value, string label, HashSet<int> seen, List<int> candidateIds, ref string diagnostics)
+        {
+            if (value <= 0 || seen == null || candidateIds == null || !seen.Add(value))
+            {
+                return;
+            }
+
+            candidateIds.Add(value);
+            diagnostics += (diagnostics.Length > 0 ? "," : "") + value + ":" + label;
+        }
+
+        private bool TryDecodeEntityTypeIdFromStaticId(int staticId, out int entityTypeId)
+        {
+            entityTypeId = 0;
+            if (staticId <= 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                Type tableDataType = this.FindManagedTableDataType();
+                if (tableDataType == null)
+                {
+                    return false;
+                }
+
+                MethodInfo getEntityTypeId = tableDataType.GetMethod("GetEntityTypeID", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, new[] { typeof(int) }, null);
+                if (getEntityTypeId == null)
+                {
+                    return false;
+                }
+
+                entityTypeId = Convert.ToInt32(getEntityTypeId.Invoke(null, new object[] { staticId }));
+                return entityTypeId > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryLookupPeriodCurrencySale(int currencyTypeId, int entityId, out string lookupPath)
+        {
+            lookupPath = string.Empty;
+            if (currencyTypeId <= 0 || entityId <= 0)
+            {
+                return false;
+            }
+
+#if BEPINEX
+            if (this.TryLookupPeriodCurrencySaleIl2CppContains(currencyTypeId, entityId))
+            {
+                lookupPath = "il2cpp[ContainsKey]";
+                return true;
+            }
+#endif
+
+            if (this.TryLookupPeriodCurrencySaleAura(currencyTypeId, entityId))
+            {
+                lookupPath = "aura[PeriodCurrencySales]";
+                return true;
+            }
+
+            if (this.TryLookupPeriodCurrencySaleManaged(currencyTypeId, entityId))
+            {
+                lookupPath = "managed[PeriodCurrencySales]";
+                return true;
+            }
+
+            if (this.TryLookupPeriodCurrencySaleFlatTable(currencyTypeId, entityId, out lookupPath))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryLookupPeriodCurrencySaleFlatTable(int currencyTypeId, int entityId, out string lookupPath)
+        {
+            lookupPath = string.Empty;
+            if (this.TryFlatTableContainsPeriodCurrencyEntityManaged(currencyTypeId, entityId))
+            {
+                lookupPath = "flatManaged";
+                return true;
+            }
+
+            if (this.TryFlatTableContainsPeriodCurrencyEntityAura(currencyTypeId, entityId))
+            {
+                lookupPath = "flatAura";
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryFlatTableContainsPeriodCurrencyEntityManaged(int currencyTypeId, int entityId)
+        {
+            if (currencyTypeId <= 0 || entityId <= 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                Type tableDataType = this.FindManagedTableDataType();
+                if (tableDataType == null)
+                {
+                    return false;
+                }
+
+                object flatTable = null;
+                FieldInfo flatField = tableDataType.GetField("TablePeriodCurrencySales", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (flatField != null)
+                {
+                    flatTable = flatField.GetValue(null);
+                }
+                else
+                {
+                    PropertyInfo flatProp = tableDataType.GetProperty("TablePeriodCurrencySales", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    if (flatProp != null)
+                    {
+                        flatTable = flatProp.GetValue(null, null);
+                    }
+                }
+
+                if (flatTable is IDictionary dictionary)
+                {
+                    foreach (DictionaryEntry entry in dictionary)
+                    {
+                        if (this.TryReadPeriodCurrencySaleRowManaged(entry.Value, out int rowCurrency, out int rowEntityId)
+                            && rowCurrency == currencyTypeId
+                            && rowEntityId == entityId)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        private bool TryFlatTableContainsPeriodCurrencyEntityAura(int currencyTypeId, int entityId)
+        {
+            if (currencyTypeId <= 0 || entityId <= 0 || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                return false;
+            }
+
+            if (!this.TryGetAutoSellAuraMonoTableDataClass(out IntPtr tableDataClass, out _))
+            {
+                return false;
+            }
+
+            IntPtr flatTable = IntPtr.Zero;
+            string[] staticFieldNames = new[] { "TablePeriodCurrencySales", "tablePeriodCurrencySales", "_tablePeriodCurrencySales" };
+            for (int i = 0; i < staticFieldNames.Length; i++)
+            {
+                if (this.TryGetAuraMonoStaticObjectField(tableDataClass, staticFieldNames[i], out flatTable) && flatTable != IntPtr.Zero)
+                {
+                    break;
+                }
+            }
+
+            if (flatTable == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            List<IntPtr> rows = new List<IntPtr>(512);
+            if (!this.TryEnumerateAuraMonoCollectionItems(flatTable, rows))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < rows.Count; i++)
+            {
+                IntPtr rowObj = rows[i];
+                if (rowObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr valueObj = rowObj;
+                if (this.TryGetAuraMonoDictionaryEntryIntKey(rowObj, out int pairKey, out IntPtr pairValue) && pairValue != IntPtr.Zero)
+                {
+                    valueObj = pairValue;
+                }
+                else if (this.TryGetMonoObjectMember(rowObj, "Value", out IntPtr boxedValue) && boxedValue != IntPtr.Zero)
+                {
+                    valueObj = boxedValue;
+                }
+
+                if (this.TryReadPeriodCurrencySaleRowAura(valueObj, out int rowCurrency, out int rowEntityId)
+                    && rowCurrency == currencyTypeId
+                    && rowEntityId == entityId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool TryLookupPeriodCurrencySaleManaged(int currencyTypeId, int entityId)
+        {
+            try
+            {
+                Type tableDataType = this.FindManagedTableDataType();
+                if (tableDataType == null)
+                {
+                    return false;
+                }
+
+                PropertyInfo prop = tableDataType.GetProperty("PeriodCurrencySales", BindingFlags.Public | BindingFlags.Static);
+                if (prop == null)
+                {
+                    return false;
+                }
+
+                if (!(prop.GetValue(null, null) is System.Collections.IDictionary byCurrency))
+                {
+                    return false;
+                }
+
+                IDictionary byEntity = null;
+                foreach (DictionaryEntry bucket in byCurrency)
+                {
+                    int keyValue = 0;
+                    try { keyValue = Convert.ToInt32(bucket.Key); } catch { continue; }
+                    if (keyValue == currencyTypeId)
+                    {
+                        byEntity = bucket.Value as IDictionary;
+                        break;
+                    }
+                }
+
+                return byEntity != null && byEntity.Contains(entityId);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+#if BEPINEX
+        private unsafe bool TryLookupPeriodCurrencySaleIl2CppContains(int currencyTypeId, int entityId)
+        {
+            if (currencyTypeId <= 0 || entityId <= 0)
+            {
+                return false;
+            }
+
+            IntPtr tableClass = this.TryFindIl2CppClass("TableData", "EcsClient", "Il2CppEcsClient", string.Empty);
+            if (tableClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr field = IL2CPP.il2cpp_class_get_field_from_name(tableClass, "PeriodCurrencySales");
+            if (field == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr salesObj = IL2CPP.il2cpp_field_get_value_object(field, IntPtr.Zero);
+            if (salesObj == IntPtr.Zero || !this.TryIl2CppDictionaryTryGetIntObject(salesObj, currencyTypeId, out IntPtr entityMapObj) || entityMapObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return this.TryIl2CppDictionaryContainsIntKey(entityMapObj, entityId);
+        }
+#endif
+
+#if BEPINEX
+        private unsafe bool TryIl2CppDictionaryTryGetIntObject(IntPtr dictObj, int key, out IntPtr valueObj)
+        {
+            valueObj = IntPtr.Zero;
+            return dictObj != IntPtr.Zero && this.TryIl2CppDictionaryContainsIntKey(dictObj, key);
+        }
+
+        private unsafe bool TryIl2CppDictionaryContainsIntKey(IntPtr dictObj, int key)
+        {
+            if (dictObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr dictClass = IL2CPP.il2cpp_object_get_class(dictObj);
+            if (dictClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr containsKey = IL2CPP.il2cpp_class_get_method_from_name(dictClass, "ContainsKey", 1);
+            if (containsKey == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            int localKey = key;
+            IntPtr* args = stackalloc IntPtr[1];
+            args[0] = (IntPtr)(&localKey);
+            IntPtr exc = IntPtr.Zero;
+            IntPtr boxed = IL2CPP.il2cpp_runtime_invoke(containsKey, dictObj, (void**)args, ref exc);
+            if (exc != IntPtr.Zero || boxed == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr unboxed = IL2CPP.il2cpp_object_unbox(boxed);
+            return unboxed != IntPtr.Zero && Marshal.ReadByte(unboxed) != 0;
+        }
+#endif
+
+        private bool TryLookupPeriodCurrencySaleAura(int currencyTypeId, int staticId)
+        {
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                return false;
+            }
+
+            if (!this.TryGetAuraMonoTableDataPeriodCurrencySales(out IntPtr salesMapObj))
+            {
+                return false;
+            }
+
+            if (!this.TryFindAuraMonoPeriodCurrencyEntityMap(currencyTypeId, out IntPtr entityMapObj) || entityMapObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return this.TryAuraMonoDictionaryContainsIntKey(entityMapObj, staticId);
+        }
+
+        private bool TryGetAuraMonoTableDataPeriodCurrencySales(out IntPtr salesMapObj)
+        {
+            salesMapObj = IntPtr.Zero;
+            if (!this.TryGetAutoSellAuraMonoTableDataClass(out IntPtr tableDataClass, out _))
+            {
+                return false;
+            }
+
+            IntPtr getSalesMethod = this.FindAuraMonoMethodOnHierarchy(tableDataClass, "get_PeriodCurrencySales", 0);
+            if (getSalesMethod == IntPtr.Zero)
+            {
+                string[] staticFieldNames = new[]
+                {
+                    "PeriodCurrencySales", "periodCurrencySales", "_periodCurrencySales", "TablePeriodCurrencySales"
+                };
+
+                for (int i = 0; i < staticFieldNames.Length; i++)
+                {
+                    if (this.TryGetAuraMonoStaticObjectField(tableDataClass, staticFieldNames[i], out salesMapObj) && salesMapObj != IntPtr.Zero)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            salesMapObj = auraMonoRuntimeInvoke(getSalesMethod, IntPtr.Zero, IntPtr.Zero, ref exc);
+            return exc == IntPtr.Zero && salesMapObj != IntPtr.Zero;
+        }
+
+        private bool TryAuraMonoDictionaryGetIntValue(IntPtr dictObj, int key, out IntPtr valueObj)
+        {
+            valueObj = IntPtr.Zero;
+            return dictObj != IntPtr.Zero && key > 0 && this.TryAuraMonoDictionaryContainsIntKey(dictObj, key);
+        }
+
+        private bool TryGetFestivalSellCurrencyId(out int currencyId)
+        {
+            currencyId = 0;
+            if (!this.autoSellFestivalTokensEnabled)
+            {
+                return false;
+            }
+
+            return this.TryResolveBattlePassPeriodCurrencyId(out currencyId, out _);
+        }
+
+        private bool TryGetAllowedPeriodCurrencyStaticIds(int currencyTypeId, out HashSet<int> allowedStaticIds)
+        {
+            allowedStaticIds = new HashSet<int>();
+            if (currencyTypeId <= 0)
+            {
+                return false;
+            }
+            string source = string.Empty;
+            if (this.TryGetAllowedPeriodCurrencyStaticIdsAura(currencyTypeId, out allowedStaticIds) && allowedStaticIds.Count > 0)
+            {
+                source = "nestedAura";
+            }
+            else if (this.TryGetAllowedPeriodCurrencyStaticIdsManaged(currencyTypeId, out allowedStaticIds) && allowedStaticIds.Count > 0)
+            {
+                source = "nestedManaged";
+            }
+            else if (this.TryGetAllowedPeriodCurrencyStaticIdsFromFlatTable(currencyTypeId, out allowedStaticIds, out string flatSource) && allowedStaticIds.Count > 0)
+            {
+                source = flatSource;
+            }
+            if (allowedStaticIds.Count > 0)
+            {
+                this.AutoSellLogSellResult("Period allowlist via " + source + " count=" + allowedStaticIds.Count + " sample=" + this.FormatAutoSellIdSample(allowedStaticIds, 8) + " currency=" + currencyTypeId);
+                return true;
+            }
+            allowedStaticIds = new HashSet<int>();
+            return false;
+        }
+
+        private string FormatAutoSellIdSample(HashSet<int> ids, int maxCount)
+        {
+            if (ids == null || ids.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            List<int> sample = ids.Take(Mathf.Max(1, maxCount)).ToList();
+            return string.Join(",", sample.ConvertAll(x => x.ToString()).ToArray());
+        }
+
+        private bool TryGetAllowedPeriodCurrencyStaticIdsFromFlatTable(int currencyTypeId, out HashSet<int> allowedStaticIds, out string source)
+        {
+            allowedStaticIds = new HashSet<int>();
+            source = string.Empty;
+            if (currencyTypeId <= 0)
+            {
+                return false;
+            }
+
+            if (this.TryGetAllowedPeriodCurrencyStaticIdsFromFlatTableManaged(currencyTypeId, allowedStaticIds))
+            {
+                source = "flatManaged";
+                return allowedStaticIds.Count > 0;
+            }
+
+            if (this.TryGetAllowedPeriodCurrencyStaticIdsFromFlatTableAura(currencyTypeId, allowedStaticIds))
+            {
+                source = "flatAura";
+                return allowedStaticIds.Count > 0;
+            }
+
+            return false;
+        }
+
+        private bool TryGetAllowedPeriodCurrencyStaticIdsFromFlatTableManaged(int currencyTypeId, HashSet<int> allowedStaticIds)
+        {
+            if (allowedStaticIds == null || currencyTypeId <= 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                Type tableDataType = this.FindManagedTableDataType();
+                if (tableDataType == null)
+                {
+                    return false;
+                }
+
+                object flatTable = null;
+                FieldInfo flatField = tableDataType.GetField("TablePeriodCurrencySales", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (flatField != null)
+                {
+                    flatTable = flatField.GetValue(null);
+                }
+                else
+                {
+                    PropertyInfo flatProp = tableDataType.GetProperty("TablePeriodCurrencySales", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    if (flatProp != null)
+                    {
+                        flatTable = flatProp.GetValue(null, null);
+                    }
+                }
+
+                return this.TryAddPeriodCurrencyEntityIdsFromFlatTableObject(flatTable, currencyTypeId, allowedStaticIds);
+            }
+            catch (Exception ex)
+            {
+                this.AutoSellLog("flatManaged allowlist exception: " + ex.Message);
+                return false;
+            }
+        }
+
+        private bool TryGetAllowedPeriodCurrencyStaticIdsFromFlatTableAura(int currencyTypeId, HashSet<int> allowedStaticIds)
+        {
+            if (allowedStaticIds == null || currencyTypeId <= 0 || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                return false;
+            }
+
+            if (!this.TryGetAutoSellAuraMonoTableDataClass(out IntPtr tableDataClass, out _))
+            {
+                return false;
+            }
+
+            IntPtr flatTable = IntPtr.Zero;
+            string[] staticFieldNames = new[] { "TablePeriodCurrencySales", "tablePeriodCurrencySales", "_tablePeriodCurrencySales" };
+            for (int i = 0; i < staticFieldNames.Length; i++)
+            {
+                if (this.TryGetAuraMonoStaticObjectField(tableDataClass, staticFieldNames[i], out flatTable) && flatTable != IntPtr.Zero)
+                {
+                    break;
+                }
+            }
+
+            if (flatTable == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            List<IntPtr> rows = new List<IntPtr>(512);
+            if (!this.TryEnumerateAuraMonoCollectionItems(flatTable, rows) || rows.Count == 0)
+            {
+                return false;
+            }
+
+            bool foundAny = false;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                IntPtr rowObj = rows[i];
+                if (rowObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr valueObj = rowObj;
+                if (this.TryGetAuraMonoDictionaryEntryIntKey(rowObj, out int pairKey, out IntPtr pairValue) && pairValue != IntPtr.Zero)
+                {
+                    valueObj = pairValue;
+                }
+                else if (this.TryGetMonoObjectMember(rowObj, "Value", out IntPtr boxedValue) && boxedValue != IntPtr.Zero)
+                {
+                    valueObj = boxedValue;
+                }
+
+                if (!this.TryReadPeriodCurrencySaleRowAura(valueObj, out int rowCurrency, out int entityId) || entityId <= 0)
+                {
+                    continue;
+                }
+
+                if (rowCurrency == currencyTypeId)
+                {
+                    allowedStaticIds.Add(entityId);
+                    foundAny = true;
+                }
+            }
+
+            return foundAny;
+        }
+
+        private bool TryReadPeriodCurrencySaleRowAura(IntPtr rowObj, out int currency, out int entityId)
+        {
+            currency = 0;
+            entityId = 0;
+            if (rowObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.TryGetMonoInt32Member(rowObj, "entityId", out entityId))
+            {
+                this.TryGetMonoIntMember(rowObj, "entityId", out entityId);
+            }
+
+            if (!this.TryGetMonoInt32Member(rowObj, "currency", out currency))
+            {
+                this.TryGetMonoIntMember(rowObj, "currency", out currency);
+            }
+
+            if (currency <= 0 && this.TryGetMonoInt32Member(rowObj, "_currency", out int rawCurrency))
+            {
+                currency = rawCurrency;
+            }
+
+            return entityId > 0;
+        }
+
+        private bool TryAddPeriodCurrencyEntityIdsFromFlatTableObject(object flatTable, int currencyTypeId, HashSet<int> allowedStaticIds)
+        {
+            if (flatTable == null || allowedStaticIds == null || currencyTypeId <= 0)
+            {
+                return false;
+            }
+
+            bool foundAny = false;
+            if (flatTable is IDictionary dictionary)
+            {
+                foreach (DictionaryEntry entry in dictionary)
+                {
+                    if (!this.TryReadPeriodCurrencySaleRowManaged(entry.Value, out int rowCurrency, out int entityId))
+                    {
+                        continue;
+                    }
+
+                    if (rowCurrency == currencyTypeId && entityId > 0)
+                    {
+                        allowedStaticIds.Add(entityId);
+                        foundAny = true;
+                    }
+                }
+
+                return foundAny;
+            }
+
+            if (flatTable is IEnumerable enumerable)
+            {
+                foreach (object row in enumerable)
+                {
+                    if (!this.TryReadPeriodCurrencySaleRowManaged(row, out int rowCurrency, out int entityId))
+                    {
+                        continue;
+                    }
+
+                    if (rowCurrency == currencyTypeId && entityId > 0)
+                    {
+                        allowedStaticIds.Add(entityId);
+                        foundAny = true;
+                    }
+                }
+            }
+
+            return foundAny;
+        }
+
+        private bool TryReadPeriodCurrencySaleRowManaged(object row, out int currency, out int entityId)
+        {
+            currency = 0;
+            entityId = 0;
+            if (row == null)
+            {
+                return false;
+            }
+
+            if (!this.TryReadObjectInt(row, "entityId", out entityId) || entityId <= 0)
+            {
+                this.TryReadObjectInt(row, "EntityId", out entityId);
+            }
+
+            if (!this.TryReadObjectInt(row, "currency", out currency) || currency <= 0)
+            {
+                this.TryReadObjectInt(row, "Currency", out currency);
+            }
+
+            return entityId > 0;
+        }
+
+        private bool TryGetAllowedPeriodCurrencyStaticIdsManaged(int currencyTypeId, out HashSet<int> allowedStaticIds)
+        {
+            allowedStaticIds = new HashSet<int>();
+            if (currencyTypeId <= 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                Type tableDataType = this.FindManagedTableDataType();
+                if (tableDataType == null)
+                {
+                    return false;
+                }
+
+                PropertyInfo prop = tableDataType.GetProperty("PeriodCurrencySales", BindingFlags.Public | BindingFlags.Static);
+                if (prop == null)
+                {
+                    return false;
+                }
+
+                if (!(prop.GetValue(null, null) is IDictionary byCurrency))
+                {
+                    return false;
+                }
+
+                IDictionary byEntity = null;
+                foreach (DictionaryEntry bucket in byCurrency)
+                {
+                    int keyValue = 0;
+                    try { keyValue = Convert.ToInt32(bucket.Key); } catch { continue; }
+                    if (keyValue == currencyTypeId)
+                    {
+                        byEntity = bucket.Value as IDictionary;
+                        break;
+                    }
+                }
+
+                if (byEntity == null)
+                {
+                    return false;
+                }
+
+                foreach (DictionaryEntry e in byEntity)
+                {
+                    try
+                    {
+                        int entityId = Convert.ToInt32(e.Key);
+                        if (entityId > 0)
+                        {
+                            allowedStaticIds.Add(entityId);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                return allowedStaticIds.Count > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryGetAllowedPeriodCurrencyStaticIdsAura(int currencyTypeId, out HashSet<int> allowedStaticIds)
+        {
+            allowedStaticIds = new HashSet<int>();
+            if (currencyTypeId <= 0 || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                return false;
+            }
+
+            if (!this.TryFindAuraMonoPeriodCurrencyEntityMap(currencyTypeId, out IntPtr entityMapObj) || entityMapObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return this.TryCollectPeriodSaleEntityIdsFromAuraEntityMap(entityMapObj, allowedStaticIds) && allowedStaticIds.Count > 0;
+        }
+
+#if BEPINEX
+        private unsafe bool TryGetAllowedPeriodCurrencyStaticIdsIl2Cpp(int currencyTypeId, out HashSet<int> allowedStaticIds)
+        {
+            allowedStaticIds = new HashSet<int>();
+            if (currencyTypeId <= 0)
+            {
+                return false;
+            }
+
+            IntPtr tableClass = this.TryFindIl2CppClass("TableData", "EcsClient", "Il2CppEcsClient", string.Empty);
+            if (tableClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr field = IL2CPP.il2cpp_class_get_field_from_name(tableClass, "PeriodCurrencySales");
+            if (field == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr salesObj = IL2CPP.il2cpp_field_get_value_object(field, IntPtr.Zero);
+            if (salesObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return this.TryCollectPeriodCurrencyEntityIdsFromIl2CppMap(salesObj, currencyTypeId, allowedStaticIds);
+        }
+
+        private unsafe bool TryCollectPeriodCurrencyEntityIdsFromIl2CppMap(IntPtr mapObj, int currencyTypeId, HashSet<int> allowedStaticIds)
+        {
+            if (mapObj == IntPtr.Zero || allowedStaticIds == null || currencyTypeId <= 0)
+            {
+                return false;
+            }
+
+            IntPtr mapClass = IL2CPP.il2cpp_object_get_class(mapObj);
+            if (mapClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr getEnumerator = IL2CPP.il2cpp_class_get_method_from_name(mapClass, "GetEnumerator", 0);
+            if (getEnumerator == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr enumerator = IL2CPP.il2cpp_runtime_invoke(getEnumerator, mapObj, null, ref exc);
+            if (exc != IntPtr.Zero || enumerator == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr enumeratorClass = IL2CPP.il2cpp_object_get_class(enumerator);
+            if (enumeratorClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr moveNext = IL2CPP.il2cpp_class_get_method_from_name(enumeratorClass, "MoveNext", 0);
+            IntPtr getCurrent = IL2CPP.il2cpp_class_get_method_from_name(enumeratorClass, "get_Current", 0);
+            if (moveNext == IntPtr.Zero || getCurrent == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            bool foundBucket = false;
+            for (int guard = 0; guard < 4096; guard++)
+            {
+                exc = IntPtr.Zero;
+                IntPtr movedObj = IL2CPP.il2cpp_runtime_invoke(moveNext, enumerator, null, ref exc);
+                if (exc != IntPtr.Zero || movedObj == IntPtr.Zero)
+                {
+                    break;
+                }
+
+                IntPtr unboxed = IL2CPP.il2cpp_object_unbox(movedObj);
+                if (unboxed == IntPtr.Zero || Marshal.ReadByte(unboxed) == 0)
+                {
+                    break;
+                }
+
+                exc = IntPtr.Zero;
+                IntPtr currentObj = IL2CPP.il2cpp_runtime_invoke(getCurrent, enumerator, null, ref exc);
+                if (exc != IntPtr.Zero || currentObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                int bucketCurrency = this.TryReadIl2CppKeyValuePairIntKey(currentObj, out IntPtr entityMap);
+                if (bucketCurrency != currencyTypeId || entityMap == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                foundBucket = this.TryCollectPeriodCurrencyEntityIdsFromIl2CppEntityMap(entityMap, allowedStaticIds) || foundBucket;
+            }
+
+            return foundBucket && allowedStaticIds.Count > 0;
+        }
+
+        private unsafe bool TryCollectPeriodCurrencyEntityIdsFromIl2CppEntityMap(IntPtr mapObj, HashSet<int> allowedStaticIds)
+        {
+            if (mapObj == IntPtr.Zero || allowedStaticIds == null)
+            {
+                return false;
+            }
+
+            IntPtr mapClass = IL2CPP.il2cpp_object_get_class(mapObj);
+            if (mapClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr getEnumerator = IL2CPP.il2cpp_class_get_method_from_name(mapClass, "GetEnumerator", 0);
+            if (getEnumerator == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr enumerator = IL2CPP.il2cpp_runtime_invoke(getEnumerator, mapObj, null, ref exc);
+            if (exc != IntPtr.Zero || enumerator == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr enumeratorClass = IL2CPP.il2cpp_object_get_class(enumerator);
+            IntPtr moveNext = IL2CPP.il2cpp_class_get_method_from_name(enumeratorClass, "MoveNext", 0);
+            IntPtr getCurrent = IL2CPP.il2cpp_class_get_method_from_name(enumeratorClass, "get_Current", 0);
+            if (moveNext == IntPtr.Zero || getCurrent == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            bool foundAny = false;
+            for (int guard = 0; guard < 4096; guard++)
+            {
+                exc = IntPtr.Zero;
+                IntPtr movedObj = IL2CPP.il2cpp_runtime_invoke(moveNext, enumerator, null, ref exc);
+                if (exc != IntPtr.Zero || movedObj == IntPtr.Zero)
+                {
+                    break;
+                }
+
+                IntPtr unboxed = IL2CPP.il2cpp_object_unbox(movedObj);
+                if (unboxed == IntPtr.Zero || Marshal.ReadByte(unboxed) == 0)
+                {
+                    break;
+                }
+
+                exc = IntPtr.Zero;
+                IntPtr currentObj = IL2CPP.il2cpp_runtime_invoke(getCurrent, enumerator, null, ref exc);
+                if (exc != IntPtr.Zero || currentObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                int keyInt = this.TryReadIl2CppKeyValuePairIntKey(currentObj, out IntPtr valueObj);
+                if (this.TryExtractPeriodSaleEntityIdFromIl2CppObject(keyInt, valueObj, out int entityId) && entityId > 0)
+                {
+                    allowedStaticIds.Add(entityId);
+                    foundAny = true;
+                }
+            }
+
+            return foundAny;
+        }
+
+        private unsafe bool TryExtractPeriodSaleEntityIdFromIl2CppObject(int keyInt, IntPtr valueObj, out int entityId)
+        {
+            entityId = 0;
+            if (valueObj != IntPtr.Zero)
+            {
+                entityId = this.TryReadIl2CppObjectIntField(valueObj, "entityId");
+                if (entityId <= 0)
+                {
+                    entityId = this.TryReadIl2CppObjectIntField(valueObj, "EntityId");
+                }
+
+                if (entityId <= 0)
+                {
+                    entityId = this.TryReadIl2CppObjectIntField(valueObj, "staticId");
+                }
+
+                if (entityId <= 0)
+                {
+                    entityId = this.TryReadIl2CppObjectIntField(valueObj, "StaticId");
+                }
+            }
+
+            if (entityId <= 0 && keyInt > 0)
+            {
+                entityId = keyInt;
+            }
+
+            return entityId > 0;
+        }
+
+        private unsafe int TryReadIl2CppObjectIntField(IntPtr obj, string fieldName)
+        {
+            if (obj == IntPtr.Zero || string.IsNullOrWhiteSpace(fieldName))
+            {
+                return 0;
+            }
+
+            IntPtr klass = IL2CPP.il2cpp_object_get_class(obj);
+            if (klass == IntPtr.Zero)
+            {
+                return 0;
+            }
+
+            IntPtr field = IL2CPP.il2cpp_class_get_field_from_name(klass, fieldName);
+            if (field == IntPtr.Zero)
+            {
+                return 0;
+            }
+
+            int value = 0;
+            IL2CPP.il2cpp_field_get_value(obj, field, &value);
+            return value;
+        }
+
+        private unsafe int TryReadIl2CppKeyValuePairIntKey(IntPtr pairObj, out IntPtr valueObj)
+        {
+            valueObj = IntPtr.Zero;
+            if (pairObj == IntPtr.Zero)
+            {
+                return 0;
+            }
+
+            IntPtr klass = IL2CPP.il2cpp_object_get_class(pairObj);
+            if (klass == IntPtr.Zero)
+            {
+                return 0;
+            }
+
+            IntPtr keyField = IL2CPP.il2cpp_class_get_field_from_name(klass, "key");
+            if (keyField == IntPtr.Zero)
+            {
+                keyField = IL2CPP.il2cpp_class_get_field_from_name(klass, "Key");
+            }
+
+            IntPtr valueField = IL2CPP.il2cpp_class_get_field_from_name(klass, "value");
+            if (valueField == IntPtr.Zero)
+            {
+                valueField = IL2CPP.il2cpp_class_get_field_from_name(klass, "Value");
+            }
+
+            int key = 0;
+            if (keyField != IntPtr.Zero)
+            {
+                IntPtr keyObj = IL2CPP.il2cpp_field_get_value_object(keyField, pairObj);
+                if (keyObj != IntPtr.Zero)
+                {
+                    IntPtr unboxed = IL2CPP.il2cpp_object_unbox(keyObj);
+                    if (unboxed != IntPtr.Zero)
+                    {
+                        key = Marshal.ReadInt32(unboxed);
+                    }
+                }
+                else
+                {
+                    IL2CPP.il2cpp_field_get_value(pairObj, keyField, &key);
+                }
+            }
+
+            if (valueField != IntPtr.Zero)
+            {
+                valueObj = IL2CPP.il2cpp_field_get_value_object(valueField, pairObj);
+            }
+
+            return key;
+        }
+#endif
+
+        private bool TryCollectPeriodCurrencyEntityIdsFromAuraMap(IntPtr mapObj, int currencyTypeId, HashSet<int> allowedStaticIds)
+        {
+            if (mapObj == IntPtr.Zero || allowedStaticIds == null || currencyTypeId <= 0)
+            {
+                return false;
+            }
+
+            List<IntPtr> buckets = new List<IntPtr>(64);
+            if (!this.TryEnumerateAuraMonoCollectionItems(mapObj, buckets) || buckets.Count == 0)
+            {
+                return false;
+            }
+
+            bool foundAny = false;
+            for (int i = 0; i < buckets.Count; i++)
+            {
+                IntPtr bucketObj = buckets[i];
+                if (bucketObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                if (!this.TryGetAuraMonoDictionaryEntryIntKey(bucketObj, out int bucketCurrency, out IntPtr entityMapObj))
+                {
+                    continue;
+                }
+
+                if (bucketCurrency != currencyTypeId || entityMapObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                foundAny = this.TryCollectPeriodSaleEntityIdsFromAuraEntityMap(entityMapObj, allowedStaticIds) || foundAny;
+            }
+
+            return foundAny;
+        }
+
+        private bool TryCollectPeriodSaleEntityIdsFromAuraEntityMap(IntPtr entityMapObj, HashSet<int> allowedStaticIds)
+        {
+            if (entityMapObj == IntPtr.Zero || allowedStaticIds == null)
+            {
+                return false;
+            }
+
+            List<IntPtr> entries = new List<IntPtr>(128);
+            if (!this.TryEnumerateAuraMonoCollectionItems(entityMapObj, entries) || entries.Count == 0)
+            {
+                return false;
+            }
+
+            bool foundAny = false;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                IntPtr entryObj = entries[i];
+                if (entryObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                if (this.TryGetAuraMonoDictionaryEntryIntKey(entryObj, out int keyInt, out IntPtr valueObj)
+                    && this.TryExtractPeriodSaleEntityIdFromAuraValue(keyInt, valueObj, out int entityId))
+                {
+                    allowedStaticIds.Add(entityId);
+                    foundAny = true;
+                    continue;
+                }
+
+                int fallbackKey = 0;
+                if (this.TryGetMonoInt32Member(entryObj, "Key", out fallbackKey) || this.TryGetMonoIntMember(entryObj, "Key", out fallbackKey))
+                {
+                    if (this.TryExtractPeriodSaleEntityIdFromAuraValue(fallbackKey, IntPtr.Zero, out int fallbackEntityId))
+                    {
+                        allowedStaticIds.Add(fallbackEntityId);
+                        foundAny = true;
+                    }
+                }
+            }
+
+            return foundAny;
+        }
+
+        private bool TryExtractPeriodSaleEntityIdFromAuraValue(int keyInt, IntPtr valueObj, out int entityId)
+        {
+            entityId = 0;
+            if (valueObj != IntPtr.Zero)
+            {
+                if (!this.TryGetMonoInt32Member(valueObj, "entityId", out entityId))
+                {
+                    this.TryGetMonoIntMember(valueObj, "entityId", out entityId);
+                }
+
+                if (entityId <= 0 && !this.TryGetMonoInt32Member(valueObj, "EntityId", out entityId))
+                {
+                    this.TryGetMonoIntMember(valueObj, "EntityId", out entityId);
+                }
+
+                if (entityId <= 0 && !this.TryGetMonoInt32Member(valueObj, "staticId", out entityId))
+                {
+                    this.TryGetMonoIntMember(valueObj, "staticId", out entityId);
+                }
+
+                if (entityId <= 0 && !this.TryGetMonoInt32Member(valueObj, "StaticId", out entityId))
+                {
+                    this.TryGetMonoIntMember(valueObj, "StaticId", out entityId);
+                }
+            }
+
+            if (entityId <= 0 && keyInt > 0)
+            {
+                entityId = keyInt;
+            }
+
+            return entityId > 0;
+        }
+
+        private bool TryGetAuraMonoDictionaryEntryIntKey(IntPtr entryObj, out int keyInt, out IntPtr valueObj)
+        {
+            keyInt = 0;
+            valueObj = IntPtr.Zero;
+            if (entryObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr keyObj = IntPtr.Zero;
+            if (!this.TryGetMonoObjectMember(entryObj, "Key", out keyObj) || keyObj == IntPtr.Zero)
+            {
+                this.TryGetMonoObjectMember(entryObj, "key", out keyObj);
+            }
+
+            if (keyObj != IntPtr.Zero)
+            {
+                if (!this.TryGetMonoInt32Member(keyObj, "m_value", out keyInt))
+                {
+                    this.TryGetMonoIntMember(keyObj, "m_value", out keyInt);
+                }
+
+                if (keyInt <= 0)
+                {
+                    this.TryGetMonoInt32Member(keyObj, "value__", out keyInt);
+                }
+
+                if (keyInt <= 0 && auraMonoObjectUnbox != null)
+                {
+                    try
+                    {
+                        IntPtr unboxed = auraMonoObjectUnbox(keyObj);
+                        if (unboxed != IntPtr.Zero)
+                        {
+                            keyInt = Marshal.ReadInt32(unboxed);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            if (!this.TryGetMonoObjectMember(entryObj, "Value", out valueObj) || valueObj == IntPtr.Zero)
+            {
+                this.TryGetMonoObjectMember(entryObj, "value", out valueObj);
+            }
+
+            return keyInt != 0 || valueObj != IntPtr.Zero;
+        }
+
+        private bool TryFindAuraMonoPeriodCurrencyEntityMap(int currencyTypeId, out IntPtr entityMapObj)
+        {
+            entityMapObj = IntPtr.Zero;
+            if (currencyTypeId <= 0 || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                return false;
+            }
+
+            if (!this.TryGetAutoSellAuraMonoTableDataClass(out IntPtr tableDataClass, out _))
+            {
+                return false;
+            }
+
+            IntPtr salesMapObj = IntPtr.Zero;
+            string[] staticFieldNames = new[]
+            {
+                "PeriodCurrencySales", "periodCurrencySales", "_periodCurrencySales", "TablePeriodCurrencySales"
+            };
+
+            for (int i = 0; i < staticFieldNames.Length; i++)
+            {
+                if (this.TryGetAuraMonoStaticObjectField(tableDataClass, staticFieldNames[i], out salesMapObj) && salesMapObj != IntPtr.Zero)
+                {
+                    break;
+                }
+            }
+
+            if (salesMapObj == IntPtr.Zero && !this.TryGetAuraMonoTableDataPeriodCurrencySales(out salesMapObj))
+            {
+                return false;
+            }
+
+            if (salesMapObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            List<IntPtr> buckets = new List<IntPtr>(64);
+            if (!this.TryEnumerateAuraMonoCollectionItems(salesMapObj, buckets) || buckets.Count == 0)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < buckets.Count; i++)
+            {
+                IntPtr bucketObj = buckets[i];
+                if (bucketObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                if (!this.TryGetAuraMonoDictionaryEntryIntKey(bucketObj, out int bucketCurrency, out IntPtr mapObj))
+                {
+                    continue;
+                }
+
+                if (bucketCurrency == currencyTypeId && mapObj != IntPtr.Zero)
+                {
+                    entityMapObj = mapObj;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool TryBoxAuraMonoInt32(int value, out IntPtr boxedObj)
+        {
+            boxedObj = IntPtr.Zero;
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoObjectNew == null || auraMonoFieldSetValue == null)
+            {
+                return false;
+            }
+
+            if (this.autoSellMonoInt32ClassPtr == IntPtr.Zero)
+            {
+                IntPtr coreImage = this.FindAuraMonoImage(new[] { "mscorlib", "mscorlib.dll", "System.Private.CoreLib", "System.Private.CoreLib.dll" });
+                if (coreImage != IntPtr.Zero && auraMonoClassFromName != null)
+                {
+                    this.autoSellMonoInt32ClassPtr = auraMonoClassFromName(coreImage, "System", "Int32");
+                }
+            }
+
+            if (this.autoSellMonoInt32ClassPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            try
+            {
+                boxedObj = auraMonoObjectNew(this.auraMonoRootDomain, this.autoSellMonoInt32ClassPtr);
+                if (boxedObj == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                if (auraMonoRuntimeObjectInit != null)
+                {
+                    auraMonoRuntimeObjectInit(boxedObj);
+                }
+
+                IntPtr valueField = this.FindAuraMonoFieldOnHierarchy(this.autoSellMonoInt32ClassPtr, "m_value");
+                if (valueField == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                unsafe
+                {
+                    int localValue = value;
+                    auraMonoFieldSetValue(boxedObj, valueField, (IntPtr)(&localValue));
+                }
+
+                return true;
+            }
+            catch
+            {
+                boxedObj = IntPtr.Zero;
+                return false;
+            }
+        }
+
+        private unsafe bool TryInvokeAuraMonoObjectIntArg(IntPtr obj, IntPtr argObj, out IntPtr result, params string[] methodNames)
+        {
+            result = IntPtr.Zero;
+            if (obj == IntPtr.Zero || argObj == IntPtr.Zero || methodNames == null || methodNames.Length == 0 || auraMonoObjectGetClass == null || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr classPtr = auraMonoObjectGetClass(obj);
+            if (classPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            foreach (string methodName in methodNames)
+            {
+                IntPtr method = this.FindAuraMonoMethodOnHierarchy(classPtr, methodName, 1);
+                if (method == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr exc = IntPtr.Zero;
+                IntPtr* args = stackalloc IntPtr[1];
+                args[0] = argObj;
+                result = auraMonoRuntimeInvoke(method, obj, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero && result != IntPtr.Zero)
+                {
+                    return true;
+                }
+            }
+
+            result = IntPtr.Zero;
+            return false;
+        }
+
+        private unsafe bool TryInvokeAuraMonoObjectIntArgReturningBool(IntPtr obj, IntPtr argObj, out bool result, params string[] methodNames)
+        {
+            result = false;
+            if (obj == IntPtr.Zero || argObj == IntPtr.Zero || methodNames == null || methodNames.Length == 0 || auraMonoObjectGetClass == null || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr classPtr = auraMonoObjectGetClass(obj);
+            if (classPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            foreach (string methodName in methodNames)
+            {
+                IntPtr method = this.FindAuraMonoMethodOnHierarchy(classPtr, methodName, 1);
+                if (method == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr exc = IntPtr.Zero;
+                IntPtr* args = stackalloc IntPtr[1];
+                args[0] = argObj;
+                IntPtr boxed = auraMonoRuntimeInvoke(method, obj, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero && boxed != IntPtr.Zero && this.TryUnboxMonoBoolean(boxed, out result))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private unsafe bool TryInvokeAuraMonoStaticTwoIntMethod(IntPtr methodPtr, int firstArg, int secondArg, out IntPtr resultObj)
+        {
+            resultObj = IntPtr.Zero;
+            if (methodPtr == IntPtr.Zero || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr* args = stackalloc IntPtr[2];
+            int localFirst = firstArg;
+            int localSecond = secondArg;
+            args[0] = (IntPtr)(&localFirst);
+            args[1] = (IntPtr)(&localSecond);
+            resultObj = auraMonoRuntimeInvoke(methodPtr, IntPtr.Zero, (IntPtr)args, ref exc);
+            return exc == IntPtr.Zero && resultObj != IntPtr.Zero;
+        }
+
+        private bool TryAuraMonoDictionaryContainsIntKey(IntPtr dictObj, int key)
+        {
+            if (dictObj == IntPtr.Zero || key <= 0)
+            {
+                return false;
+            }
+
+            if (this.TryBoxAuraMonoInt32(key, out IntPtr boxedKey)
+                && this.TryInvokeAuraMonoObjectIntArgReturningBool(dictObj, boxedKey, out bool boxedContains, "ContainsKey", "Contains")
+                && boxedContains)
+            {
+                return true;
+            }
+
+            return this.TryInvokeAuraMonoIntArgReturningBool(dictObj, key, out bool contains, "ContainsKey", "Contains")
+                && contains;
+        }
+
+        private bool TryExtractStaticIdFromAutoSellText(string text, out int staticId)
+        {
+            staticId = 0;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return false;
+            }
+
+            string normalized = this.NormalizeAutoSellMatchKey(text);
+            int end = normalized.Length;
+            int start = end;
+            while (start > 0 && char.IsDigit(normalized[start - 1]))
+            {
+                start--;
+            }
+
+            if (start >= end)
+            {
+                return false;
+            }
+
+            return int.TryParse(normalized.Substring(start, end - start), out staticId) && staticId > 0;
+        }
+
+        private bool TryResolveStaticIdForSell(uint netId, string descriptor, out int staticId, out string source)
+        {
+            staticId = 0;
+            source = "none";
+            if (netId == 0U)
+            {
+                return false;
+            }
+
+            if (this.autoSellCollectedStaticIdsByNetId.TryGetValue(netId, out staticId) && staticId > 0)
+            {
+                source = "collect";
+                return true;
+            }
+
+            if (this.autoSellBagItems != null)
+            {
+                for (int i = 0; i < this.autoSellBagItems.Count; i++)
+                {
+                    AutoSellBagItemEntry entry = this.autoSellBagItems[i];
+                    if (entry != null && entry.NetId == netId && entry.StaticId > 0)
+                    {
+                        staticId = entry.StaticId;
+                        source = "bagCache";
+                        this.RememberAutoSellCollectedStaticId(netId, staticId);
+                        return true;
+                    }
+                }
+            }
+
+            if (this.directBackpackRuntimeItems != null)
+            {
+                for (int i = 0; i < this.directBackpackRuntimeItems.Count; i++)
+                {
+                    DirectBackpackRuntimeItem item = this.directBackpackRuntimeItems[i];
+                    if (item == null || item.NetId != netId)
+                    {
+                        continue;
+                    }
+
+                    if (item.StaticId > 0)
+                    {
+                        staticId = item.StaticId;
+                        source = "runtime";
+                        this.RememberAutoSellCollectedStaticId(netId, staticId);
+                        return true;
+                    }
+
+                    if (item.MonoItem != IntPtr.Zero && this.TryGetDirectBackpackItemStaticId(item.MonoItem, out staticId) && staticId > 0)
+                    {
+                        item.StaticId = staticId;
+                        source = "runtimeMono";
+                        this.RememberAutoSellCollectedStaticId(netId, staticId);
+                        return true;
+                    }
+
+                    if (item.ManagedItem != null && this.TryGetManagedInt32Member(item.ManagedItem, "staticId", out staticId) && staticId > 0)
+                    {
+                        item.StaticId = staticId;
+                        source = "runtimeManaged";
+                        this.RememberAutoSellCollectedStaticId(netId, staticId);
+                        return true;
+                    }
+                }
+            }
+
+            if (this.TryExtractStaticIdFromAutoSellText(descriptor, out staticId))
+            {
+                source = "descriptor";
+                this.RememberAutoSellCollectedStaticId(netId, staticId);
+                return true;
+            }
+
+            if (this.TryExtractStaticIdFromAutoSellText(this.autoSellItemKey, out staticId))
+            {
+                source = "matchKey";
+                this.RememberAutoSellCollectedStaticId(netId, staticId);
+                return true;
+            }
+
+            if (this.TryResolveStaticIdFromLiveMonoBackpack(netId, out staticId))
+            {
+                source = "liveMono";
+                this.RememberAutoSellCollectedStaticId(netId, staticId);
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryResolveStaticIdFromLiveMonoBackpack(uint targetNetId, out int staticId)
+        {
+            staticId = 0;
+            if (targetNetId == 0U || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!this.TryResolveAuraMonoModule("XDTGameSystem.GameplaySystem.BackPack.BackPackSystem", out IntPtr backPackSystemObj) || backPackSystemObj == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                IntPtr backPackClass = auraMonoObjectGetClass != null ? auraMonoObjectGetClass(backPackSystemObj) : IntPtr.Zero;
+                IntPtr getAllItemMethod = this.FindAuraMonoMethodOnHierarchy(backPackClass, "GetAllItem", 1);
+                bool getAllItemNeedsStorageType = true;
+                if (getAllItemMethod == IntPtr.Zero)
+                {
+                    getAllItemMethod = this.FindAuraMonoMethodOnHierarchy(backPackClass, "GetAllItem", 0);
+                    getAllItemNeedsStorageType = false;
+                }
+                if (getAllItemMethod == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                foreach (int storageTypeValue in this.GetAutoSellStorageTypeValues())
+                {
+                    IntPtr exc = IntPtr.Zero;
+                    IntPtr itemListObj;
+                    unsafe
+                    {
+                        IntPtr* args = stackalloc IntPtr[1];
+                        args[0] = (IntPtr)(&storageTypeValue);
+                        itemListObj = auraMonoRuntimeInvoke(getAllItemMethod, backPackSystemObj, getAllItemNeedsStorageType ? (IntPtr)args : IntPtr.Zero, ref exc);
+                    }
+                    if (exc != IntPtr.Zero || itemListObj == IntPtr.Zero)
+                    {
+                        continue;
+                    }
+
+                    List<IntPtr> items = new List<IntPtr>();
+                    if (!this.TryEnumerateAuraMonoCollectionItems(itemListObj, items))
+                    {
+                        continue;
+                    }
+
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        IntPtr itemObj = items[i];
+                        if (itemObj == IntPtr.Zero || !this.TryGetDirectBackpackItemNetId(itemObj, out uint netId) || netId != targetNetId)
+                        {
+                            continue;
+                        }
+
+                        if (this.TryGetDirectBackpackItemStaticId(itemObj, out staticId) && staticId > 0)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                this.AutoSellLog("Live mono staticId lookup exception: " + ex.Message);
+            }
+
+            return false;
+        }
+
+        private bool TryQuickSellItemsBatched(Dictionary<uint, int> itemsToSell, int currencyTypeId = 0)
         {
             if (itemsToSell == null || itemsToSell.Count == 0)
             {
@@ -51307,19 +53352,858 @@ namespace HeartopiaMod
                     batch[entry.Key] = entry.Value;
                 }
 
-                if (this.TryInvokeQuickSellManaged(batch) || this.TryInvokeQuickSellAuraMono(batch))
+                bool sentBatch = false;
+                if (currencyTypeId > 0)
+                {
+                    sentBatch = this.TryInvokeQuickSellManaged(batch, currencyTypeId);
+                    if (!sentBatch)
+                    {
+                        sentBatch = this.TryInvokeQuickSellAuraMono(batch, currencyTypeId);
+                    }
+                }
+                else
+                {
+                    sentBatch = this.TryInvokeQuickSellManaged(batch, 0);
+                    if (!sentBatch)
+                    {
+                        sentBatch = this.TryInvokeQuickSellAuraMono(batch, 0);
+                    }
+                }
+
+                if (sentBatch)
                 {
                     anySent = true;
+                    this.AutoSellLogSellResult("QuickSell batch ok offset=" + offset + " size=" + batch.Count + " currency=" + currencyTypeId);
                     continue;
                 }
-                this.AutoSellLog("QuickSell batch failed at offset=" + offset + " size=" + batch.Count);
+                this.AutoSellLogSellResult("QuickSell batch failed offset=" + offset + " size=" + batch.Count + " currency=" + currencyTypeId);
                 return anySent;
             }
 
             return anySent;
         }
 
-        private bool TryInvokeQuickSellManaged(Dictionary<uint, int> itemsToSell)
+        private Type FindManagedTableDataType()
+        {
+            string[] fullNames = new[]
+            {
+                "EcsClient.TableData",
+                "TableData",
+                "Il2CppEcsClient.TableData",
+                "Il2Cpp.TableData"
+            };
+
+            for (int i = 0; i < fullNames.Length; i++)
+            {
+                Type type = this.FindLoadedType(fullNames[i]);
+                if (type != null)
+                {
+                    return type;
+                }
+            }
+
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (assembly == null)
+                {
+                    continue;
+                }
+
+                Type[] types;
+                try
+                {
+                    types = assembly.GetTypes();
+                }
+                catch (ReflectionTypeLoadException ex)
+                {
+                    types = ex.Types;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (types == null)
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < types.Length; i++)
+                {
+                    Type type = types[i];
+                    if (type != null && string.Equals(type.Name, "TableData", StringComparison.Ordinal))
+                    {
+                        return type;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static void AutoSellAuraMonoAssemblySearchCallback(IntPtr assembly, IntPtr userData)
+        {
+            if (autoSellAuraMonoSearchResult != IntPtr.Zero || autoSellAuraMonoSearchHost == null || string.IsNullOrWhiteSpace(autoSellAuraMonoSearchClass))
+            {
+                return;
+            }
+
+            if (auraMonoAssemblyGetImage == null || auraMonoClassFromName == null)
+            {
+                return;
+            }
+
+            IntPtr image = auraMonoAssemblyGetImage(assembly);
+            if (image == IntPtr.Zero)
+            {
+                return;
+            }
+
+            try
+            {
+                IntPtr classPtr = auraMonoClassFromName(image, autoSellAuraMonoSearchNamespace ?? string.Empty, autoSellAuraMonoSearchClass);
+                if (classPtr != IntPtr.Zero)
+                {
+                    autoSellAuraMonoSearchResult = classPtr;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private IntPtr FindAuraMonoClassInAllLoadedImages(string className, string nameSpace)
+        {
+            if (!this.auraMonoApiReady || auraMonoAssemblyForeach == null || string.IsNullOrWhiteSpace(className))
+            {
+                return IntPtr.Zero;
+            }
+
+            autoSellAuraMonoSearchHost = this;
+            autoSellAuraMonoSearchClass = className;
+            autoSellAuraMonoSearchNamespace = nameSpace ?? string.Empty;
+            autoSellAuraMonoSearchResult = IntPtr.Zero;
+            try
+            {
+                auraMonoAssemblyForeach(AutoSellAuraMonoAssemblySearchCallback, IntPtr.Zero);
+            }
+            catch
+            {
+            }
+            finally
+            {
+                autoSellAuraMonoSearchHost = null;
+            }
+
+            return autoSellAuraMonoSearchResult;
+        }
+
+        private bool TryGetAutoSellAuraMonoTableDataClass(out IntPtr tableDataClass, out string source)
+        {
+            tableDataClass = IntPtr.Zero;
+            source = string.Empty;
+            if (!this.EnsureAuraMonoApiReady() || auraMonoClassFromName == null)
+            {
+                return false;
+            }
+
+            string[] imageNames = new[]
+            {
+                "EcsClient", "EcsClient.dll",
+                "XDTDataAndProtocol", "XDTDataAndProtocol.dll",
+                "XDTGameSystem", "XDTGameSystem.dll",
+                "Client", "Client.dll",
+                "Assembly-CSharp", "Assembly-CSharp.dll"
+            };
+
+            IntPtr found = this.FindAuraMonoClassByFullName("EcsClient.TableData");
+            if (found != IntPtr.Zero)
+            {
+                tableDataClass = found;
+                source = "fullName EcsClient.TableData";
+                return true;
+            }
+
+            found = this.FindAuraMonoClassByFullName("TableData");
+            if (found != IntPtr.Zero)
+            {
+                tableDataClass = found;
+                source = "fullName TableData";
+                return true;
+            }
+
+            found = this.FindAuraMonoClassInImages("EcsClient", "TableData", imageNames);
+            if (found != IntPtr.Zero)
+            {
+                tableDataClass = found;
+                source = "image scan ns=EcsClient TableData";
+                return true;
+            }
+
+            found = this.FindAuraMonoClassInImages(string.Empty, "TableData", imageNames);
+            if (found != IntPtr.Zero)
+            {
+                tableDataClass = found;
+                source = "image scan ns=empty TableData";
+                return true;
+            }
+
+            found = this.FindAuraMonoClassInAllLoadedImages("TableData", string.Empty);
+            if (found != IntPtr.Zero)
+            {
+                tableDataClass = found;
+                source = "assemblyForeach ns=empty TableData";
+                return true;
+            }
+
+            found = this.FindAuraMonoClassInAllLoadedImages("TableData", "EcsClient");
+            if (found != IntPtr.Zero)
+            {
+                tableDataClass = found;
+                source = "assemblyForeach ns=EcsClient TableData";
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryReadBattlePassCurrencyFromPeriodTableMono(IntPtr tableDataClass, int periodId, out int currencyId, out string status)
+        {
+            currencyId = 0;
+            status = string.Empty;
+            if (tableDataClass == IntPtr.Zero || periodId <= 0)
+            {
+                status = "invalid table class or periodId";
+                return false;
+            }
+
+            string[] staticFieldNames = new[]
+            {
+                "TableBattlePassPeriods", "tableBattlePassPeriods", "_tableBattlePassPeriods",
+                "s_tableBattlePassPeriods", "battlePassPeriods", "BattlePassPeriodTable", "BattlePassPeriods"
+            };
+            for (int i = 0; i < staticFieldNames.Length; i++)
+            {
+                if (!this.TryGetAuraMonoStaticObjectField(tableDataClass, staticFieldNames[i], out IntPtr tableObj) || tableObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                List<IntPtr> items = new List<IntPtr>(256);
+                if (!this.TryEnumerateAuraMonoCollectionItems(tableObj, items) || items.Count == 0)
+                {
+                    continue;
+                }
+
+                for (int j = 0; j < items.Count; j++)
+                {
+                    IntPtr itemObj = items[j];
+                    if (itemObj == IntPtr.Zero)
+                    {
+                        continue;
+                    }
+
+                    IntPtr valueObj = itemObj;
+                    IntPtr keyObj = IntPtr.Zero;
+                    if (this.TryGetMonoObjectMember(itemObj, "Value", out IntPtr boxedValue) && boxedValue != IntPtr.Zero)
+                    {
+                        valueObj = boxedValue;
+                    }
+                    else if (this.TryGetMonoObjectMember(itemObj, "value", out boxedValue) && boxedValue != IntPtr.Zero)
+                    {
+                        valueObj = boxedValue;
+                    }
+
+                    int rowPeriodId = 0;
+                    if (this.TryGetMonoObjectMember(itemObj, "Key", out keyObj) && keyObj != IntPtr.Zero)
+                    {
+                        this.TryGetMonoInt32Member(keyObj, "m_value", out rowPeriodId);
+                        if (rowPeriodId <= 0)
+                        {
+                            this.TryGetMonoIntMember(keyObj, "m_value", out rowPeriodId);
+                        }
+                    }
+
+                    if (rowPeriodId <= 0)
+                    {
+                        this.TryGetMonoInt32Member(valueObj, "id", out rowPeriodId);
+                        if (rowPeriodId <= 0)
+                        {
+                            this.TryGetMonoIntMember(valueObj, "id", out rowPeriodId);
+                        }
+                        if (rowPeriodId <= 0)
+                        {
+                            this.TryGetMonoInt32Member(valueObj, "periodId", out rowPeriodId);
+                        }
+                        if (rowPeriodId <= 0)
+                        {
+                            this.TryGetMonoIntMember(valueObj, "periodId", out rowPeriodId);
+                        }
+                    }
+
+                    if (rowPeriodId != periodId)
+                    {
+                        continue;
+                    }
+
+                    this.TryGetMonoInt32Member(valueObj, "currency", out currencyId);
+                    if (currencyId <= 0)
+                    {
+                        this.TryGetMonoIntMember(valueObj, "currency", out currencyId);
+                    }
+
+                    if (currencyId > 0)
+                    {
+                        status = "staticTable field=" + staticFieldNames[i] + " periodId=" + periodId;
+                        return true;
+                    }
+                }
+            }
+
+            status = "period row not found in static table (periodId=" + periodId + ")";
+            return false;
+        }
+
+
+
+        private bool TryResolveBattlePassPeriodCurrencyId(out int currencyId, out string status)
+        {
+            currencyId = 0;
+            status = string.Empty;
+
+            try
+            {
+                Type battlePassSystemType = this.FindLoadedType(
+                    "XDTGameSystem.GameplaySystem.BattlePass.BattlePassSystem",
+                    "BattlePassSystem");
+                if (battlePassSystemType == null)
+                {
+                    status = "BattlePassSystem type missing";
+                    return this.TryResolveBattlePassPeriodCurrencyIdAura(out currencyId, out status);
+                }
+
+                PropertyInfo instanceProperty = this.GetDataModuleInstanceProperty(battlePassSystemType);
+                if (instanceProperty == null)
+                {
+                    status = "DataModule<BattlePassSystem>.Instance missing";
+                    return this.TryResolveBattlePassPeriodCurrencyIdAura(out currencyId, out status);
+                }
+
+                object battlePassSystem = instanceProperty.GetValue(null, null);
+                if (battlePassSystem == null)
+                {
+                    status = "BattlePassSystem instance null";
+                    return this.TryResolveBattlePassPeriodCurrencyIdAura(out currencyId, out status);
+                }
+
+                MethodInfo getCurrentPeriodId = battlePassSystemType.GetMethod("GetCurrentPeriodId", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                if (getCurrentPeriodId == null)
+                {
+                    status = "GetCurrentPeriodId missing";
+                    return this.TryResolveBattlePassPeriodCurrencyIdAura(out currencyId, out status);
+                }
+
+                int periodId = Convert.ToInt32(getCurrentPeriodId.Invoke(battlePassSystem, null));
+                if (this.TryResolveBattlePassCurrencyIl2Cpp(periodId, out currencyId, out string il2CppStatus))
+                {
+                    status = il2CppStatus;
+                    return true;
+                }
+
+                Type tableDataType = this.FindManagedTableDataType();
+                if (tableDataType == null)
+                {
+                    status = "TableData missing (periodId=" + periodId + ")";
+                    return this.TryResolveBattlePassPeriodCurrencyIdAura(out currencyId, out status);
+                }
+
+                object periodRow = null;
+                MethodInfo[] tableMethods = tableDataType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                for (int i = 0; i < tableMethods.Length; i++)
+                {
+                    MethodInfo method = tableMethods[i];
+                    if (method == null || method.Name != "GetBattlePassPeriod")
+                    {
+                        continue;
+                    }
+
+                    ParameterInfo[] parameters = method.GetParameters();
+                    if (parameters.Length == 2 && parameters[0].ParameterType == typeof(int) && parameters[1].ParameterType == typeof(bool))
+                    {
+                        periodRow = method.Invoke(null, new object[] { periodId, true });
+                        break;
+                    }
+
+                    if (parameters.Length == 1 && parameters[0].ParameterType == typeof(int))
+                    {
+                        periodRow = method.Invoke(null, new object[] { periodId });
+                        break;
+                    }
+                }
+
+                if (periodRow == null)
+                {
+                    status = "GetBattlePassPeriod returned null (periodId=" + periodId + ")";
+                    return false;
+                }
+
+                if (!this.TryReadObjectInt(periodRow, "currency", out currencyId) || currencyId <= 0)
+                {
+                    status = "period row has no currency field (periodId=" + periodId + ")";
+                    return false;
+                }
+
+                status = "periodId=" + periodId + " currency=" + currencyId;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                status = ex.GetType().Name + ": " + ex.Message;
+                return this.TryResolveBattlePassPeriodCurrencyIdAura(out currencyId, out status);
+            }
+        }
+
+#if BEPINEX
+        private unsafe bool TryResolveBattlePassCurrencyIl2Cpp(int periodId, out int currencyId, out string status)
+        {
+            currencyId = 0;
+            status = string.Empty;
+            if (periodId <= 0)
+            {
+                status = "invalid periodId";
+                return false;
+            }
+
+            IntPtr tableClass = this.TryFindIl2CppClass(
+                "TableData",
+                "EcsClient",
+                "Il2CppEcsClient",
+                string.Empty);
+            if (tableClass == IntPtr.Zero)
+            {
+                status = "IL2CPP TableData missing (periodId=" + periodId + ")";
+                return false;
+            }
+
+            IntPtr periodRow = IntPtr.Zero;
+            IntPtr exc = IntPtr.Zero;
+            IntPtr method1 = IL2CPP.il2cpp_class_get_method_from_name(tableClass, "GetBattlePassPeriod", 1);
+            if (method1 != IntPtr.Zero)
+            {
+                int pid = periodId;
+                IntPtr* args = stackalloc IntPtr[1];
+                args[0] = (IntPtr)(&pid);
+                periodRow = IL2CPP.il2cpp_runtime_invoke(method1, IntPtr.Zero, (void**)args, ref exc);
+            }
+
+            if (periodRow == IntPtr.Zero)
+            {
+                IntPtr method2 = IL2CPP.il2cpp_class_get_method_from_name(tableClass, "GetBattlePassPeriod", 2);
+                if (method2 != IntPtr.Zero)
+                {
+                    int pid = periodId;
+                    byte needException = 1;
+                    IntPtr* args = stackalloc IntPtr[2];
+                    args[0] = (IntPtr)(&pid);
+                    args[1] = (IntPtr)(&needException);
+                    exc = IntPtr.Zero;
+                    periodRow = IL2CPP.il2cpp_runtime_invoke(method2, IntPtr.Zero, (void**)args, ref exc);
+                }
+            }
+
+            if (periodRow == IntPtr.Zero)
+            {
+                status = "IL2CPP GetBattlePassPeriod null (periodId=" + periodId + ")";
+                return false;
+            }
+
+            currencyId = TryReadIl2CppInstanceIntFieldStatic(periodRow, "currency");
+            if (currencyId <= 0)
+            {
+                status = "IL2CPP period row currency missing (periodId=" + periodId + ")";
+                return false;
+            }
+
+            status = "IL2CPP periodId=" + periodId + " currency=" + currencyId;
+            return true;
+        }
+#endif
+
+        private bool TryResolveBattlePassPeriodCurrencyIdAura(out int currencyId, out string status)
+        {
+            currencyId = 0;
+            status = "AuraMono BP currency unresolved";
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
+            {
+                status = "AuraMono unavailable";
+                return false;
+            }
+
+            try
+            {
+                IntPtr systemImage = this.FindAuraMonoImage(new[] { "XDTGameSystem", "XDTGameSystem.dll" });
+                IntPtr battlePassClass = systemImage != IntPtr.Zero
+                    ? auraMonoClassFromName(systemImage, "XDTGameSystem.GameplaySystem.BattlePass", "BattlePassSystem")
+                    : IntPtr.Zero;
+                if (battlePassClass == IntPtr.Zero)
+                {
+                    battlePassClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTGameSystem.GameplaySystem.BattlePass", "BattlePassSystem");
+                }
+
+                if (battlePassClass == IntPtr.Zero)
+                {
+                    status = "AuraMono BattlePassSystem class missing";
+                    return false;
+                }
+
+                IntPtr getPeriodMethod = this.FindAuraMonoMethodOnHierarchy(battlePassClass, "GetCurrentPeriodId", 0);
+                if (getPeriodMethod == IntPtr.Zero)
+                {
+                    status = "AuraMono GetCurrentPeriodId missing";
+                    return false;
+                }
+
+                IntPtr battlePassInstance = this.TryGetAuraMonoDataModuleInstance(battlePassClass);
+                if (battlePassInstance == IntPtr.Zero)
+                {
+                    status = "AuraMono BattlePassSystem instance missing";
+                    return false;
+                }
+
+                IntPtr exc = IntPtr.Zero;
+                IntPtr periodObj = auraMonoRuntimeInvoke(getPeriodMethod, battlePassInstance, IntPtr.Zero, ref exc);
+                if (exc != IntPtr.Zero || periodObj == IntPtr.Zero || auraMonoObjectUnbox == null)
+                {
+                    status = "AuraMono GetCurrentPeriodId failed";
+                    return false;
+                }
+
+                int periodId = Marshal.ReadInt32(auraMonoObjectUnbox(periodObj));
+                if (this.TryResolveBattlePassCurrencyIl2Cpp(periodId, out currencyId, out string il2CppStatus))
+                {
+                    status = il2CppStatus;
+                    return true;
+                }
+
+                if (!this.TryGetAutoSellAuraMonoTableDataClass(out IntPtr tableDataClass, out string tableSource))
+                {
+                    status = "AuraMono TableData missing (periodId=" + periodId + ")";
+                    return false;
+                }
+
+                IntPtr getBattlePassPeriodMethod2 = this.FindAuraMonoMethodOnHierarchy(tableDataClass, "GetBattlePassPeriod", 2);
+                IntPtr getBattlePassPeriodMethod1 = this.FindAuraMonoMethodOnHierarchy(tableDataClass, "GetBattlePassPeriod", 1);
+                IntPtr periodRowObj = IntPtr.Zero;
+
+                if (getBattlePassPeriodMethod1 != IntPtr.Zero)
+                {
+                    unsafe
+                    {
+                        int pid = periodId;
+                        IntPtr* args = stackalloc IntPtr[1];
+                        args[0] = (IntPtr)(&pid);
+                        exc = IntPtr.Zero;
+                        periodRowObj = auraMonoRuntimeInvoke(getBattlePassPeriodMethod1, IntPtr.Zero, (IntPtr)args, ref exc);
+                    }
+                }
+
+                if (periodRowObj == IntPtr.Zero && getBattlePassPeriodMethod2 != IntPtr.Zero)
+                {
+                    unsafe
+                    {
+                        int pid = periodId;
+                        byte needException = 1;
+                        IntPtr* args = stackalloc IntPtr[2];
+                        args[0] = (IntPtr)(&pid);
+                        args[1] = (IntPtr)(&needException);
+                        exc = IntPtr.Zero;
+                        periodRowObj = auraMonoRuntimeInvoke(getBattlePassPeriodMethod2, IntPtr.Zero, (IntPtr)args, ref exc);
+                    }
+                }
+
+                if (periodRowObj != IntPtr.Zero)
+                {
+                    this.TryGetMonoInt32Member(periodRowObj, "currency", out currencyId);
+                    if (currencyId <= 0)
+                    {
+                        this.TryGetMonoIntMember(periodRowObj, "currency", out currencyId);
+                    }
+                }
+
+                if (currencyId <= 0 && this.TryReadBattlePassCurrencyFromPeriodTableMono(tableDataClass, periodId, out currencyId, out string staticStatus))
+                {
+                    status = "AuraMono " + staticStatus + " via " + tableSource;
+                    return true;
+                }
+
+                if (currencyId <= 0)
+                {
+                    status = "AuraMono GetBattlePassPeriod/static table failed (periodId=" + periodId + ", table=" + tableSource + ")";
+                    return false;
+                }
+
+                status = "AuraMono periodId=" + periodId + " currency=" + currencyId + " via " + tableSource;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                status = "AuraMono " + ex.GetType().Name + ": " + ex.Message;
+                return false;
+            }
+        }
+
+        private IntPtr TryGetAuraMonoDataModuleInstance(IntPtr moduleClass)
+        {
+            if (moduleClass == IntPtr.Zero || auraMonoClassGetMethodFromName == null || auraMonoRuntimeInvoke == null)
+            {
+                return IntPtr.Zero;
+            }
+
+            IntPtr getInstanceMethod = auraMonoClassGetMethodFromName(moduleClass, "get_Instance", 0);
+            if (getInstanceMethod == IntPtr.Zero)
+            {
+                getInstanceMethod = this.FindAuraMonoMethodOnHierarchy(moduleClass, "get_Instance", 0);
+            }
+
+            if (getInstanceMethod == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            return auraMonoRuntimeInvoke(getInstanceMethod, IntPtr.Zero, IntPtr.Zero, ref exc);
+        }
+
+
+
+
+
+#if BEPINEX
+        private static readonly Dictionary<string, IntPtr> autoSellIl2CppClassCache = new Dictionary<string, IntPtr>(StringComparer.Ordinal);
+
+        private unsafe IntPtr TryFindIl2CppClass(string className, params string[] nameSpaces)
+        {
+            if (string.IsNullOrWhiteSpace(className))
+            {
+                return IntPtr.Zero;
+            }
+
+            if (autoSellIl2CppClassCache.TryGetValue(className, out IntPtr cachedClass) && cachedClass != IntPtr.Zero)
+            {
+                return cachedClass;
+            }
+
+            IntPtr domain = IL2CPP.il2cpp_domain_get();
+            if (domain == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+
+            uint assemblyCount = 0;
+            IntPtr* assemblies = IL2CPP.il2cpp_domain_get_assemblies(domain, ref assemblyCount);
+            if (assemblies == null || assemblyCount == 0)
+            {
+                return IntPtr.Zero;
+            }
+
+            for (uint i = 0; i < assemblyCount; i++)
+            {
+                IntPtr assembly = (IntPtr)assemblies[i];
+                if (assembly == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr image = IL2CPP.il2cpp_assembly_get_image(assembly);
+                if (image == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                if (nameSpaces != null)
+                {
+                    for (int n = 0; n < nameSpaces.Length; n++)
+                    {
+                        IntPtr klass = IL2CPP.il2cpp_class_from_name(image, nameSpaces[n] ?? string.Empty, className);
+                        if (klass != IntPtr.Zero)
+                        {
+                            autoSellIl2CppClassCache[className] = klass;
+                            return klass;
+                        }
+                    }
+                }
+
+                IntPtr klassEmpty = IL2CPP.il2cpp_class_from_name(image, string.Empty, className);
+                if (klassEmpty != IntPtr.Zero)
+                {
+                    autoSellIl2CppClassCache[className] = klassEmpty;
+                    return klassEmpty;
+                }
+            }
+
+            IntPtr scannedClass = this.TryFindIl2CppClassByNameScan(className);
+            if (scannedClass != IntPtr.Zero)
+            {
+                autoSellIl2CppClassCache[className] = scannedClass;
+            }
+
+            return scannedClass;
+        }
+
+        private unsafe IntPtr TryFindIl2CppClassByNameScan(string className)
+        {
+            IntPtr domain = IL2CPP.il2cpp_domain_get();
+            if (domain == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+
+            uint assemblyCount = 0;
+            IntPtr* assemblies = IL2CPP.il2cpp_domain_get_assemblies(domain, ref assemblyCount);
+            if (assemblies == null || assemblyCount == 0)
+            {
+                return IntPtr.Zero;
+            }
+
+            for (uint i = 0; i < assemblyCount; i++)
+            {
+                IntPtr assembly = (IntPtr)assemblies[i];
+                if (assembly == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr image = IL2CPP.il2cpp_assembly_get_image(assembly);
+                if (image == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                uint classCount = IL2CPP.il2cpp_image_get_class_count(image);
+                for (uint c = 0; c < classCount; c++)
+                {
+                    IntPtr klass = IL2CPP.il2cpp_image_get_class(image, c);
+                    if (klass == IntPtr.Zero)
+                    {
+                        continue;
+                    }
+
+                    string name = IL2CPP.il2cpp_class_get_name_(klass);
+                    if (string.Equals(name, className, StringComparison.Ordinal))
+                    {
+                        return klass;
+                    }
+                }
+            }
+
+            return IntPtr.Zero;
+        }
+
+
+
+        private static unsafe int TryReadIl2CppInstanceIntFieldStatic(IntPtr obj, string fieldName)
+        {
+            if (obj == IntPtr.Zero || string.IsNullOrWhiteSpace(fieldName))
+            {
+                return 0;
+            }
+
+            IntPtr klass = IL2CPP.il2cpp_object_get_class(obj);
+            if (klass == IntPtr.Zero)
+            {
+                return 0;
+            }
+
+            IntPtr field = IL2CPP.il2cpp_class_get_field_from_name(klass, fieldName);
+            if (field == IntPtr.Zero)
+            {
+                return 0;
+            }
+
+            int value = 0;
+            IL2CPP.il2cpp_field_get_value(obj, field, &value);
+            return value;
+        }
+
+
+#endif
+
+
+
+
+
+
+
+
+
+
+
+        private static int ReadIntFieldValue(object instance, string fieldName)
+        {
+            if (instance == null || string.IsNullOrWhiteSpace(fieldName))
+            {
+                return 0;
+            }
+
+            FieldInfo f = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (f == null)
+            {
+                return 0;
+            }
+
+            object v = f.GetValue(instance);
+            if (v == null)
+            {
+                return 0;
+            }
+
+            try { return Convert.ToInt32(v); } catch { return 0; }
+        }
+
+        private static Dictionary<uint, int> ReadUIntIntDictionaryField(object instance, string fieldName)
+        {
+            if (instance == null || string.IsNullOrWhiteSpace(fieldName))
+            {
+                return null;
+            }
+
+            FieldInfo f = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (f == null)
+            {
+                return null;
+            }
+
+            object v = f.GetValue(instance);
+            if (v is Dictionary<uint, int> direct)
+            {
+                return direct;
+            }
+
+            if (v is IDictionary dict)
+            {
+                Dictionary<uint, int> map = new Dictionary<uint, int>();
+                foreach (DictionaryEntry e in dict)
+                {
+                    try
+                    {
+                        uint key = Convert.ToUInt32(e.Key);
+                        int value = Convert.ToInt32(e.Value);
+                        map[key] = value;
+                    }
+                    catch
+                    {
+                    }
+                }
+                return map;
+            }
+
+            return null;
+        }
+
+
+
+
+        private bool TryInvokeQuickSellManaged(Dictionary<uint, int> itemsToSell, int currencyTypeId = 0)
         {
             try
             {
@@ -51330,6 +54214,45 @@ namespace HeartopiaMod
                 {
                     this.AutoSellLog("RecycleProtocolManager type unavailable.");
                     return false;
+                }
+
+                bool useAltCurrency = currencyTypeId > 0;
+                if (useAltCurrency)
+                {
+                    MethodInfo alt = null;
+                    foreach (MethodInfo candidate in recycleType.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
+                    {
+                        if (candidate == null || candidate.Name != "CmdBattlePassSell")
+                        {
+                            continue;
+                        }
+
+                        ParameterInfo[] ps = candidate.GetParameters();
+                        if (ps == null || ps.Length != 2)
+                        {
+                            continue;
+                        }
+
+                        Type firstType = ps[0].ParameterType;
+                        Type secondType = ps[1].ParameterType;
+                        if (firstType != null && firstType.IsEnum && secondType != null && typeof(IDictionary).IsAssignableFrom(secondType))
+                        {
+                            alt = candidate;
+                            break;
+                        }
+                    }
+
+                    if (alt == null)
+                    {
+                        this.AutoSellLog("CmdBattlePassSell method unavailable.");
+                        return false;
+                    }
+
+                    Type currencyEnumType = alt.GetParameters()[0].ParameterType;
+                    object currencyValue = Enum.ToObject(currencyEnumType, currencyTypeId);
+                    alt.Invoke(null, new object[] { currencyValue, itemsToSell });
+                    this.AutoSellLog("CmdBattlePassSell sent. currency=" + currencyTypeId + " stacks=" + itemsToSell.Count);
+                    return true;
                 }
 
                 MethodInfo method = recycleType.GetMethod("CmdQuickSell", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(Dictionary<uint, int>) }, null);
@@ -51357,12 +54280,12 @@ namespace HeartopiaMod
             catch (Exception ex)
             {
                 Exception inner = ex.InnerException ?? ex;
-                this.AutoSellLog("CmdQuickSell exception: " + inner.GetType().Name + ": " + inner.Message);
+                this.AutoSellLog("Managed sell command exception: " + inner.GetType().Name + ": " + inner.Message);
                 return false;
             }
         }
 
-        private bool TryInvokeQuickSellAuraMono(Dictionary<uint, int> itemsToSell)
+        private bool TryInvokeQuickSellAuraMono(Dictionary<uint, int> itemsToSell, int currencyTypeId = 0)
         {
             try
             {
@@ -51378,15 +54301,44 @@ namespace HeartopiaMod
                 }
 
                 this.ResolveAuraFarmRuntimeMethodsViaMono();
-                if (!this.TryResolveAuraMonoQuickSellMethod(out IntPtr methodPtr) || methodPtr == IntPtr.Zero)
-                {
-                    this.AutoSellLog("AuraMono CmdQuickSell method unavailable.");
-                    return false;
-                }
 
                 if (!this.TryCreateAuraMonoUIntIntDictionary(itemsToSell, out IntPtr dictObj) || dictObj == IntPtr.Zero)
                 {
                     this.AutoSellLog("AuraMono sell dictionary creation failed.");
+                    return false;
+                }
+
+                bool useAltCurrency = currencyTypeId > 0;
+                if (useAltCurrency)
+                {
+                    if (!this.TryResolveAuraMonoBattlePassSellMethod(out IntPtr altMethod) || altMethod == IntPtr.Zero)
+                    {
+                        this.AutoSellLog("AuraMono CmdBattlePassSell method unavailable.");
+                        return false;
+                    }
+
+                    unsafe
+                    {
+                        int currency = currencyTypeId;
+                        IntPtr exc = IntPtr.Zero;
+                        IntPtr* args = stackalloc IntPtr[2];
+                        args[0] = (IntPtr)(&currency);
+                        args[1] = dictObj;
+                        auraMonoRuntimeInvoke(altMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+                        if (exc != IntPtr.Zero)
+                        {
+                            this.AutoSellLog("AuraMono CmdBattlePassSell raised exception ptr=0x" + exc.ToInt64().ToString("X"));
+                            return false;
+                        }
+                    }
+
+                    this.AutoSellLog("AuraMono CmdBattlePassSell sent. currency=" + currencyTypeId + " stacks=" + itemsToSell.Count);
+                    return true;
+                }
+
+                if (!this.TryResolveAuraMonoQuickSellMethod(out IntPtr methodPtr) || methodPtr == IntPtr.Zero)
+                {
+                    this.AutoSellLog("AuraMono CmdQuickSell method unavailable.");
                     return false;
                 }
 
@@ -51452,6 +54404,69 @@ namespace HeartopiaMod
             this.autoSellMonoQuickSellMethod = methodPtr;
             return true;
         }
+
+        private bool TryResolveAuraMonoBattlePassSellMethod(out IntPtr methodPtr)
+        {
+            methodPtr = this.autoSellMonoBattlePassSellMethod;
+            if (methodPtr != IntPtr.Zero)
+            {
+                return true;
+            }
+
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoClassFromName == null)
+            {
+                return false;
+            }
+
+            IntPtr dataImage = this.FindAuraMonoImage(new[] { "XDTDataAndProtocol", "XDTDataAndProtocol.dll", "Client", "Client.dll" });
+            IntPtr protocolClass = dataImage != IntPtr.Zero
+                ? auraMonoClassFromName(dataImage, "XDTDataAndProtocol.ProtocolService.Recycle", "RecycleProtocolManager")
+                : IntPtr.Zero;
+            if (protocolClass == IntPtr.Zero)
+            {
+                protocolClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTDataAndProtocol.ProtocolService.Recycle", "RecycleProtocolManager");
+            }
+            if (protocolClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            methodPtr = this.FindAuraMonoMethodOnHierarchy(protocolClass, "CmdBattlePassSell", 2);
+            if (methodPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            this.autoSellMonoBattlePassSellMethod = methodPtr;
+            return true;
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        private bool IsReadableMemoryProtect(uint protect)
+        {
+            return protect == 0x02U || protect == 0x04U || protect == 0x08U || protect == 0x20U || protect == 0x40U;
+        }
+
+
+
+
+
+
+
+
 
         private unsafe bool TryCreateAuraMonoUIntIntDictionary(Dictionary<uint, int> itemsToSell, out IntPtr dictObj)
         {
@@ -53842,23 +56857,32 @@ namespace HeartopiaMod
 
         private List<AutoSellBagItemEntry> ScanBackpackForAutoSellItems()
         {
-            if (this.autoSellScanSource != 1 && this.IsBagOpen())
+            try
             {
-                this.CacheAutoSellIconsFromOpenBag();
+                if (this.autoSellScanSource != 1 && this.IsBagOpen())
+                {
+                    this.CacheAutoSellIconsFromOpenBag();
+                }
+
+                List<AutoSellBagItemEntry> items = new List<AutoSellBagItemEntry>();
+                Dictionary<string, AutoSellBagItemEntry> byKey = new Dictionary<string, AutoSellBagItemEntry>(StringComparer.OrdinalIgnoreCase);
+                int inspected = 0;
+
+                // Runtime snapshot occasionally hard-crashes in some game states; prefer the safer mono scan path for manual Scan Items.
+                bool usedRuntimeSnapshot = false;
+                this.CollectAutoSellBackpackEntriesManaged(items, byKey, ref inspected);
+                this.CollectAutoSellBackpackEntriesMono(items, byKey, ref inspected, !usedRuntimeSnapshot);
+
+                this.PrimeAutoSellItemTextureCache(items);
+                items.Sort((a, b) => string.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase));
+                this.AutoSellLog(this.GetAutoSellScanSourceLabel() + " item list scan found " + items.Count + " unique item(s), inspected=" + inspected + ".");
+                return items;
             }
-
-            List<AutoSellBagItemEntry> items = new List<AutoSellBagItemEntry>();
-            Dictionary<string, AutoSellBagItemEntry> byKey = new Dictionary<string, AutoSellBagItemEntry>(StringComparer.OrdinalIgnoreCase);
-            int inspected = 0;
-
-            bool usedRuntimeSnapshot = this.CollectAutoSellBackpackEntriesFromRuntimeSnapshot(items, byKey, ref inspected);
-            this.CollectAutoSellBackpackEntriesManaged(items, byKey, ref inspected);
-            this.CollectAutoSellBackpackEntriesMono(items, byKey, ref inspected, !usedRuntimeSnapshot);
-
-            this.PrimeAutoSellItemTextureCache(items);
-            items.Sort((a, b) => string.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase));
-            this.AutoSellLog(this.GetAutoSellScanSourceLabel() + " item list scan found " + items.Count + " unique item(s), inspected=" + inspected + ".");
-            return items;
+            catch (Exception ex)
+            {
+                this.AutoSellLog("Scan items exception: " + ex.GetType().Name + ": " + ex.Message);
+                return new List<AutoSellBagItemEntry>();
+            }
         }
 
         private void CollectAutoSellBackpackEntriesManaged(List<AutoSellBagItemEntry> items, Dictionary<string, AutoSellBagItemEntry> byKey, ref int inspected)
@@ -55894,44 +58918,23 @@ namespace HeartopiaMod
             num += 32;
 
             bool changed = false;
-            Event currentEvent = Event.current;
-
             Rect displayPanel = new Rect(left, (float)num, contentWidth, 90f);
             this.DrawExentriSectionPanel(displayPanel, accent, panelFill, panelLine);
             GUI.Label(new Rect(displayPanel.x + 14f, displayPanel.y + 12f, displayPanel.width - 28f, 18f), "DISPLAY", sectionStyle);
             Rect scaleRowRect = new Rect(displayPanel.x + 14f, displayPanel.y + 44f, displayPanel.width - 28f, 28f);
             Rect scaleSliderRect = new Rect(scaleRowRect.x + 164f, scaleRowRect.y + 1f, scaleRowRect.width - 282f, 20f);
-            if (currentEvent != null && currentEvent.type == EventType.MouseDown && currentEvent.button == 0 && scaleSliderRect.Contains(currentEvent.mousePosition))
-            {
-                this.uiScaleDragActive = true;
-                this.uiScaleDragValue = this.GetUiScale();
-            }
-
-            float displayedUiScale = this.uiScaleDragActive ? this.uiScaleDragValue : this.GetUiScale();
-            GUI.Label(new Rect(scaleRowRect.x, scaleRowRect.y, 150f, 22f), $"UI Scale: {Mathf.RoundToInt(displayedUiScale * 100f)}%", rowLabelStyle);
-            float newScale = this.DrawAccentSlider(scaleSliderRect, displayedUiScale, UiScaleMin, UiScaleMax);
-            if (this.uiScaleDragActive)
-            {
-                this.uiScaleDragValue = this.NormalizeUiScale(newScale);
-                if (currentEvent != null && currentEvent.type == EventType.MouseUp)
-                {
-                    this.uiScale = this.NormalizeUiScale(this.uiScaleDragValue);
-                    this.uiScaleDragActive = false;
-                    this.KeepMenuWindowOnScreen(this.uiScale);
-                    changed = true;
-                }
-            }
-            else if (Math.Abs(newScale - displayedUiScale) > 0.001f)
+            GUI.Label(new Rect(scaleRowRect.x, scaleRowRect.y, 150f, 22f), $"UI Scale: {Mathf.RoundToInt(this.uiScale * 100f)}%", rowLabelStyle);
+            float newScale = this.DrawAccentSlider(scaleSliderRect, this.uiScale, UiScaleMin, UiScaleMax);
+            if (Math.Abs(newScale - this.uiScale) > 0.001f)
             {
                 this.uiScale = this.NormalizeUiScale(newScale);
-                this.KeepMenuWindowOnScreen(this.uiScale);
+                this.KeepMenuWindowOnScreen(this.GetUiScale());
                 changed = true;
             }
             if (GUI.Button(new Rect(scaleRowRect.xMax - 94f, scaleRowRect.y - 2f, 94f, 26f), "100%", this.themeTopTabStyle ?? GUI.skin.button))
             {
-                this.uiScaleDragActive = false;
                 this.uiScale = 1f;
-                this.KeepMenuWindowOnScreen(this.uiScale);
+                this.KeepMenuWindowOnScreen(this.GetUiScale());
                 changed = true;
             }
             num += (int)displayPanel.height + 14;
@@ -56166,10 +59169,9 @@ namespace HeartopiaMod
                 this.uiWindowAlpha = 0.94f;
                 this.uiPanelAlpha = 0.90f;
                 this.uiContentAlpha = 0.86f;
-                this.uiScaleDragActive = false;
                 this.uiScale = 1f;
                 this.uiThemeHexInput = this.ColorToHex(new Color(this.uiAccentR, this.uiAccentG, this.uiAccentB));
-                this.KeepMenuWindowOnScreen(this.uiScale);
+                this.KeepMenuWindowOnScreen(this.GetUiScale());
                 this.InvalidateThemeCache();
             }
             num += (int)actionPanel.height + 16;
@@ -57002,8 +60004,6 @@ namespace HeartopiaMod
         private const float UiScaleMax = 3.00f;
         private const float UiScaleStep = 0.10f;
         private float uiScale = 1.00f;
-        private bool uiScaleDragActive = false;
-        private float uiScaleDragValue = 1.00f;
         private int uiThemeColorTarget = 0;
         private bool uiThemePickerOpen = false;
         private string uiThemeHexInput = "#5CB2FA";
@@ -57341,6 +60341,13 @@ namespace HeartopiaMod
         private bool autoSellHideBagItems = false;
         private int autoSellStarFilter = 0;
         private readonly string[] autoSellStarFilterLabels = new string[] { "Any Star", "1 Star", "2 Star", "3 Star", "4 Star", "5 Star" };
+        private bool autoSellFestivalTokensEnabled = false;
+        private readonly Dictionary<uint, int> autoSellCollectedStaticIdsByNetId = new Dictionary<uint, int>();
+        private Dictionary<uint, string> autoSellLastSellDetailsByNetId = new Dictionary<uint, string>();
+        private static HeartopiaComplete autoSellAuraMonoSearchHost;
+        private static string autoSellAuraMonoSearchClass;
+        private static string autoSellAuraMonoSearchNamespace;
+        private static IntPtr autoSellAuraMonoSearchResult;
         private float autoSellInterval = 5f;
         private int autoSellScanSource = 0; // 0 = Bag, 1 = Warehouse, 2 = Both
         private readonly string[] autoSellScanSourceLabels = new string[] { "Bag", "Warehouse", "Both" };
@@ -57350,6 +60357,8 @@ namespace HeartopiaMod
         private string autoSellLastMatchSummary = "No scan yet";
         private string autoSellSelectedDetails = "";
         private IntPtr autoSellMonoQuickSellMethod = IntPtr.Zero;
+        private IntPtr autoSellMonoBattlePassSellMethod = IntPtr.Zero;
+        private IntPtr autoSellMonoInt32ClassPtr = IntPtr.Zero;
         private IntPtr autoSellMonoUIntIntDictionaryClass = IntPtr.Zero;
         private IntPtr autoSellMonoUIntIntDictionarySetItemMethod = IntPtr.Zero;
         private static readonly bool AutoSellLogsEnabled = MasterLogAutoSell;

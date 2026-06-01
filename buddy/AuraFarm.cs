@@ -202,6 +202,18 @@ namespace HeartopiaMod
         private delegate IntPtr MonoImageLoadedDelegate([MarshalAs(UnmanagedType.LPStr)] string name);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void MonoAssemblyForeachDelegate(MonoAssemblyForeachCallbackDelegate callback, IntPtr userData);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void MonoAssemblyForeachCallbackDelegate(IntPtr assembly, IntPtr userData);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate IntPtr MonoAssemblyGetImageDelegate(IntPtr assembly);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate IntPtr MonoImageGetNameDelegate(IntPtr image);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoClassFromNameDelegate(IntPtr image, [MarshalAs(UnmanagedType.LPStr)] string nameSpace, [MarshalAs(UnmanagedType.LPStr)] string className);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -291,6 +303,9 @@ namespace HeartopiaMod
         private static MonoGetRootDomainDelegate auraMonoGetRootDomain;
         private static MonoThreadAttachDelegate auraMonoThreadAttach;
         private static MonoImageLoadedDelegate auraMonoImageLoaded;
+        private static MonoAssemblyForeachDelegate auraMonoAssemblyForeach;
+        private static MonoAssemblyGetImageDelegate auraMonoAssemblyGetImage;
+        private static MonoImageGetNameDelegate auraMonoImageGetName;
         private static MonoClassFromNameDelegate auraMonoClassFromName;
         private static MonoClassGetMethodFromNameDelegate auraMonoClassGetMethodFromName;
         private static MonoClassGetFieldFromNameDelegate auraMonoClassGetFieldFromName;
@@ -4077,6 +4092,9 @@ namespace HeartopiaMod
             auraMonoGetRootDomain = this.GetAuraMonoExport<MonoGetRootDomainDelegate>(monoModule, "mono_get_root_domain");
             auraMonoThreadAttach = this.GetAuraMonoExport<MonoThreadAttachDelegate>(monoModule, "mono_thread_attach");
             auraMonoImageLoaded = this.GetAuraMonoExport<MonoImageLoadedDelegate>(monoModule, "mono_image_loaded");
+            auraMonoAssemblyForeach = this.GetAuraMonoExport<MonoAssemblyForeachDelegate>(monoModule, "mono_assembly_foreach");
+            auraMonoAssemblyGetImage = this.GetAuraMonoExport<MonoAssemblyGetImageDelegate>(monoModule, "mono_assembly_get_image");
+            auraMonoImageGetName = this.GetAuraMonoExport<MonoImageGetNameDelegate>(monoModule, "mono_image_get_name");
             auraMonoClassFromName = this.GetAuraMonoExport<MonoClassFromNameDelegate>(monoModule, "mono_class_from_name");
             auraMonoClassGetMethodFromName = this.GetAuraMonoExport<MonoClassGetMethodFromNameDelegate>(monoModule, "mono_class_get_method_from_name");
             auraMonoClassGetFieldFromName = this.GetAuraMonoExport<MonoClassGetFieldFromNameDelegate>(monoModule, "mono_class_get_field_from_name");

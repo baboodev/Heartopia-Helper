@@ -5,3 +5,6 @@ buddy/obj
 tools/bin
 tools/cpp2il_out
 tools/reports
+tools/ilspy-verify
+.cursor
+ilspy-dumps
