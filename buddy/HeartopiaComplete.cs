@@ -12,6 +12,8 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Xml;
 using System.Xml.Serialization;
 using UnityEngine;
 using UnityEngine.UI;
@@ -850,11 +852,26 @@ namespace HeartopiaMod
         private void SaveUnifiedConfig(UnifiedConfigData data)
         {
             if (data == null) data = new UnifiedConfigData();
+            string path = this.GetConfigPath();
+            string directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
             XmlSerializer serializer = new XmlSerializer(typeof(UnifiedConfigData));
-            using (StringWriter writer = new StringWriter())
+            XmlWriterSettings settings = new XmlWriterSettings
+            {
+                Indent = true,
+                IndentChars = "  ",
+                NewLineChars = Environment.NewLine,
+                NewLineHandling = NewLineHandling.Replace,
+                Encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
+            };
+            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+            using (XmlWriter writer = XmlWriter.Create(stream, settings))
             {
                 serializer.Serialize(writer, data);
-                File.WriteAllText(this.GetConfigPath(), writer.ToString());
             }
         }
 
@@ -34718,6 +34735,7 @@ namespace HeartopiaMod
                 this.showInsectRadar = true;
                 this.showFishShadowRadar = true;
                 this.showMeteorRadar = true;
+                this.showOtherPlayersRadar = true;
                 this.CheckRadarAutoToggle();
                 if (this.isRadarActive) this.RunRadar();
             }
@@ -34746,6 +34764,7 @@ namespace HeartopiaMod
                 this.showInsectRadar = false;
                 this.showFishShadowRadar = false;
                 this.showMeteorRadar = false;
+                this.showOtherPlayersRadar = false;
                 this.CheckRadarAutoToggle();
                 this.Cleanup();
             }
@@ -35105,6 +35124,7 @@ namespace HeartopiaMod
             if (this.showInsectRadar) selected.Add("Insects");
             if (this.showFishShadowRadar) selected.Add("Fish Shadows");
             if (this.showMeteorRadar) selected.Add("Meteors");
+            if (this.showOtherPlayersRadar) selected.Add("Players");
             string summary = this.GetRadarSelectionSummary(selected);
             y = this.DrawRadarDropdownHeader(y, "Misc", summary, ref this.radarMiscDropdownOpen);
             if (!this.radarMiscDropdownOpen)
@@ -35179,6 +35199,24 @@ namespace HeartopiaMod
                 {
                     this.RemoveTrackedMarkersByNameContains("p_rock_meteorite");
                     this.RemoveTrackedMarkersByNameContains("meteorite");
+                }
+            }
+            y += 30;
+
+            bool prevOtherPlayers = this.showOtherPlayersRadar;
+            v = this.DrawRadarDropdownOption(y, "Other Players", this.showOtherPlayersRadar);
+            if (v != prevOtherPlayers)
+            {
+                this.showOtherPlayersRadar = v;
+                changed = true;
+                if (!this.showOtherPlayersRadar)
+                {
+                    this.RemoveTrackedMarkersByNameContains("p_player_skeleton");
+                    this.ClearHideAndSeekMorphMarkers();
+                }
+                else if (this.isRadarActive)
+                {
+                    this.RunRadar();
                 }
             }
             y += 30;
@@ -36873,6 +36911,564 @@ namespace HeartopiaMod
         {
             // Must have p_insect_insect prefix AND (clone) suffix
             return lowerName.Contains("p_insect_insect") && lowerName.Contains("(clone)");
+        }
+
+        private bool IsOtherPlayerSkeletonGameObject(GameObject obj)
+        {
+            if (obj == null || !obj.activeInHierarchy)
+            {
+                return false;
+            }
+
+            GameObject localPlayer = GetLocalPlayer();
+            if (localPlayer != null && ReferenceEquals(obj, localPlayer))
+            {
+                return false;
+            }
+
+            string name = obj.name;
+            return !string.IsNullOrEmpty(name) && name.Contains("p_player_skeleton");
+        }
+
+        private struct HideAndSeekMorphRadarSpot
+        {
+            public uint MarkerNetId;
+            public Vector3 Position;
+        }
+
+        private void SyncHideAndSeekMorphRadarMarkers(Vector3 scanOrigin, Material xRay, Material bg, float maxRange)
+        {
+            if (!this.showOtherPlayersRadar || this.radarContainer == null)
+            {
+                return;
+            }
+
+            float maxRangeSqr = maxRange * maxRange;
+            this.hideAndSeekMorphSeenNetIds.Clear();
+            this.hideAndSeekMorphCollectBuffer.Clear();
+            this.TryCollectHideAndSeekMorphRadarSpots(this.hideAndSeekMorphCollectBuffer);
+
+            for (int i = 0; i < this.hideAndSeekMorphCollectBuffer.Count; i++)
+            {
+                HideAndSeekMorphRadarSpot spot = this.hideAndSeekMorphCollectBuffer[i];
+                if (spot.MarkerNetId == 0U || spot.Position.sqrMagnitude < 0.01f)
+                {
+                    continue;
+                }
+
+                if ((scanOrigin - spot.Position).sqrMagnitude > maxRangeSqr)
+                {
+                    continue;
+                }
+
+                this.hideAndSeekMorphSeenNetIds.Add(spot.MarkerNetId);
+                this.hideAndSeekMorphTrackedPositions[spot.MarkerNetId] = spot.Position;
+
+                if (this.trackedHideAndSeekMorphMarkers.TryGetValue(spot.MarkerNetId, out GameObject existingMarker) && existingMarker != null)
+                {
+                    continue;
+                }
+
+                GameObject morphMarker = this.CreateMarker(spot.Position, "otherplayermorph", xRay, bg, null);
+                if (morphMarker == null)
+                {
+                    continue;
+                }
+
+                morphMarker.name = HideAndSeekMorphMarkerPrefix + spot.MarkerNetId.ToString();
+                this.trackedHideAndSeekMorphMarkers[spot.MarkerNetId] = morphMarker;
+            }
+
+            this.radarCleanupTrackedIds.Clear();
+            foreach (KeyValuePair<uint, GameObject> tracked in this.trackedHideAndSeekMorphMarkers)
+            {
+                if (tracked.Value == null || !this.hideAndSeekMorphSeenNetIds.Contains(tracked.Key))
+                {
+                    this.radarCleanupTrackedIds.Add((int)tracked.Key);
+                }
+            }
+
+            for (int i = 0; i < this.radarCleanupTrackedIds.Count; i++)
+            {
+                this.RemoveHideAndSeekMorphMarker((uint)this.radarCleanupTrackedIds[i]);
+            }
+        }
+
+        private void RemoveHideAndSeekMorphMarker(uint markerNetId)
+        {
+            if (this.trackedHideAndSeekMorphMarkers.TryGetValue(markerNetId, out GameObject marker) && marker != null)
+            {
+                this.RemoveMarkerMetadata(marker);
+                Object.Destroy(marker);
+            }
+
+            this.trackedHideAndSeekMorphMarkers.Remove(markerNetId);
+            this.hideAndSeekMorphTrackedPositions.Remove(markerNetId);
+        }
+
+        private void ClearHideAndSeekMorphMarkers()
+        {
+            this.radarCleanupTrackedIds.Clear();
+            foreach (KeyValuePair<uint, GameObject> entry in this.trackedHideAndSeekMorphMarkers)
+            {
+                if (entry.Value != null)
+                {
+                    this.RemoveMarkerMetadata(entry.Value);
+                    Object.Destroy(entry.Value);
+                }
+
+                this.radarCleanupTrackedIds.Add((int)entry.Key);
+            }
+
+            for (int i = 0; i < this.radarCleanupTrackedIds.Count; i++)
+            {
+                this.trackedHideAndSeekMorphMarkers.Remove((uint)this.radarCleanupTrackedIds[i]);
+            }
+
+            this.hideAndSeekMorphTrackedPositions.Clear();
+            this.hideAndSeekMorphSeenNetIds.Clear();
+            this.hideAndSeekMorphCollectBuffer.Clear();
+        }
+
+        private bool TryParseHideAndSeekMorphMarkerId(string markerName, out uint markerNetId)
+        {
+            markerNetId = 0U;
+            if (string.IsNullOrEmpty(markerName) || !markerName.StartsWith(HideAndSeekMorphMarkerPrefix, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return uint.TryParse(markerName.Substring(HideAndSeekMorphMarkerPrefix.Length), out markerNetId);
+        }
+
+        private void TryCollectHideAndSeekMorphRadarSpots(List<HideAndSeekMorphRadarSpot> spots)
+        {
+            if (spots == null)
+            {
+                return;
+            }
+
+            spots.Clear();
+            if (!this.TryResolveSelfPlayerNetId(out uint selfNetId))
+            {
+                selfNetId = 0U;
+            }
+
+            HashSet<uint> seen = new HashSet<uint>();
+            this.TryCollectHideAndSeekMorphFromTracks(selfNetId, seen, spots);
+            this.TryCollectHideAndSeekMorphFromRemotePlayers(selfNetId, seen, spots);
+            this.TryCollectHideAndSeekMorphFromHiderPlacedPositions(selfNetId, seen, spots);
+        }
+
+        private void TryAddHideAndSeekMorphSpot(HashSet<uint> seen, List<HideAndSeekMorphRadarSpot> spots, uint markerNetId, Vector3 position)
+        {
+            if (markerNetId == 0U || position.sqrMagnitude < 0.01f || seen == null || spots == null)
+            {
+                return;
+            }
+
+            if (!seen.Add(markerNetId))
+            {
+                return;
+            }
+
+            spots.Add(new HideAndSeekMorphRadarSpot
+            {
+                MarkerNetId = markerNetId,
+                Position = position
+            });
+        }
+
+        private void TryCollectHideAndSeekMorphFromTracks(uint selfNetId, HashSet<uint> seen, List<HideAndSeekMorphRadarSpot> spots)
+        {
+            try
+            {
+                Type trackManagerType = this.FindLoadedType(
+                    "XDTDataAndProtocol.ProtocolService.Track.TrackProtocolManager",
+                    "TrackProtocolManager");
+                Type trackDataType = this.FindLoadedType(
+                    "XDTDataAndProtocol.ProtocolService.Track.TrackData",
+                    "TrackData");
+                Type trackTypeEnum = this.FindLoadedType(
+                    "XDT.Scene.Shared.Modules.Track.TrackType",
+                    "TrackType");
+                if (trackManagerType == null || trackDataType == null || trackTypeEnum == null)
+                {
+                    return;
+                }
+
+                MethodInfo getAllTracksMethod = trackManagerType.GetMethod("GetAllTracks", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (getAllTracksMethod == null)
+                {
+                    return;
+                }
+
+                IList trackList = Activator.CreateInstance(typeof(List<>).MakeGenericType(trackDataType)) as IList;
+                if (trackList == null)
+                {
+                    return;
+                }
+
+                getAllTracksMethod.Invoke(null, new object[] { trackList });
+                FieldInfo trackTypeField = trackDataType.GetField("TrackType");
+                FieldInfo positionField = trackDataType.GetField("Position");
+                FieldInfo targetNetIdField = trackDataType.GetField("TargetNetId");
+                FieldInfo tokenField = trackDataType.GetField("Token");
+                if (trackTypeField == null || positionField == null)
+                {
+                    return;
+                }
+
+                object hideAndSeekHiderValue = Enum.Parse(trackTypeEnum, "HideAndSeekHider");
+                for (int i = 0; i < trackList.Count; i++)
+                {
+                    object track = trackList[i];
+                    if (track == null)
+                    {
+                        continue;
+                    }
+
+                    object trackTypeValue = trackTypeField.GetValue(track);
+                    if (trackTypeValue == null || !trackTypeValue.Equals(hideAndSeekHiderValue))
+                    {
+                        continue;
+                    }
+
+                    Vector3 position = (Vector3)positionField.GetValue(track);
+                    uint markerNetId = 0U;
+                    if (targetNetIdField != null)
+                    {
+                        this.TryConvertToUInt(targetNetIdField.GetValue(track), out markerNetId);
+                    }
+
+                    if (markerNetId == 0U && tokenField != null)
+                    {
+                        this.TryConvertToUInt(tokenField.GetValue(track), out markerNetId);
+                    }
+
+                    if (markerNetId == 0U || markerNetId == selfNetId)
+                    {
+                        continue;
+                    }
+
+                    if (this.TryGetEntityPositionByNetId(markerNetId, out Vector3 entityPos) && entityPos.sqrMagnitude > 0.01f)
+                    {
+                        position = entityPos;
+                    }
+
+                    this.TryAddHideAndSeekMorphSpot(seen, spots, markerNetId, position);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void TryCollectHideAndSeekMorphFromRemotePlayers(uint selfNetId, HashSet<uint> seen, List<HideAndSeekMorphRadarSpot> spots)
+        {
+            try
+            {
+                Type entitiesType = this.FindLoadedType("XDTLevelAndEntity.BaseSystem.EntitiesManager.Entities", "Entities");
+                Type remotePlayerType = this.FindLoadedType(
+                    "XDTLevelAndEntity.Gameplay.Component.Player.RemotePlayerComponent",
+                    "RemotePlayerComponent");
+                if (entitiesType == null || remotePlayerType == null)
+                {
+                    return;
+                }
+
+                MethodInfo getComponentsMethod = entitiesType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "GetComponents" && m.IsGenericMethodDefinition && m.GetParameters().Length == 1);
+                if (getComponentsMethod == null)
+                {
+                    return;
+                }
+
+                Type listType = typeof(List<>).MakeGenericType(remotePlayerType);
+                object listInstance = Activator.CreateInstance(listType);
+                if (listInstance == null)
+                {
+                    return;
+                }
+
+                object[] args = new object[] { listInstance };
+                getComponentsMethod.MakeGenericMethod(remotePlayerType).Invoke(null, args);
+                object results = args[0] ?? listInstance;
+                if (!(results is IEnumerable enumerable))
+                {
+                    return;
+                }
+
+                foreach (object remotePlayer in enumerable)
+                {
+                    if (remotePlayer == null)
+                    {
+                        continue;
+                    }
+
+                    object entityObj;
+                    if (!(this.TryGetObjectMember(remotePlayer, "entity", out entityObj) || this.TryInvokeZeroArgMember(remotePlayer, out entityObj, "get_entity"))
+                        || entityObj == null)
+                    {
+                        continue;
+                    }
+
+                    if (!this.TryResolveBirdNetIdFromObject(entityObj, out uint playerNetId, out _, 0) || playerNetId == 0U || playerNetId == selfNetId)
+                    {
+                        continue;
+                    }
+
+                    if (this.TryGetMorphGhostNetIdForPlayer(playerNetId, out uint ghostNetId) && ghostNetId != 0U
+                        && this.TryGetEntityPositionByNetId(ghostNetId, out Vector3 ghostPos))
+                    {
+                        this.TryAddHideAndSeekMorphSpot(seen, spots, ghostNetId, ghostPos);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void TryCollectHideAndSeekMorphFromHiderPlacedPositions(uint selfNetId, HashSet<uint> seen, List<HideAndSeekMorphRadarSpot> spots)
+        {
+            try
+            {
+                Type entitiesType = this.FindLoadedType("XDTLevelAndEntity.BaseSystem.EntitiesManager.Entities", "Entities");
+                Type remotePlayerType = this.FindLoadedType(
+                    "XDTLevelAndEntity.Gameplay.Component.Player.RemotePlayerComponent",
+                    "RemotePlayerComponent");
+                if (entitiesType == null || remotePlayerType == null)
+                {
+                    return;
+                }
+
+                MethodInfo getComponentsMethod = entitiesType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "GetComponents" && m.IsGenericMethodDefinition && m.GetParameters().Length == 1);
+                if (getComponentsMethod == null)
+                {
+                    return;
+                }
+
+                Type listType = typeof(List<>).MakeGenericType(remotePlayerType);
+                object listInstance = Activator.CreateInstance(listType);
+                if (listInstance == null)
+                {
+                    return;
+                }
+
+                object[] args = new object[] { listInstance };
+                getComponentsMethod.MakeGenericMethod(remotePlayerType).Invoke(null, args);
+                object results = args[0] ?? listInstance;
+                if (!(results is IEnumerable enumerable))
+                {
+                    return;
+                }
+
+                foreach (object remotePlayer in enumerable)
+                {
+                    if (remotePlayer == null)
+                    {
+                        continue;
+                    }
+
+                    object entityObj;
+                    if (!(this.TryGetObjectMember(remotePlayer, "entity", out entityObj) || this.TryInvokeZeroArgMember(remotePlayer, out entityObj, "get_entity"))
+                        || entityObj == null)
+                    {
+                        continue;
+                    }
+
+                    if (!this.TryResolveBirdNetIdFromObject(entityObj, out uint playerNetId, out _, 0) || playerNetId == 0U || playerNetId == selfNetId)
+                    {
+                        continue;
+                    }
+
+                    if (this.TryGetHideAndSeekHiderPlacedPosition(playerNetId, out Vector3 placedPos))
+                    {
+                        uint markerNetId = playerNetId;
+                        if (this.TryGetMorphGhostNetIdForPlayer(playerNetId, out uint ghostNetId) && ghostNetId != 0U)
+                        {
+                            markerNetId = ghostNetId;
+                        }
+
+                        this.TryAddHideAndSeekMorphSpot(seen, spots, markerNetId, placedPos);
+                    }
+                    else if (this.TryGetHideAndSeekHelperTrackPosition(playerNetId, out Vector3 helperPos))
+                    {
+                        this.TryAddHideAndSeekMorphSpot(seen, spots, playerNetId, helperPos);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private bool TryGetMorphGhostNetIdForPlayer(uint playerNetId, out uint ghostNetId)
+        {
+            ghostNetId = 0U;
+            if (playerNetId == 0U || !this.TryGetEntityObjectByNetId(playerNetId, out object entity) || entity == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                Type entityType = entity.GetType();
+                MethodInfo tryGetMorphMethod = entityType.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                    .FirstOrDefault(m =>
+                    {
+                        if (m.Name != "TryGet")
+                        {
+                            return false;
+                        }
+
+                        ParameterInfo[] parameters = m.GetParameters();
+                        return parameters.Length == 2 && parameters[1].IsOut;
+                    });
+                if (tryGetMorphMethod == null || !tryGetMorphMethod.IsGenericMethodDefinition)
+                {
+                    return false;
+                }
+
+                Type morphComponentType = this.FindLoadedType(
+                    "XDT.Scene.Shared.Modules.PartyGame.MorphComponent",
+                    "MorphComponent");
+                if (morphComponentType == null)
+                {
+                    return false;
+                }
+
+                MethodInfo boundTryGet = tryGetMorphMethod.MakeGenericMethod(morphComponentType);
+                object[] invokeArgs = new object[] { Activator.CreateInstance(morphComponentType), false };
+                object invokeResult = boundTryGet.Invoke(entity, invokeArgs);
+                if (!(invokeResult is bool hasMorph) || !hasMorph)
+                {
+                    return false;
+                }
+
+                object morphValue = invokeArgs[0];
+                if (morphValue == null)
+                {
+                    return false;
+                }
+
+                object ghostRef;
+                if (this.TryGetObjectMember(morphValue, "Ghost", out ghostRef) && ghostRef != null)
+                {
+                    if (this.TryGetObjectMember(ghostRef, "NetId", out object netIdObj) && this.TryConvertToUInt(netIdObj, out ghostNetId))
+                    {
+                        return ghostNetId != 0U;
+                    }
+                }
+
+                FieldInfo ghostField = morphValue.GetType().GetField("Ghost", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (ghostField != null)
+                {
+                    object ghostStruct = ghostField.GetValue(morphValue);
+                    if (ghostStruct != null && this.TryGetObjectMember(ghostStruct, "NetId", out object netIdObj2) && this.TryConvertToUInt(netIdObj2, out ghostNetId))
+                    {
+                        return ghostNetId != 0U;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            ghostNetId = 0U;
+            return false;
+        }
+
+        private bool TryGetHideAndSeekHiderPlacedPosition(uint playerNetId, out Vector3 position)
+        {
+            position = Vector3.zero;
+            try
+            {
+                Type ecsServiceType = this.FindLoadedType("XDTDataAndProtocol.ProtocolService.EcsService", "EcsService");
+                Type hideAndSeekServiceType = this.FindLoadedType(
+                    "XDTDataAndProtocol.ProtocolService.HideAndSeek.IHideAndSeekService",
+                    "IHideAndSeekService");
+                if (ecsServiceType == null || hideAndSeekServiceType == null)
+                {
+                    return false;
+                }
+
+                MethodInfo getServiceMethod = ecsServiceType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "Get" && m.IsGenericMethodDefinition && m.GetParameters().Length == 0);
+                MethodInfo tryGetPlacedMethod = hideAndSeekServiceType.GetMethod(
+                    "TryGetHiderPlacedPlayerPosition",
+                    BindingFlags.Public | BindingFlags.Instance);
+                if (getServiceMethod == null || tryGetPlacedMethod == null)
+                {
+                    return false;
+                }
+
+                object service = getServiceMethod.MakeGenericMethod(hideAndSeekServiceType).Invoke(null, null);
+                if (service == null)
+                {
+                    return false;
+                }
+
+                object[] args = new object[] { playerNetId, Vector3.zero };
+                object result = tryGetPlacedMethod.Invoke(service, args);
+                if (result is bool ok && ok)
+                {
+                    position = (Vector3)args[1];
+                    return position.sqrMagnitude > 0.01f;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        private bool TryGetHideAndSeekHelperTrackPosition(uint playerNetId, out Vector3 position)
+        {
+            position = Vector3.zero;
+            try
+            {
+                Type ecsServiceType = this.FindLoadedType("XDTDataAndProtocol.ProtocolService.EcsService", "EcsService");
+                Type hideAndSeekServiceType = this.FindLoadedType(
+                    "XDTDataAndProtocol.ProtocolService.HideAndSeek.IHideAndSeekService",
+                    "IHideAndSeekService");
+                if (ecsServiceType == null || hideAndSeekServiceType == null)
+                {
+                    return false;
+                }
+
+                MethodInfo getServiceMethod = ecsServiceType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "Get" && m.IsGenericMethodDefinition && m.GetParameters().Length == 0);
+                MethodInfo helperMethod = hideAndSeekServiceType.GetMethod(
+                    "GetHelperTrackPosition",
+                    BindingFlags.Public | BindingFlags.Instance);
+                if (getServiceMethod == null || helperMethod == null)
+                {
+                    return false;
+                }
+
+                object service = getServiceMethod.MakeGenericMethod(hideAndSeekServiceType).Invoke(null, null);
+                if (service == null)
+                {
+                    return false;
+                }
+
+                object[] args = new object[] { playerNetId, Vector3.zero };
+                object result = helperMethod.Invoke(service, args);
+                if (result is bool ok && ok)
+                {
+                    position = (Vector3)args[1];
+                    return position.sqrMagnitude > 0.01f;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
         }
 
         private bool IsDisplayInsectObject(GameObject obj)
@@ -40768,6 +41364,14 @@ namespace HeartopiaMod
                                                     {
                                                         flag9 = true;
                                                     }
+                                                    else if (markerLabel.Contains("Player") && this.showOtherPlayersRadar)
+                                                    {
+                                                        flag9 = true;
+                                                    }
+                                                    else if (markerLabel.Contains("Morph") && this.showOtherPlayersRadar)
+                                                    {
+                                                        flag9 = true;
+                                                    }
                                                     else
                                                     {
                                                         bool flag14 = markerLabel.Contains("Insect") && this.showInsectRadar;
@@ -41456,7 +42060,8 @@ namespace HeartopiaMod
             return this.IsAnyMushroomRadarEnabled() || this.showFiddleheadRadar || this.showTallMustardRadar || this.showBurdockRadar || this.showMustardGreensRadar
                 || this.showBlueberryRadar || this.showRaspberryRadar || this.showStoneRadar || this.showOreRadar
                 || this.showTreeRadar || this.showRareTreeRadar || this.showAppleTreeRadar || this.showOrangeTreeRadar
-                || this.showBubbleRadar || this.showBirdRadar || this.showInsectRadar || this.showFishShadowRadar || this.showMeteorRadar;
+                || this.showBubbleRadar || this.showBirdRadar || this.showInsectRadar || this.showFishShadowRadar || this.showMeteorRadar
+                || this.showOtherPlayersRadar;
         }
 
         private bool IsAnyMushroomRadarEnabled()
@@ -42071,7 +42676,7 @@ namespace HeartopiaMod
             // storing IL2CPP native object references between frames causes native access-violation
             // crashes when Unity destroys those objects while we still hold the C# wrapper.
             bool needGOScan = this.showInsectRadar || this.showFishShadowRadar || this.showMeteorRadar
-                              || this.showBirdRadar;
+                              || this.showBirdRadar || this.showOtherPlayersRadar;
             GameObject[] freshGOs = null;
             if (needGOScan && Time.unscaledTime - this._cachedRadarGameObjectsAt > RadarGOScanInterval)
             {
@@ -42191,6 +42796,55 @@ namespace HeartopiaMod
                         catch { /* destroyed native object - skip silently */ }
                     }
                 }
+            }
+
+            if (this.showOtherPlayersRadar && freshGOs != null)
+            {
+                float maxPlayerRange = Mathf.Max(25f, this.radarMaxDistance);
+                GameObject localPlayer = GetLocalPlayer();
+                for (int p = 0; p < freshGOs.Length; p++)
+                {
+                    try
+                    {
+                        GameObject candidate = freshGOs[p];
+                        if (candidate == null || candidate.name == null)
+                        {
+                            continue;
+                        }
+
+                        if (localPlayer != null && ReferenceEquals(candidate, localPlayer))
+                        {
+                            continue;
+                        }
+
+                        if (!this.IsOtherPlayerSkeletonGameObject(candidate))
+                        {
+                            continue;
+                        }
+
+                        if (Vector3.Distance(position, candidate.transform.position) > maxPlayerRange)
+                        {
+                            continue;
+                        }
+
+                        int instanceId = candidate.GetInstanceID();
+                        if (!this.trackedObjectMarkers.ContainsKey(instanceId))
+                        {
+                            this.CreateMarker(candidate.transform.position, "otherplayer", material, material2, candidate);
+                            this.RegisterTrackedMarkerForTarget(instanceId, candidate);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                float morphMaxRange = Mathf.Max(25f, this.radarMaxDistance);
+                this.SyncHideAndSeekMorphRadarMarkers(position, material, material2, morphMaxRange);
+            }
+            else if (this.trackedHideAndSeekMorphMarkers.Count > 0 || this.hideAndSeekMorphTrackedPositions.Count > 0)
+            {
+                this.ClearHideAndSeekMorphMarkers();
             }
 
             bool flag34 = object2 != null;
@@ -42343,6 +42997,22 @@ namespace HeartopiaMod
                             }
                             else
                             {
+                                if (meshName == "otherplayermorph")
+                                {
+                                    text2 = "Morph";
+                                    icon = "[M]";
+                                    endColor = new Color(1f, 0.72f, 0.38f);
+                                    bgColor = new Color(0.42f, 0.22f, 0.08f, 0.9f);
+                                }
+                                else if (meshName == "otherplayer")
+                                {
+                                    text2 = "Player";
+                                    icon = "[P]";
+                                    endColor = new Color(0.45f, 0.88f, 1f);
+                                    bgColor = new Color(0.08f, 0.22f, 0.42f, 0.9f);
+                                }
+                                else
+                                {
                                 bool flagRareTree = meshName == "rare_tree" || meshName == "rare_tree_cooldown";
                                 if (flagRareTree)
                                 {
@@ -42504,6 +43174,7 @@ namespace HeartopiaMod
                     }
                 }
             }
+                            }
             if (text2 == "Mushroom" && text.Contains("dynamicbush") && !this.loggedUnknownForageMeshNames.Contains(meshName))
             {
                 this.loggedUnknownForageMeshNames.Add(meshName);
@@ -42709,6 +43380,7 @@ namespace HeartopiaMod
                     {
                         GameObject gameObject = child.gameObject;
                         bool isBubbleTrackedMarker = this.TryParseBubbleTrackedMarkerId(gameObject.name, out int bubbleTrackedId);
+                        bool isHideAndSeekMorphMarker = this.TryParseHideAndSeekMorphMarkerId(gameObject.name, out uint hideAndSeekMorphTrackedId);
                         if (isBubbleTrackedMarker)
                         {
                             if (this.bubbleRadarSceneTargets.TryGetValue(bubbleTrackedId, out GameObject bubbleTarget)
@@ -42735,6 +43407,17 @@ namespace HeartopiaMod
 
                             child.position = bubblePos;
                         }
+                        else if (isHideAndSeekMorphMarker)
+                        {
+                            if (!this.showOtherPlayersRadar
+                                || !this.hideAndSeekMorphTrackedPositions.TryGetValue(hideAndSeekMorphTrackedId, out Vector3 morphPos))
+                            {
+                                this.RemoveHideAndSeekMorphMarker(hideAndSeekMorphTrackedId);
+                                goto IL_505;
+                            }
+
+                            child.position = morphPos;
+                        }
 
                         float num = Vector3.Distance(position, child.position);
                         float markerMaxDistance = isBubbleTrackedMarker
@@ -42750,6 +43433,10 @@ namespace HeartopiaMod
                                 this.trackedBubbleMarkers.Remove(bubbleTrackedId);
                                 this.bubbleRadarTrackedPositions.Remove(bubbleTrackedId);
                             }
+                            if (isHideAndSeekMorphMarker)
+                            {
+                                this.RemoveHideAndSeekMorphMarker(hideAndSeekMorphTrackedId);
+                            }
                             bool flag4 = gameObject.name.StartsWith("TrackedMarker_");
                             if (flag4)
                             {
@@ -42758,7 +43445,7 @@ namespace HeartopiaMod
                         }
                         else
                         {
-                            bool flag7 = !isBubbleTrackedMarker && gameObject.name.StartsWith("TrackedMarker_");
+                            bool flag7 = !isBubbleTrackedMarker && !isHideAndSeekMorphMarker && gameObject.name.StartsWith("TrackedMarker_");
                             if (flag7)
                             {
                                 // Use name-based lookup: Il2Cpp managed wrapper identity differs on each cross-boundary access
@@ -42782,6 +43469,13 @@ namespace HeartopiaMod
                                 }
                                 bool flagBird = gameObject2 != null && this.ShouldTrackBirdObject(trackedName);
                                 if (flagBird && !this.showBirdRadar)
+                                {
+                                    Object.Destroy(gameObject);
+                                    this.RemoveTrackedMarkerMapping(gameObject);
+                                    goto IL_505;
+                                }
+                                bool flagOtherPlayer = gameObject2 != null && this.IsOtherPlayerSkeletonGameObject(gameObject2);
+                                if (flagOtherPlayer && !this.showOtherPlayersRadar)
                                 {
                                     Object.Destroy(gameObject);
                                     this.RemoveTrackedMarkerMapping(gameObject);
@@ -43223,6 +43917,7 @@ namespace HeartopiaMod
             this.markerMetadataById.Clear();
             this.trackedObjectMarkers.Clear();
             this.trackedBubbleMarkers.Clear();
+            this.ClearHideAndSeekMorphMarkers();
             this.bubbleRadarTrackedPositions.Clear();
             this.bubbleRadarSnapshotPositions.Clear();
             this.bubbleRadarSceneTargets.Clear();
@@ -59726,6 +60421,11 @@ namespace HeartopiaMod
         private const float BubbleRadarSceneMissingRetainMinDistance = 25.0f;
         private const bool BubbleRadarUnsafeAuraMonoScanEnabled = false;
         private const string BubbleTrackedMarkerPrefix = "BubbleTrackedMarker_";
+        private readonly Dictionary<uint, GameObject> trackedHideAndSeekMorphMarkers = new Dictionary<uint, GameObject>();
+        private readonly Dictionary<uint, Vector3> hideAndSeekMorphTrackedPositions = new Dictionary<uint, Vector3>();
+        private readonly HashSet<uint> hideAndSeekMorphSeenNetIds = new HashSet<uint>();
+        private readonly List<HideAndSeekMorphRadarSpot> hideAndSeekMorphCollectBuffer = new List<HideAndSeekMorphRadarSpot>(32);
+        private const string HideAndSeekMorphMarkerPrefix = "HideAndSeekMorphMarker_";
 
         // Token: 0x0400000A RID: 10
         private bool showMenu = true;
@@ -60951,6 +61651,7 @@ namespace HeartopiaMod
         private bool showBubbleRadar = false;
 
         private bool showBirdRadar = false;
+        private bool showOtherPlayersRadar = false;
 
         // Token: 0x0400002E RID: 46
         public bool showInsectRadar = false;

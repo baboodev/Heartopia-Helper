@@ -222,6 +222,8 @@ namespace HeartopiaMod
                 case "Mandarin Tree":
                 case "Bubble":
                 case "Bird":
+                case "Player":
+                case "Morph":
                 case "Insect":
                 case "Meteor":
                 case "Fish Shadow":
@@ -242,6 +244,10 @@ namespace HeartopiaMod
                     return 2.8f;
                 case "Bird":
                     return 1.9f;
+                case "Player":
+                    return 2f;
+                case "Morph":
+                    return 1.35f;
                 case "Bubble":
                     return 1.75f;
                 case "Stone":
@@ -275,6 +281,8 @@ namespace HeartopiaMod
                 case "Truffle": return "TF";
                 case "Bubble": return "BP";
                 case "Bird": return "BR";
+                case "Player": return "PL";
+                case "Morph": return "MF";
                 case "Insect": return "IN";
                 case "Meteor": return "MT";
                 case "Fish Shadow": return "FS";
@@ -305,6 +313,8 @@ namespace HeartopiaMod
                 case "Truffle": return new Color(0.98f, 0.93f, 0.58f);
                 case "Bubble": return new Color(0.9f, 0.56f, 1f);
                 case "Bird": return new Color(0.98f, 0.92f, 0.52f);
+                case "Player": return new Color(0.45f, 0.88f, 1f);
+                case "Morph": return new Color(1f, 0.72f, 0.38f);
                 case "Insect": return new Color(1f, 0.78f, 0.42f);
                 case "Meteor": return new Color(1f, 0.62f, 0.32f);
                 case "Fish Shadow": return new Color(0.42f, 0.78f, 1f);
