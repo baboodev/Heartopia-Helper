@@ -13,5 +13,5 @@ if errorlevel 1 exit /b 1
 
 echo.
 echo Done.
-echo   MelonLoader: bin\MelonLoader\Release\buddy.dll  -^> copy to Mods\
-echo   BepInEx:     bin\BepInEx\Release\buddy.dll      -^> copy to BepInEx\plugins\
+echo   MelonLoader: bin\MelonLoader\Release\helper.dll  -^> copy to Mods\
+echo   BepInEx:     bin\BepInEx\Release\helper.dll      -^> copy to BepInEx\plugins\

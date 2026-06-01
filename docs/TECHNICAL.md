@@ -123,7 +123,7 @@ public partial class HeartopiaComplete  // NOT MelonMod
 | Loader | Output |
 |--------|--------|
 | MelonLoader | `MelonLogger.Msg` / `Warning` |
-| BepInEx | BepInEx log + append `{Game}/UserData/buddy.log` |
+| BepInEx | BepInEx log + append `{Game}/UserData/helper.log` |
 
 All mod code uses `ModLogger.Msg(...)` — never call loader APIs directly.
 
@@ -486,7 +486,7 @@ Extended fishing debug / ECS work may live on the **`test`** git branch.
 |----------|-------|
 | SDK | `Microsoft.NET.Sdk` |
 | TFM | `net6.0`, x64 |
-| Assembly | `buddy.dll` |
+| Assembly | `helper.dll` |
 | Output | `bin/<Loader>/<Configuration>/` |
 | Script | `build-all.bat` |
 | Config | `Directory.Build.props` → `HeartopiaDir` |

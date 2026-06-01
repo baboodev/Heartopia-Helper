@@ -5,7 +5,7 @@
     <Loader Condition="'$(Loader)' == ''">MelonLoader</Loader>
     <HeartopiaDir Condition="'$(HeartopiaDir)' == ''">D:\SteamLibrary\steamapps\common\Heartopia</HeartopiaDir>
     <OutputType>Library</OutputType>
-    <AssemblyName>buddy</AssemblyName>
+    <AssemblyName>helper</AssemblyName>
     <RootNamespace>buddy</RootNamespace>
     <TargetFramework>net6.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

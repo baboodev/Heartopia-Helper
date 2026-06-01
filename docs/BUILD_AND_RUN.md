@@ -10,7 +10,7 @@ How to build **Heartopia Helper**, deploy it for **MelonLoader** or **BepInEx**,
 |------|-------|
 | Mod loaders | [MelonLoader](https://melonloader.co/download.html) **or** [BepInEx IL2CPP](https://docs.bepinex.dev/) |
 | Target framework | .NET **6.0** (x64) |
-| Output assembly | **`buddy.dll`** (same name for both loaders) |
+| Output assembly | **`helper.dll`** (same name for both loaders) |
 | Core logic | `HeartopiaComplete` (plain class, not tied to a loader) |
 | Loader entry points | `MelonLoaderPlugin.cs` / `BepInExPlugin.cs` |
 | Shared abstractions | `ModLogger.cs`, `ModCoroutines.cs` |
@@ -95,8 +95,8 @@ build-all.bat
 Output:
 
 ```
-buddy/bin/MelonLoader/Release/buddy.dll
-buddy/bin/BepInEx/Release/buddy.dll
+buddy/bin/MelonLoader/Release/helper.dll
+buddy/bin/BepInEx/Release/helper.dll
 ```
 
 ### Single loader
@@ -125,10 +125,10 @@ Debug builds go to `bin\<Loader>\Debug\`.
 
 | Loader | Copy to |
 |--------|---------|
-| MelonLoader | `<HeartopiaDir>/Mods/buddy.dll` |
-| BepInEx | `<HeartopiaDir>/BepInEx/plugins/buddy.dll` |
+| MelonLoader | `<HeartopiaDir>/Mods/helper.dll` |
+| BepInEx | `<HeartopiaDir>/BepInEx/plugins/helper.dll` |
 
-Optional: copy `buddy.pdb` next to the DLL for debugging.
+Optional: copy `helper.pdb` next to the DLL for debugging.
 
 No installer in-repo — manual copy only.
 
@@ -136,7 +136,7 @@ No installer in-repo — manual copy only.
 
 Merge settings from `buddy/BepInEx.logging.cfg.snippet` into `BepInEx/config/BepInEx.cfg` for console + disk logs.
 
-Mod backup log (BepInEx only): `<HeartopiaDir>/UserData/buddy.log`
+Mod backup log (BepInEx only): `<HeartopiaDir>/UserData/helper.log`
 
 ---
 
@@ -218,12 +218,12 @@ Orphan `.cs` files in `buddy/` (legacy fish, ECS dump, etc.) are **not** in the 
 
 | Symptom | Fix |
 |---------|-----|
-| Mod not loaded | Wrong deploy path or wrong DLL name (`buddy.dll`) |
+| Mod not loaded | Wrong deploy path or wrong DLL name (`helper.dll`) |
 | Both loaders installed | Remove one; conflicts are likely |
 | Menu won't open | Check keybind in Settings (default Insert) |
 | Harmony `[ERR]` lines | Game update broke patches — rebuild against new interop |
 | Auto fishing inactive | Use **Resource Gathering → Fishing** (`AutoFishingFarm`); legacy `AutoFishLogic` is not compiled |
-| BepInEx: no UI | Check `LogOutput.log` and `UserData/buddy.log` |
+| BepInEx: no UI | Check `LogOutput.log` and `UserData/helper.log` |
 
 ---
 

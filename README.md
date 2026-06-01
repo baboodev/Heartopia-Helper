@@ -5,10 +5,10 @@ Automation and utility mod for [Heartopia](https://store.steampowered.com/app/he
 ## Quick start
 
 1. Install [MelonLoader](https://melonloader.co/download.html) **or** [BepInEx](https://docs.bepinex.dev/) for Heartopia.
-2. Build or download `buddy.dll` (see [docs/BUILD_AND_RUN.md](docs/BUILD_AND_RUN.md)).
+2. Build or download `helper.dll` (see [docs/BUILD_AND_RUN.md](docs/BUILD_AND_RUN.md)).
 3. Deploy:
-   - **MelonLoader:** `<Game>/Mods/buddy.dll`
-   - **BepInEx:** `<Game>/BepInEx/plugins/buddy.dll`
+   - **MelonLoader:** `<Game>/Mods/helper.dll`
+   - **BepInEx:** `<Game>/BepInEx/plugins/helper.dll`
 4. Launch the game. Press **Insert** to toggle the menu.
 
 Recommended: play in a **private town** when using automation.
