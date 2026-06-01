@@ -124,7 +124,11 @@ namespace HeartopiaMod
         private const float FarmActiveAutoRepairTriggerCheckInterval = 1f;
 
         // === MASTER BUILD SWITCHES ===
+#if HIDE_LOADER_CONSOLE
+        private const bool MasterHideLoaderConsole = true;
+#else
         private const bool MasterHideLoaderConsole = false;
+#endif
         internal const bool MasterLogAuraFarm = false;
         internal const bool MasterLogBirdFarm = false;
         internal const bool MasterLogBirdFarmCrashTrace = false;
@@ -140,7 +144,11 @@ namespace HeartopiaMod
         private const bool MasterLogRadarIconEsp = false;
         private const bool MasterLogBubbleRadar = false;
         private const bool MasterLogAutoBuy = false;
+#if HIDE_LOADER_CONSOLE
+        private const bool MasterLogForceOpenShop = false;
+#else
         private const bool MasterLogForceOpenShop = true;
+#endif
         private const bool MasterLogPetPlay = false;
         private const bool MasterLogPetFeed = false;
         private const bool MasterLogStrangerChat = false;
@@ -1646,6 +1654,26 @@ namespace HeartopiaMod
                 return;
             }
 
+            ModCoroutines.Start(this.HideLoaderConsoleRoutine());
+        }
+
+        private IEnumerator HideLoaderConsoleRoutine()
+        {
+            // BepInEx may attach/show the console slightly after plugin load.
+            float[] delays = new[] { 0f, 0.5f, 1f, 2f, 4f };
+            for (int i = 0; i < delays.Length; i++)
+            {
+                if (delays[i] > 0f)
+                {
+                    yield return new WaitForSecondsRealtime(delays[i]);
+                }
+
+                this.TryHideLoaderConsoleWindow();
+            }
+        }
+
+        private void TryHideLoaderConsoleWindow()
+        {
             try
             {
                 IntPtr consoleWindow = GetConsoleWindow();

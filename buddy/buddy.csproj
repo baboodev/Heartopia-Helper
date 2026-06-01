@@ -28,6 +28,12 @@
     <Optimize>true</Optimize>
   </PropertyGroup>
 
+  <!-- Shipping BepInEx build: hide loader console after startup, no verbose mod logs -->
+  <PropertyGroup Condition="'$(Configuration)' == 'ReleaseShip'">
+    <DefineConstants>TRACE;HIDE_LOADER_CONSOLE</DefineConstants>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(Loader)' == 'MelonLoader'">
     <DefineConstants>$(DefineConstants);MELONLOADER</DefineConstants>
   </PropertyGroup>
