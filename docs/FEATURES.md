@@ -15,7 +15,7 @@ Complete feature catalog for **Heartopia Helper**. Works identically under Melon
 | 3 | **Features** | Automation utilities (food, repair, shops, cooking, puzzle, pets) |
 | 4 | **Radar** | World resource radar + visual ESP |
 | 5 | **Teleport** | Fast travel, NPCs, events, custom points |
-| 6 | **Items Selector** | Bulk item selection via bag UI scanning |
+| 6 | **Bag / Warehouse** | Backpack ↔ warehouse transfer via `BackPackSystem` / `MoveBatchBackpackItems` |
 | 7 | **Settings** | Keybinds, theme, language, notifications, overlays |
 
 Tab index **1** is unused in the main tab bar (historical gap).
@@ -327,14 +327,14 @@ Weighted preference for specific forage types when multiple markers compete (fid
 
 ---
 
-## Items Selector (Bulk Selector)
+## Bag / Warehouse
 
-- Live-scans bag UI when **live scan** enabled.
-- Harmony postfix on `UnityEngine.UI.Image.set_sprite` detects `ui_item_normal*` sprites.
-- Builds catalog of discovered item sprite names → UI slot transforms.
-- Used for bulk operations on matching inventory slots (sell, select, etc. in same tab).
-
-Caches: `discoveredItems`, `slotCache` static collections on `HeartopiaComplete`.
+- Scans **Bag** or **Warehouse** through `BackPackSystem.GetAllItem` (AuraMono), one row per `netId` stack.
+- Transfer sends `BackpackProtocolManager.MoveBatchBackpackItems` (`BatchMoveNetworkCommand`, max 256 stacks per request; mod chunks larger batches).
+- Direction: Bag → Warehouse (`targetStorageType = 2`), Warehouse → Bag (`targetStorageType = 1`).
+- Does **not** require opening the in-game bag, warehouse tab, or multi-select UI.
+- Optional **Multi** mode: click stacks to build a batch, set quantity, then **Transfer**.
+- Locked stacks are shown but skipped on send.
 
 ---
 

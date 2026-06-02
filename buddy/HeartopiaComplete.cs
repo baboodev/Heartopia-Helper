@@ -28,41 +28,6 @@ using Object = UnityEngine.Object;
 
 namespace HeartopiaMod
 {
-    // Harmony Patch for Bulk Selector Item Detection
-    [HarmonyPatch(typeof(UnityEngine.UI.Image), "set_sprite")]
-    public static class SpriteDetectionPatch
-    {
-        public static void Postfix(UnityEngine.UI.Image __instance, UnityEngine.Sprite value)
-        {
-            if (!HeartopiaComplete.bulkSelectorLiveScanEnabled)
-            {
-                return;
-            }
-
-            if (value == null) return;
-            string spriteName = value.name;
-            if (spriteName.Contains("ui_item_normal"))
-            {
-                if (!HeartopiaComplete.discoveredItems.Contains(spriteName))
-                {
-                    HeartopiaComplete.discoveredItems.Add(spriteName);
-                }
-                Transform slot = __instance.transform.parent?.parent;
-                if (slot != null)
-                {
-                    if (!HeartopiaComplete.slotCache.ContainsKey(spriteName))
-                    {
-                        HeartopiaComplete.slotCache[spriteName] = new List<Transform>();
-                    }
-                    if (!HeartopiaComplete.slotCache[spriteName].Contains(slot))
-                    {
-                        HeartopiaComplete.slotCache[spriteName].Add(slot);
-                    }
-                }
-            }
-        }
-    }
-
     // Toast hook moved to ToastHook.cs
 
     // Token: 0x02000004 RID: 4
@@ -617,6 +582,21 @@ namespace HeartopiaMod
             public bool FromBackpack;
             public bool FromWarehouse;
         }
+
+        private sealed class TransferItemEntry
+        {
+            public string SpriteName = string.Empty;
+            public string DisplayName = string.Empty;
+            public string MatchKey = string.Empty;
+            public uint NetId;
+            public int Count;
+            public int StaticId;
+            public int EntityType;
+            public int StarRate;
+            public bool IsLocked;
+            public bool FromBackpack;
+        }
+
         private List<AutoSellBagItemEntry> autoSellBagItems = null;
         private Dictionary<string, Texture2D> autoSellBagItemTextures = new Dictionary<string, Texture2D>();
         private readonly Dictionary<string, int> autoSellUiStarByMatchKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -629,6 +609,8 @@ namespace HeartopiaMod
         private Vector2 autoSellBagItemScrollPos = Vector2.zero;
         private float autoSellBagScanRetryTime = 0f;
         private float autoSellBagScanDeadline = 0f;
+        private float autoSellPendingRescanAt = 0f;
+        private int autoSellPendingRescanRetries = 0;
         private bool isRepairing = false;
         private int repairStep = 0;
         private float stepTimer = 0f;
@@ -1803,26 +1785,6 @@ namespace HeartopiaMod
             }
             try
             {
-                MethodInfo spriteSetMethod = typeof(UnityEngine.UI.Image).GetProperty("sprite").GetSetMethod();
-                MethodInfo spritePatchMethod = typeof(SpriteDetectionPatch).GetMethod("Postfix");
-                bool flag4 = spriteSetMethod != null && spritePatchMethod != null;
-                if (flag4)
-                {
-                    HeartopiaComplete.harmonyInstance.Patch(spriteSetMethod, null, new HarmonyMethod(spritePatchMethod), null, null, null);
-                    ModLogger.Msg("[OK] Successfully patched Image.sprite setter for Bulk Selector!");
-                }
-                else
-                {
-                    ModLogger.Msg($"[ERR] Failed to find sprite methods - setter: {spriteSetMethod != null}, patch: {spritePatchMethod != null}");
-                }
-            }
-            catch (Exception ex4)
-            {
-                ModLogger.Msg("[ERR] Image.sprite patch failed: " + ex4.Message);
-            }
-
-            try
-            {
                 Action<string, Type[], Type, string> patchInputPostfix = (methodName, args, patchType, label) =>
                 {
                     MethodInfo target = typeof(Input).GetMethod(methodName, args);
@@ -1922,6 +1884,9 @@ namespace HeartopiaMod
             }
             this.EnsureStrangerChatBypassPatch();
             WarehouseBypassFeature.Update(this);
+            this.UpdateTransferQtyHoldRepeat();
+            this.ProcessPendingTransferListRescan();
+            this.ProcessPendingAutoSellListRescan();
             this.UpdatePetPlayAutomation();
             this.UpdateGameUiClickBlockState();
             this.UpdateMouseLookState();
@@ -2786,7 +2751,7 @@ namespace HeartopiaMod
             this.DrawSidebarTabButton(sidebarButtonRects[2], "Features", 3);
             this.DrawSidebarTabButton(sidebarButtonRects[3], "Radar", 4);
             this.DrawSidebarTabButton(sidebarButtonRects[4], "Teleport", 5);
-            this.DrawSidebarTabButton(sidebarButtonRects[5], "Items Selector", 6);
+            this.DrawSidebarTabButton(sidebarButtonRects[5], "Bag / Warehouse", 6);
             this.DrawSidebarTabButton(sidebarButtonRects[6], "Settings", 7);
 
             var subTabs = this.GetActiveTopSubTabs();
@@ -17675,7 +17640,7 @@ namespace HeartopiaMod
             if (this.selectedTab == 3) return this.L("Features");
             if (this.selectedTab == 4) return this.L("Radar");
             if (this.selectedTab == 5) return this.L("Teleport");
-            if (this.selectedTab == 6) return this.L("Items Selector");
+            if (this.selectedTab == 6) return this.L("Bag / Warehouse");
             if (this.selectedTab == 7) return this.L("Settings");
             return "Unknown";
         }
@@ -22865,7 +22830,7 @@ namespace HeartopiaMod
             }
             else if (this.selectedTab == 6)
             {
-                // No sub-tabs for Items Selector
+                // No sub-tabs for Bag / Warehouse
             }
             else if (this.selectedTab == 7)
             {
@@ -51745,12 +51710,84 @@ namespace HeartopiaMod
             if (sent && !fromAuto)
             {
                 this.AddMenuNotification("Auto Sell: " + totalCount + " item(s)", new Color(0.45f, 1f, 0.55f));
+                this.FinalizeManualAutoSellSend(sellItems);
             }
             else if (!sent && !fromAuto)
             {
                 this.AddMenuNotification("Auto Sell failed - check logs", new Color(1f, 0.55f, 0.55f));
             }
             return sent;
+        }
+
+        private void FinalizeManualAutoSellSend(Dictionary<uint, int> soldMap)
+        {
+            if (soldMap == null || soldMap.Count == 0)
+            {
+                return;
+            }
+
+            string statusMessage = this.autoSellStatus;
+            this.ApplyOptimisticAutoSellToItemList(soldMap);
+            this.autoSellStatus = statusMessage;
+            this.ScheduleAutoSellListRescan();
+        }
+
+        private void ApplyOptimisticAutoSellToItemList(Dictionary<uint, int> soldMap)
+        {
+            if (this.autoSellBagItems == null || soldMap == null || soldMap.Count == 0)
+            {
+                return;
+            }
+
+            for (int i = this.autoSellBagItems.Count - 1; i >= 0; i--)
+            {
+                AutoSellBagItemEntry entry = this.autoSellBagItems[i];
+                if (entry == null || !soldMap.TryGetValue(entry.NetId, out int soldQty) || soldQty <= 0)
+                {
+                    continue;
+                }
+
+                entry.Count -= soldQty;
+                if (entry.Count <= 0)
+                {
+                    this.autoSellBagItems.RemoveAt(i);
+                }
+                else if (entry.StackCount > 1)
+                {
+                    entry.StackCount = Math.Max(1, entry.StackCount - 1);
+                }
+            }
+        }
+
+        private void ScheduleAutoSellListRescan()
+        {
+            this.autoSellPendingRescanAt = Time.unscaledTime + 0.35f;
+            this.autoSellPendingRescanRetries = 6;
+        }
+
+        private void ProcessPendingAutoSellListRescan()
+        {
+            if (this.autoSellPendingRescanRetries <= 0)
+            {
+                return;
+            }
+
+            if (!this.showMenu || this.selectedTab != 3 || this.automationSubTab != 4)
+            {
+                this.autoSellPendingRescanRetries = 0;
+                return;
+            }
+
+            if (Time.unscaledTime < this.autoSellPendingRescanAt)
+            {
+                return;
+            }
+
+            string statusMessage = this.autoSellStatus;
+            this.autoSellBagItems = this.ScanBackpackForAutoSellItems();
+            this.autoSellStatus = statusMessage;
+            this.autoSellPendingRescanRetries--;
+            this.autoSellPendingRescanAt = Time.unscaledTime + 0.3f;
         }
 
         private bool IsAutoSellWorldReady()
@@ -55649,6 +55686,423 @@ namespace HeartopiaMod
             return true;
         }
 
+        private bool TryResolveAuraMonoMoveBatchBackpackItemsMethod(out IntPtr methodPtr)
+        {
+            methodPtr = this.transferMonoMoveBatchMethod;
+            if (methodPtr != IntPtr.Zero)
+            {
+                return true;
+            }
+
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoClassFromName == null)
+            {
+                return false;
+            }
+
+            IntPtr dataImage = this.FindAuraMonoImage(new[] { "XDTDataAndProtocol", "XDTDataAndProtocol.dll", "Client", "Client.dll" });
+            IntPtr protocolClass = dataImage != IntPtr.Zero
+                ? auraMonoClassFromName(dataImage, "XDTDataAndProtocol.ProtocolService.BackPack", "BackpackProtocolManager")
+                : IntPtr.Zero;
+            if (protocolClass == IntPtr.Zero)
+            {
+                protocolClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTDataAndProtocol.ProtocolService.BackPack", "BackpackProtocolManager");
+            }
+            if (protocolClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            methodPtr = this.FindAuraMonoMethodOnHierarchy(protocolClass, "MoveBatchBackpackItems", 2);
+            if (methodPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            this.transferMonoMoveBatchMethod = methodPtr;
+            return true;
+        }
+
+        private bool TryInvokeMoveBatchBackpackItemsManaged(Dictionary<uint, int> netIdToCounts, int targetStorageType)
+        {
+            try
+            {
+                if (netIdToCounts == null || netIdToCounts.Count == 0)
+                {
+                    return false;
+                }
+
+                if (this.cachedMoveBatchBackpackItemsMethod == null)
+                {
+                    Type protocolType = this.FindTypeByName("XDTDataAndProtocol.ProtocolService.BackPack.BackpackProtocolManager", "XDTDataAndProtocol.ProtocolService.BackPack", "BackpackProtocolManager")
+                        ?? this.FindTypeBySignature("BackpackProtocolManager", "XDTDataAndProtocol", true, false);
+                    if (protocolType == null)
+                    {
+                        return false;
+                    }
+
+                    this.cachedMoveBatchBackpackItemsMethod = protocolType.GetMethod("MoveBatchBackpackItems", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(Dictionary<uint, int>), typeof(int) }, null);
+                    if (this.cachedMoveBatchBackpackItemsMethod == null)
+                    {
+                        foreach (MethodInfo candidate in protocolType.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
+                        {
+                            if (candidate != null && candidate.Name == "MoveBatchBackpackItems" && candidate.GetParameters().Length == 2)
+                            {
+                                this.cachedMoveBatchBackpackItemsMethod = candidate;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (this.cachedMoveBatchBackpackItemsMethod == null)
+                {
+                    return false;
+                }
+
+                this.cachedMoveBatchBackpackItemsMethod.Invoke(null, new object[] { netIdToCounts, targetStorageType });
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Exception inner = ex.InnerException ?? ex;
+                ModLogger.Msg("[TRANSFER] Managed MoveBatchBackpackItems exception: " + inner.GetType().Name + ": " + inner.Message);
+                return false;
+            }
+        }
+
+        private bool TryInvokeMoveBatchBackpackItemsAuraMono(Dictionary<uint, int> netIdToCounts, int targetStorageType)
+        {
+            try
+            {
+                if (netIdToCounts == null || netIdToCounts.Count == 0)
+                {
+                    return false;
+                }
+
+                if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
+                {
+                    return false;
+                }
+
+                if (!this.TryCreateAuraMonoUIntIntDictionary(netIdToCounts, out IntPtr dictObj) || dictObj == IntPtr.Zero)
+                {
+                    ModLogger.Msg("[TRANSFER] AuraMono dictionary creation failed.");
+                    return false;
+                }
+
+                if (!this.TryResolveAuraMonoMoveBatchBackpackItemsMethod(out IntPtr methodPtr) || methodPtr == IntPtr.Zero)
+                {
+                    ModLogger.Msg("[TRANSFER] AuraMono MoveBatchBackpackItems unavailable.");
+                    return false;
+                }
+
+                unsafe
+                {
+                    IntPtr exc = IntPtr.Zero;
+                    IntPtr* args = stackalloc IntPtr[2];
+                    args[0] = dictObj;
+                    args[1] = (IntPtr)(&targetStorageType);
+                    auraMonoRuntimeInvoke(methodPtr, IntPtr.Zero, (IntPtr)args, ref exc);
+                    if (exc != IntPtr.Zero)
+                    {
+                        ModLogger.Msg("[TRANSFER] AuraMono MoveBatchBackpackItems exception ptr=0x" + exc.ToInt64().ToString("X"));
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[TRANSFER] AuraMono MoveBatchBackpackItems exception: " + ex.GetType().Name + ": " + ex.Message);
+                return false;
+            }
+        }
+
+        private bool TrySendTransferBatch(Dictionary<uint, int> netIdToCounts, int sourceStorageType, out string error)
+        {
+            error = string.Empty;
+            if (netIdToCounts == null || netIdToCounts.Count == 0)
+            {
+                error = "Nothing selected";
+                return false;
+            }
+
+            if (netIdToCounts.Count > TransferBatchMaxCount)
+            {
+                error = "Too many stacks (max " + TransferBatchMaxCount + ")";
+                return false;
+            }
+
+            int targetStorageType = this.GetTransferTargetStorageType(sourceStorageType);
+            bool sent = this.TryInvokeMoveBatchBackpackItemsAuraMono(netIdToCounts, targetStorageType)
+                || this.TryInvokeMoveBatchBackpackItemsManaged(netIdToCounts, targetStorageType);
+            if (!sent)
+            {
+                error = "MoveBatchBackpackItems unavailable";
+                return false;
+            }
+
+            string destLabel = targetStorageType == 2 ? "Warehouse" : "Bag";
+            ModLogger.Msg("[TRANSFER] Sent " + netIdToCounts.Count + " stack(s) to " + destLabel + " (targetStorageType=" + targetStorageType + ")");
+            return true;
+        }
+
+        private Dictionary<uint, int> BuildTransferItemMapForSend(out string error)
+        {
+            error = string.Empty;
+            Dictionary<uint, int> map = new Dictionary<uint, int>();
+            int sourceStorageType = this.GetTransferScanStorageType();
+
+            if (this.transferBatch.Count > 0)
+            {
+                foreach (KeyValuePair<uint, int> pair in this.transferBatch)
+                {
+                    if (pair.Key == 0U || pair.Value <= 0)
+                    {
+                        continue;
+                    }
+
+                    if (!this.TryGetTransferStackCount(pair.Key, out int maxCount, out bool isLocked) || isLocked)
+                    {
+                        continue;
+                    }
+
+                    int qty = Mathf.Clamp(pair.Value, 1, maxCount);
+                    map[pair.Key] = qty;
+                }
+            }
+            else
+            {
+                TransferItemEntry selected = this.GetSelectedTransferItemEntry();
+                if (selected == null || selected.NetId == 0U)
+                {
+                    error = "Select an item first";
+                    return null;
+                }
+
+                if (selected.IsLocked)
+                {
+                    error = "Selected item is locked";
+                    return null;
+                }
+
+                int qty = Mathf.Clamp(this.transferQty, 1, Math.Max(1, selected.Count));
+                map[selected.NetId] = qty;
+            }
+
+            if (map.Count == 0)
+            {
+                error = "No transferable stacks";
+                return null;
+            }
+
+            if (map.Count > TransferBatchMaxCount)
+            {
+                error = "Too many stacks (max " + TransferBatchMaxCount + ")";
+                return null;
+            }
+
+            return map;
+        }
+
+        private bool TryGetTransferStackCount(uint netId, out int count, out bool isLocked)
+        {
+            count = 0;
+            isLocked = false;
+            if (this.transferItems == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < this.transferItems.Count; i++)
+            {
+                TransferItemEntry entry = this.transferItems[i];
+                if (entry != null && entry.NetId == netId)
+                {
+                    count = Math.Max(1, entry.Count);
+                    isLocked = entry.IsLocked;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void ExecuteTransferItems()
+        {
+            Dictionary<uint, int> map = this.BuildTransferItemMapForSend(out string error);
+            if (map == null)
+            {
+                this.transferStatus = error;
+                this.AddMenuNotification(error, new Color(1f, 0.55f, 0.55f));
+                return;
+            }
+
+            if (map.Count > TransferBatchMaxCount)
+            {
+                this.ExecuteTransferItemsChunked();
+                return;
+            }
+
+            int sourceStorageType = this.GetTransferScanStorageType();
+            if (!this.TrySendTransferBatch(map, sourceStorageType, out error))
+            {
+                this.transferStatus = error;
+                this.AddMenuNotification(error, new Color(1f, 0.55f, 0.55f));
+                return;
+            }
+
+            string dest = this.GetTransferTargetStorageType(sourceStorageType) == 2 ? "Warehouse" : "Bag";
+            int totalQty = 0;
+            foreach (int qty in map.Values)
+            {
+                totalQty += qty;
+            }
+
+            string successMessage = "Sent " + map.Count + " stack(s), qty " + totalQty + " -> " + dest;
+            this.transferStatus = successMessage;
+            this.AddMenuNotification(successMessage, new Color(0.45f, 1f, 0.55f));
+            this.FinalizeTransferSend(map, successMessage);
+        }
+
+        private void ExecuteTransferItemsChunked()
+        {
+            Dictionary<uint, int> fullMap = this.BuildTransferItemMapForSend(out string error);
+            if (fullMap == null)
+            {
+                this.transferStatus = error;
+                this.AddMenuNotification(error, new Color(1f, 0.55f, 0.55f));
+                return;
+            }
+
+            int sourceStorageType = this.GetTransferScanStorageType();
+            List<uint> keys = new List<uint>(fullMap.Keys);
+            int sentStacks = 0;
+            int sentQty = 0;
+            for (int offset = 0; offset < keys.Count; offset += TransferBatchMaxCount)
+            {
+                Dictionary<uint, int> chunk = new Dictionary<uint, int>();
+                int end = Math.Min(keys.Count, offset + TransferBatchMaxCount);
+                for (int i = offset; i < end; i++)
+                {
+                    uint netId = keys[i];
+                    chunk[netId] = fullMap[netId];
+                }
+
+                if (!this.TrySendTransferBatch(chunk, sourceStorageType, out error))
+                {
+                    this.transferStatus = error + " (after " + sentStacks + " stack(s))";
+                    this.AddMenuNotification(this.transferStatus, new Color(1f, 0.75f, 0.45f));
+                    return;
+                }
+
+                sentStacks += chunk.Count;
+                foreach (int qty in chunk.Values)
+                {
+                    sentQty += qty;
+                }
+            }
+
+            string dest = this.GetTransferTargetStorageType(sourceStorageType) == 2 ? "Warehouse" : "Bag";
+            string successMessage = "Sent " + sentStacks + " stack(s), qty " + sentQty + " -> " + dest;
+            this.transferStatus = successMessage;
+            this.AddMenuNotification(successMessage, new Color(0.45f, 1f, 0.55f));
+            this.FinalizeTransferSend(fullMap, successMessage);
+        }
+
+        private void FinalizeTransferSend(Dictionary<uint, int> sentMap, string statusMessage)
+        {
+            this.ApplyOptimisticTransferToItemList(sentMap);
+            this.transferBatch.Clear();
+            this.transferStatus = statusMessage;
+            this.ScheduleTransferListRescan();
+        }
+
+        private void ApplyOptimisticTransferToItemList(Dictionary<uint, int> sentMap)
+        {
+            if (this.transferItems == null || sentMap == null || sentMap.Count == 0)
+            {
+                return;
+            }
+
+            uint? selectedNetId = null;
+            if (this.selectedTransferIndex >= 0 && this.selectedTransferIndex < this.transferItems.Count)
+            {
+                TransferItemEntry selected = this.transferItems[this.selectedTransferIndex];
+                if (selected != null && selected.NetId != 0U)
+                {
+                    selectedNetId = selected.NetId;
+                }
+            }
+
+            for (int i = this.transferItems.Count - 1; i >= 0; i--)
+            {
+                TransferItemEntry entry = this.transferItems[i];
+                if (entry == null || !sentMap.TryGetValue(entry.NetId, out int sentQty) || sentQty <= 0)
+                {
+                    continue;
+                }
+
+                entry.Count -= sentQty;
+                if (entry.Count <= 0)
+                {
+                    this.transferItems.RemoveAt(i);
+                    this.transferBatch.Remove(entry.NetId);
+                }
+                else if (this.transferBatch.TryGetValue(entry.NetId, out int batchQty))
+                {
+                    this.transferBatch[entry.NetId] = Mathf.Min(batchQty, entry.Count);
+                }
+            }
+
+            this.selectedTransferIndex = -1;
+            if (selectedNetId.HasValue)
+            {
+                for (int i = 0; i < this.transferItems.Count; i++)
+                {
+                    TransferItemEntry entry = this.transferItems[i];
+                    if (entry != null && entry.NetId == selectedNetId.Value)
+                    {
+                        this.selectedTransferIndex = i;
+                        this.transferQty = Mathf.Clamp(this.transferQty, 1, Math.Max(1, entry.Count));
+                        break;
+                    }
+                }
+            }
+        }
+
+        private void ScheduleTransferListRescan()
+        {
+            this.transferPendingRescanAt = Time.unscaledTime + 0.35f;
+            this.transferPendingRescanRetries = 6;
+        }
+
+        private void ProcessPendingTransferListRescan()
+        {
+            if (this.transferPendingRescanRetries <= 0)
+            {
+                return;
+            }
+
+            if (!this.showMenu || this.selectedTab != 6)
+            {
+                this.transferPendingRescanRetries = 0;
+                return;
+            }
+
+            if (Time.unscaledTime < this.transferPendingRescanAt)
+            {
+                return;
+            }
+
+            string statusMessage = this.transferStatus;
+            this.transferItems = this.ScanTransferItems(updateStatus: false);
+            this.transferStatus = statusMessage;
+            this.transferPendingRescanRetries--;
+            this.transferPendingRescanAt = Time.unscaledTime + 0.3f;
+        }
+
         private bool TryResolveAuraMonoBattlePassSellMethod(out IntPtr methodPtr)
         {
             methodPtr = this.autoSellMonoBattlePassSellMethod;
@@ -56204,6 +56658,21 @@ namespace HeartopiaMod
                 || this.TryGetMonoInt32Member(itemObj, "Count", out count)
                 || this.TryGetMonoInt32Member(itemObj, "counterNum", out count)
                 || this.TryGetMonoInt32Member(itemObj, "CounterNum", out count);
+        }
+
+        private bool TryGetDirectBackpackItemIsLocked(IntPtr itemObj, out bool isLocked)
+        {
+            isLocked = false;
+            if (itemObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return this.TryGetMonoBoolMember(itemObj, "isLock", out isLocked)
+                || this.TryGetMonoBoolMember(itemObj, "_isLock", out isLocked)
+                || this.TryGetMonoBoolMember(itemObj, "IsLock", out isLocked)
+                || this.TryGetMonoBoolMember(itemObj, "isLocked", out isLocked)
+                || this.TryGetMonoBoolMember(itemObj, "IsLocked", out isLocked);
         }
 
         private int GetDirectBackpackItemStep(IntPtr itemObj)
@@ -58287,6 +58756,463 @@ namespace HeartopiaMod
             }
         }
 
+        private int GetTransferScanStorageType()
+        {
+            return Mathf.Clamp(this.transferScanSource, 0, 1) == 1 ? 2 : 1;
+        }
+
+        private string GetTransferScanSourceLabel()
+        {
+            return this.transferScanSourceLabels[Mathf.Clamp(this.transferScanSource, 0, this.transferScanSourceLabels.Length - 1)];
+        }
+
+        private int GetTransferTargetStorageType(int sourceStorageType)
+        {
+            return sourceStorageType == 1 ? 2 : 1;
+        }
+
+        private List<TransferItemEntry> ScanTransferItems(bool updateStatus = true)
+        {
+            try
+            {
+                List<TransferItemEntry> items = new List<TransferItemEntry>();
+                int inspected = 0;
+                this.CollectTransferItemEntriesMono(items, ref inspected);
+                this.PrimeTransferItemTextureCache(items);
+                items.Sort((a, b) => string.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase));
+                if (updateStatus)
+                {
+                    this.transferStatus = items.Count > 0
+                        ? (this.GetTransferScanSourceLabel() + ": " + items.Count + " stack(s), inspected=" + inspected)
+                        : ("No items in " + this.GetTransferScanSourceLabel().ToLowerInvariant());
+                }
+                ModLogger.Msg("[TRANSFER] Scan " + this.GetTransferScanSourceLabel() + " found " + items.Count + " stack(s), inspected=" + inspected);
+                return items;
+            }
+            catch (Exception ex)
+            {
+                if (updateStatus)
+                {
+                    this.transferStatus = "Scan failed: " + ex.Message;
+                }
+                ModLogger.Msg("[TRANSFER] Scan exception: " + ex.GetType().Name + ": " + ex.Message);
+                return new List<TransferItemEntry>();
+            }
+        }
+
+        private void CollectTransferItemEntriesMono(List<TransferItemEntry> items, ref int inspected)
+        {
+            try
+            {
+                if (!this.TryResolveAuraMonoModule("XDTGameSystem.GameplaySystem.BackPack.BackPackSystem", out IntPtr backPackSystemObj) || backPackSystemObj == IntPtr.Zero)
+                {
+                    return;
+                }
+
+                IntPtr backPackClass = auraMonoObjectGetClass != null ? auraMonoObjectGetClass(backPackSystemObj) : IntPtr.Zero;
+                IntPtr getAllItemMethod = this.FindAuraMonoMethodOnHierarchy(backPackClass, "GetAllItem", 1);
+                bool getAllItemNeedsStorageType = true;
+                if (getAllItemMethod == IntPtr.Zero)
+                {
+                    getAllItemMethod = this.FindAuraMonoMethodOnHierarchy(backPackClass, "GetAllItem", 0);
+                    getAllItemNeedsStorageType = false;
+                }
+                if (getAllItemMethod == IntPtr.Zero || auraMonoRuntimeInvoke == null)
+                {
+                    return;
+                }
+
+                int storageTypeValue = this.GetTransferScanStorageType();
+                bool fromBackpack = storageTypeValue == 1;
+                IntPtr exc = IntPtr.Zero;
+                IntPtr itemListObj;
+                unsafe
+                {
+                    IntPtr* args = stackalloc IntPtr[1];
+                    args[0] = (IntPtr)(&storageTypeValue);
+                    itemListObj = auraMonoRuntimeInvoke(getAllItemMethod, backPackSystemObj, getAllItemNeedsStorageType ? (IntPtr)args : IntPtr.Zero, ref exc);
+                }
+                if (exc != IntPtr.Zero || itemListObj == IntPtr.Zero)
+                {
+                    return;
+                }
+
+                List<IntPtr> backpackItems = new List<IntPtr>();
+                if (!this.TryEnumerateAuraMonoCollectionItems(itemListObj, backpackItems))
+                {
+                    return;
+                }
+
+                foreach (IntPtr itemObj in backpackItems)
+                {
+                    inspected++;
+                    if (itemObj == IntPtr.Zero || !this.TryGetDirectBackpackItemNetId(itemObj, out uint netId) || netId == 0U)
+                    {
+                        continue;
+                    }
+
+                    int count = 1;
+                    int staticId = 0;
+                    int entityType = 0;
+                    int starRate = 0;
+                    bool isLocked = false;
+                    this.TryGetDirectBackpackItemCount(itemObj, out count);
+                    this.TryGetDirectBackpackItemStaticId(itemObj, out staticId);
+                    this.TryGetDirectBackpackItemEntityType(itemObj, out entityType);
+                    this.TryGetDirectBackpackItemIsLocked(itemObj, out isLocked);
+                    if (!this.TryGetAutoSellQualityComponentStar(netId, out starRate))
+                    {
+                        this.TryGetDirectBackpackItemStarRate(itemObj, out starRate);
+                    }
+
+                    string descriptor = this.GetDirectBackpackItemDescriptor(itemObj);
+                    if (starRate <= 0 && this.IsAutoSellBirdPhotoDescriptor(descriptor))
+                    {
+                        if (this.TryGetAutoSellCachedUiStar(descriptor, count, out int uiStar))
+                        {
+                            starRate = uiStar;
+                        }
+                        else
+                        {
+                            int step = this.GetDirectBackpackItemStep(itemObj);
+                            if (step >= 1 && step <= 5)
+                            {
+                                starRate = step;
+                            }
+                        }
+                    }
+
+                    this.AddTransferItemEntry(items, descriptor, netId, count, staticId, entityType, starRate, fromBackpack, isLocked);
+                }
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[TRANSFER] Mono scan exception: " + ex.Message);
+            }
+        }
+
+        private void AddTransferItemEntry(List<TransferItemEntry> items, string descriptor, uint netId, int count, int staticId, int entityType, int starRate, bool fromBackpack, bool isLocked)
+        {
+            if (netId == 0U || count <= 0)
+            {
+                return;
+            }
+
+            string matchKey = this.ExtractAutoSellMatchKeyFromDescriptor(descriptor);
+            if (string.IsNullOrWhiteSpace(matchKey))
+            {
+                matchKey = staticId > 0 ? staticId.ToString() : netId.ToString();
+            }
+
+            int normalizedStar = this.NormalizeAutoSellStarRateForDescriptor(starRate, descriptor);
+            if (normalizedStar <= 0 && this.TryGetAutoSellCachedUiStar(matchKey, count, out int uiStar))
+            {
+                normalizedStar = uiStar;
+            }
+
+            string spriteName = this.GetAutoSellSpriteNameFromMatchKey(matchKey);
+            string displayName = this.GetAutoSellItemDisplayName(matchKey);
+            this.RememberRadarStaticIdIconMapping(staticId, spriteName);
+            items.Add(new TransferItemEntry
+            {
+                SpriteName = spriteName,
+                DisplayName = displayName,
+                MatchKey = matchKey,
+                NetId = netId,
+                Count = Math.Max(1, count),
+                StaticId = staticId,
+                EntityType = entityType,
+                StarRate = normalizedStar,
+                IsLocked = isLocked,
+                FromBackpack = fromBackpack
+            });
+        }
+
+        private void PrimeTransferItemTextureCache(List<TransferItemEntry> items)
+        {
+            if (items == null || items.Count == 0)
+            {
+                return;
+            }
+
+            List<AutoSellBagItemEntry> proxy = new List<AutoSellBagItemEntry>(items.Count);
+            for (int i = 0; i < items.Count; i++)
+            {
+                TransferItemEntry entry = items[i];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                proxy.Add(new AutoSellBagItemEntry
+                {
+                    SpriteName = entry.SpriteName,
+                    MatchKey = entry.MatchKey,
+                    DisplayName = entry.DisplayName,
+                    NetId = entry.NetId,
+                    Count = entry.Count,
+                    StaticId = entry.StaticId,
+                    EntityType = entry.EntityType,
+                    StarRate = entry.StarRate,
+                    FromBackpack = entry.FromBackpack,
+                    FromWarehouse = !entry.FromBackpack
+                });
+            }
+
+            this.PrimeAutoSellItemTextureCache(proxy);
+        }
+
+        private bool TryGetTransferItemTexture(TransferItemEntry entry, out Texture2D texture)
+        {
+            texture = null;
+            if (entry == null)
+            {
+                return false;
+            }
+
+            return this.TryGetAutoSellItemTexture(new AutoSellBagItemEntry
+            {
+                SpriteName = entry.SpriteName,
+                MatchKey = entry.MatchKey,
+                DisplayName = entry.DisplayName,
+                NetId = entry.NetId,
+                Count = entry.Count,
+                StaticId = entry.StaticId,
+                EntityType = entry.EntityType,
+                StarRate = entry.StarRate,
+                FromBackpack = entry.FromBackpack,
+                FromWarehouse = !entry.FromBackpack
+            }, out texture);
+        }
+
+        private TransferItemEntry GetSelectedTransferItemEntry()
+        {
+            if (this.transferItems == null || this.selectedTransferIndex < 0 || this.selectedTransferIndex >= this.transferItems.Count)
+            {
+                return null;
+            }
+
+            return this.transferItems[this.selectedTransferIndex];
+        }
+
+        private int GetTransferTilePickQuantity(TransferItemEntry entry, int itemIndex, out bool showOnTile)
+        {
+            showOnTile = false;
+            if (entry == null || entry.NetId == 0U)
+            {
+                return 1;
+            }
+
+            int maxQty = Math.Max(1, entry.Count);
+            if (this.transferBatch.TryGetValue(entry.NetId, out int batchQty))
+            {
+                showOnTile = true;
+                return Mathf.Clamp(batchQty, 1, maxQty);
+            }
+
+            if (this.selectedTransferIndex == itemIndex)
+            {
+                showOnTile = true;
+                return Mathf.Clamp(this.transferQty, 1, maxQty);
+            }
+
+            return 1;
+        }
+
+        private void SetTransferTilePickQuantity(TransferItemEntry entry, int itemIndex, int quantity)
+        {
+            if (entry == null || entry.NetId == 0U)
+            {
+                return;
+            }
+
+            if (quantity <= 0)
+            {
+                if (this.transferMultiSelectMode && this.transferBatch.Remove(entry.NetId))
+                {
+                    this.transferQty = 1;
+                    if (this.selectedTransferIndex == itemIndex)
+                    {
+                        this.selectedTransferIndex = -1;
+                    }
+                    this.ClearTransferQtyHold();
+                }
+                else if (!this.transferMultiSelectMode)
+                {
+                    this.transferQty = 1;
+                }
+                return;
+            }
+
+            int maxQty = Math.Max(1, entry.Count);
+            int qty = Mathf.Clamp(quantity, 1, maxQty);
+            this.transferQty = qty;
+            if (this.transferMultiSelectMode && this.transferBatch.ContainsKey(entry.NetId))
+            {
+                this.transferBatch[entry.NetId] = qty;
+            }
+        }
+
+        private void AdjustTransferTilePickQuantity(TransferItemEntry entry, int itemIndex, int delta)
+        {
+            if (entry == null)
+            {
+                return;
+            }
+
+            int current = this.GetTransferTilePickQuantity(entry, itemIndex, out _);
+            this.SetTransferTilePickQuantity(entry, itemIndex, current + delta);
+        }
+
+        private void ClearTransferQtyHold()
+        {
+            this.transferQtyHoldDirection = 0;
+            this.transferQtyHoldNetId = 0U;
+            this.transferQtyHoldItemIndex = -1;
+        }
+
+        private void BeginTransferQtyHold(int direction, TransferItemEntry entry, int itemIndex)
+        {
+            if (entry == null || entry.NetId == 0U)
+            {
+                return;
+            }
+
+            this.transferQtyHoldDirection = direction;
+            this.transferQtyHoldNetId = entry.NetId;
+            this.transferQtyHoldItemIndex = itemIndex;
+            this.transferQtyHoldStartedAt = Time.unscaledTime;
+            // First step is applied by the click; first repeat after one interval.
+            this.transferQtyHoldLastStepAt = Time.unscaledTime;
+        }
+
+        private void UpdateTransferQtyHoldRepeat()
+        {
+            if (this.transferQtyHoldDirection == 0)
+            {
+                return;
+            }
+
+            if (!this.showMenu || this.selectedTab != 6)
+            {
+                this.ClearTransferQtyHold();
+                return;
+            }
+
+            if (!Input.GetMouseButton(0))
+            {
+                this.ClearTransferQtyHold();
+                return;
+            }
+
+            if (this.transferItems == null
+                || this.transferQtyHoldItemIndex < 0
+                || this.transferQtyHoldItemIndex >= this.transferItems.Count)
+            {
+                this.ClearTransferQtyHold();
+                return;
+            }
+
+            if (this.selectedTransferIndex != this.transferQtyHoldItemIndex)
+            {
+                this.ClearTransferQtyHold();
+                return;
+            }
+
+            TransferItemEntry entry = this.transferItems[this.transferQtyHoldItemIndex];
+            if (entry == null || entry.NetId != this.transferQtyHoldNetId)
+            {
+                this.ClearTransferQtyHold();
+                return;
+            }
+
+            float heldSeconds = Time.unscaledTime - this.transferQtyHoldStartedAt;
+            if (heldSeconds < TransferQtyHoldRepeatDelay)
+            {
+                return;
+            }
+
+            float repeatSeconds = heldSeconds - TransferQtyHoldRepeatDelay;
+            float interval = repeatSeconds >= TransferQtyHoldFastAfterSeconds ? TransferQtyHoldFastInterval : TransferQtyHoldSlowInterval;
+            if (Time.unscaledTime - this.transferQtyHoldLastStepAt < interval)
+            {
+                return;
+            }
+
+            this.AdjustTransferTilePickQuantity(entry, this.transferQtyHoldItemIndex, this.transferQtyHoldDirection);
+            this.transferQtyHoldLastStepAt = Time.unscaledTime;
+        }
+
+        private void DrawTransferQtyStepButton(Rect rect, string label, int direction, TransferItemEntry entry, int itemIndex, GUIStyle style)
+        {
+            Event e = Event.current;
+            if (e != null && e.button == 0 && e.type == EventType.MouseDown && rect.Contains(e.mousePosition))
+            {
+                this.AdjustTransferTilePickQuantity(entry, itemIndex, direction);
+                this.BeginTransferQtyHold(direction, entry, itemIndex);
+                e.Use();
+            }
+
+            bool holdingThisButton = this.transferQtyHoldDirection == direction
+                && this.transferQtyHoldItemIndex == itemIndex
+                && this.transferQtyHoldNetId == entry.NetId
+                && Input.GetMouseButton(0);
+            Color previousBg = GUI.backgroundColor;
+            if (holdingThisButton)
+            {
+                GUI.backgroundColor = new Color(0.35f, 0.55f, 0.65f, 1f);
+            }
+
+            GUI.Button(rect, label, style);
+            GUI.backgroundColor = previousBg;
+        }
+
+        private void SelectTransferTile(TransferItemEntry entry, int itemIndex)
+        {
+            if (entry == null || entry.IsLocked)
+            {
+                return;
+            }
+
+            int maxQty = Math.Max(1, entry.Count);
+            int pickQty = this.transferSelectFullStack ? maxQty : 1;
+            this.selectedTransferIndex = itemIndex;
+            if (this.transferMultiSelectMode)
+            {
+                if (this.transferBatch.TryGetValue(entry.NetId, out int batchQty))
+                {
+                    if (this.transferSelectFullStack)
+                    {
+                        this.transferQty = maxQty;
+                        this.transferBatch[entry.NetId] = maxQty;
+                    }
+                    else
+                    {
+                        this.transferQty = Mathf.Clamp(batchQty, 1, maxQty);
+                    }
+                    return;
+                }
+
+                this.transferQty = pickQty;
+                this.transferBatch[entry.NetId] = pickQty;
+            }
+            else
+            {
+                this.transferQty = pickQty;
+                this.transferBatch.Clear();
+            }
+        }
+
+        private string GetTransferTileStarLabel(TransferItemEntry entry)
+        {
+            if (entry == null || entry.StarRate <= 0)
+            {
+                return string.Empty;
+            }
+
+            return entry.StarRate + "*";
+        }
+
         private void AddOrMergeAutoSellBackpackEntry(List<AutoSellBagItemEntry> items, Dictionary<string, AutoSellBagItemEntry> byKey, string descriptor, uint netId, int count, int staticId, int entityType, int starRate, bool fromBackpack)
         {
             string matchKey = this.ExtractAutoSellMatchKeyFromDescriptor(descriptor);
@@ -59343,205 +60269,275 @@ namespace HeartopiaMod
             this.showFishShadowRadar = false;
         }
 
-        // Token: 0x06000026B RID: 38B - Bulk Selector Tab
+        // Token: 0x06000026B RID: 38B - Bag / Warehouse (backpack <-> warehouse)
         private float DrawBulkSelectorTab(int startY)
         {
             int num = startY;
+            float left = 20f;
+            float panelWidth = 580f;
 
-            // Custom Styles
-            GUIStyle headerStyle = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold, fontSize = 14 };
-            GUIStyle centeredGrayLabel = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter };
-            centeredGrayLabel.normal.textColor = Color.white;
-            
-            // --- HEADER ---
-            GUI.Label(new Rect(20f, (float)num, 260f, 25f), "INVENTORY BULK MANAGER", headerStyle);
-            num += 30;
-            
-            // Refresh Button
-            bool flagRefresh = this.DrawPrimaryActionButton(new Rect(20f, (float)num, 260f, 35f), "REFRESH & SCAN");
-            if (flagRefresh)
+            GUIStyle titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 15, fontStyle = FontStyle.Bold };
+            titleStyle.normal.textColor = new Color(this.uiAccentR, this.uiAccentG, this.uiAccentB);
+            GUIStyle tinyStyle = new GUIStyle(GUI.skin.label) { fontSize = 11 };
+            tinyStyle.normal.textColor = new Color(this.uiSubTabTextR, this.uiSubTabTextG, this.uiSubTabTextB);
+            GUIStyle fieldLabelStyle = new GUIStyle(GUI.skin.label) { fontSize = 12, fontStyle = FontStyle.Bold };
+            fieldLabelStyle.normal.textColor = new Color(this.uiTextR, this.uiTextG, this.uiTextB);
+            GUIStyle dropdownValueStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleLeft };
+            dropdownValueStyle.normal.textColor = Color.white;
+            GUIStyle dropdownArrowStyle = new GUIStyle(GUI.skin.label) { fontSize = 12, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+            dropdownArrowStyle.normal.textColor = new Color(this.uiAccentR, this.uiAccentG, this.uiAccentB);
+
+            TransferItemEntry selectedEntry = this.GetSelectedTransferItemEntry();
+            int sourceStorage = this.GetTransferScanStorageType();
+            string destLabel = this.GetTransferTargetStorageType(sourceStorage) == 2 ? "Warehouse" : "Bag";
+
+            GUI.Label(new Rect(left, (float)num, panelWidth, 24f), this.L("Bag / Warehouse"), titleStyle);
+            num += 26;
+            GUI.Label(new Rect(left, (float)num, panelWidth, 18f), "Transfer via BackPackSystem API (no bag UI). Direction: " + this.GetTransferScanSourceLabel() + " -> " + destLabel, tinyStyle);
+            num += 22;
+
+            Rect selectedCard = new Rect(left, (float)num, panelWidth, 78f);
+            GUI.Box(selectedCard, "", this.themePanelStyle ?? GUI.skin.box);
+            this.DrawCardOutline(selectedCard, 1f);
+            Rect selectedIconRect = new Rect(selectedCard.x + 12f, selectedCard.y + 12f, 54f, 54f);
+            GUI.Box(selectedIconRect, "", this.themeContentStyle ?? GUI.skin.box);
+            if (selectedEntry != null && this.TryGetTransferItemTexture(selectedEntry, out Texture2D selectedTex) && selectedTex != null)
             {
-                this.RefreshBulkSelectorCache();
-            }
-            num += 40;
-            
-            // --- ITEM LIST ---
-            GUI.Label(new Rect(20f, (float)num, 260f, 20f), $"Detected Items: {HeartopiaComplete.discoveredItems.Count}");
-            num += 20;
-            
-            // List Background Box
-            GUI.Box(new Rect(20f, (float)num, 260f, 200f), "");
-            
-            // Scroll View
-            Rect scrollViewRect = new Rect(22f, (float)num + 2f, 256f, 196f);
-            Rect scrollContentRect = new Rect(0f, 0f, 235f, Mathf.Max(200f, HeartopiaComplete.discoveredItems.Count * 28f));
-            this.bulkSelectorScrollPos = GUI.BeginScrollView(scrollViewRect, this.bulkSelectorScrollPos, scrollContentRect);
-            
-            int itemY = 0;
-            if (HeartopiaComplete.discoveredItems.Count == 0)
-            {
-                GUI.Label(new Rect(0f, 80f, 235f, 40f), "No items found.\nOpen inventory to scan.", centeredGrayLabel);
+                GUI.DrawTexture(new Rect(selectedIconRect.x + 5f, selectedIconRect.y + 5f, 44f, 44f), selectedTex, ScaleMode.ScaleToFit, true);
             }
             else
             {
-                foreach (string itemName in HeartopiaComplete.discoveredItems)
+                GUI.Label(selectedIconRect, "?", new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontSize = 20, fontStyle = FontStyle.Bold });
+            }
+
+            string selectedTitle = selectedEntry != null ? selectedEntry.DisplayName : "No stack selected";
+            string selectedMeta = selectedEntry != null
+                ? ("netId=" + selectedEntry.NetId + "  qty=" + Math.Max(1, selectedEntry.Count) + (selectedEntry.IsLocked ? "  LOCKED" : "") + (selectedEntry.StaticId > 0 ? ("  id=" + selectedEntry.StaticId) : ""))
+                : (this.transferBatch.Count > 0 ? ("Batch: " + this.transferBatch.Count + " stack(s)") : "Scan and pick a stack");
+            GUI.Label(new Rect(selectedCard.x + 78f, selectedCard.y + 10f, 360f, 22f), selectedTitle, fieldLabelStyle);
+            GUI.Label(new Rect(selectedCard.x + 78f, selectedCard.y + 34f, 420f, 36f), selectedMeta, tinyStyle);
+            num += 88;
+
+            float sourceRowY = (float)num;
+            Rect sourceDropdownRect = new Rect(left, sourceRowY, 120f, 28f);
+            GUI.Box(sourceDropdownRect, "", this.themeTopTabStyle ?? this.themePanelStyle ?? GUI.skin.box);
+            this.DrawCardOutline(sourceDropdownRect, 1f);
+            if (GUI.Button(sourceDropdownRect, "", GUIStyle.none))
+            {
+                this.transferScanSourceDropdownOpen = !this.transferScanSourceDropdownOpen;
+            }
+            GUI.Label(new Rect(sourceDropdownRect.x + 12f, sourceDropdownRect.y + 1f, sourceDropdownRect.width - 34f, sourceDropdownRect.height - 2f), this.GetTransferScanSourceLabel(), dropdownValueStyle);
+            GUI.Label(new Rect(sourceDropdownRect.xMax - 24f, sourceDropdownRect.y + 1f, 16f, sourceDropdownRect.height - 2f), this.transferScanSourceDropdownOpen ? "^" : "v", dropdownArrowStyle);
+
+            float primaryStartX = sourceDropdownRect.xMax + 12f;
+            float primaryButtonWidth = 130f;
+            float actionRowHeight = 34f;
+            GUI.enabled = !this.transferScanSourceDropdownOpen;
+            if (this.DrawPrimaryActionButton(new Rect(primaryStartX, sourceRowY - 3f, primaryButtonWidth, actionRowHeight), "SCAN ITEMS"))
+            {
+                this.transferItems = this.ScanTransferItems();
+                this.selectedTransferIndex = -1;
+                this.transferBatch.Clear();
+            }
+            if (GUI.Button(new Rect(primaryStartX + primaryButtonWidth + 8f, sourceRowY - 3f, primaryButtonWidth, actionRowHeight), this.L("TRANSFER"), this.themePrimaryButtonStyle))
+            {
+                Dictionary<uint, int> pendingMap = this.BuildTransferItemMapForSend(out _);
+                if (pendingMap != null && pendingMap.Count > TransferBatchMaxCount)
                 {
-                    bool isSelected = (this.selectedBulkItemID == itemName);
-                    string displayName = itemName.Replace("ui_item_normal_p_", "").Replace("ui_item_normal_", "").ToUpper();
-                    
-                    string prefix = isSelected ? "> " : "  ";
-                    if (GUI.Button(new Rect(2f, (float)itemY, 235f, 26f), prefix + displayName, isSelected ? (this.themeSidebarButtonActiveStyle ?? GUI.skin.button) : (this.themeSidebarButtonStyle ?? GUI.skin.button)))
-                    {
-                        this.selectedBulkItemID = itemName;
-                    }
-                    
-                    itemY += 28;
+                    this.ExecuteTransferItemsChunked();
+                }
+                else
+                {
+                    this.ExecuteTransferItems();
                 }
             }
-            GUI.EndScrollView();
-            num += 205;
-            
-            // --- ACTION PANEL ---
-            bool hasSelection = !string.IsNullOrEmpty(this.selectedBulkItemID);
-            
-            // Status Box
-            GUI.Box(new Rect(20f, (float)num, 260f, 160f), "");
-            int panelY = num + 10;
-            
-            if (hasSelection)
+            GUI.enabled = true;
+            num += 38;
+
+            float toggleRowY = sourceRowY + actionRowHeight + 6f;
+            float toggleGap = 12f;
+            float toggleWidth = (panelWidth - toggleGap) * 0.5f;
+            bool prevMulti = this.transferMultiSelectMode;
+            this.transferMultiSelectMode = this.DrawSwitchToggle(new Rect(left, toggleRowY, toggleWidth, 28f), this.transferMultiSelectMode, "Multi");
+            if (this.transferMultiSelectMode != prevMulti)
             {
-                int slotCount = HeartopiaComplete.slotCache.ContainsKey(this.selectedBulkItemID) ? 
-                    HeartopiaComplete.slotCache[this.selectedBulkItemID].Count : 0;
-                
-                string displayName = this.selectedBulkItemID.Replace("ui_item_normal_p_", "").Replace("ui_item_normal_", "").ToUpper();
-                
-                GUI.Label(new Rect(30f, (float)panelY, 240f, 20f), "SELECTED ITEM:");
-                panelY += 18;
-                
-                GUIStyle selectionStyle = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
-                selectionStyle.normal.textColor = Color.cyan;
-                GUI.Label(new Rect(30f, (float)panelY, 240f, 20f), displayName, selectionStyle);
-                panelY += 22;
-                
-                GUI.Label(new Rect(30f, (float)panelY, 240f, 20f), $"Available Stacks: {slotCount}");
-                panelY += 25;
-                
-                if (this.DrawPrimaryActionButton(new Rect(30f, (float)panelY, 240f, 30f), "QUICK SELECT ALL"))
+                this.transferBatch.Clear();
+            }
+            this.transferSelectFullStack = this.DrawSwitchToggle(new Rect(left + toggleWidth + toggleGap, toggleRowY, toggleWidth, 28f), this.transferSelectFullStack, "Full stack");
+            num = Mathf.Max(num, Mathf.CeilToInt(toggleRowY + 34f));
+
+            if (this.transferScanSourceDropdownOpen)
+            {
+                float panelHeight = this.transferScanSourceLabels.Length * 30f + 8f;
+                Rect dropdownPanel = new Rect(left, sourceDropdownRect.yMax + 4f, 120f, panelHeight);
+                GUI.Box(dropdownPanel, "", this.themePanelStyle ?? GUI.skin.box);
+                for (int i = 0; i < this.transferScanSourceLabels.Length; i++)
                 {
-                    this.ExecuteBulkSelection();
+                    if (GUI.Button(new Rect(dropdownPanel.x + 4f, dropdownPanel.y + 4f + i * 30f, dropdownPanel.width - 8f, 26f), this.transferScanSourceLabels[i], this.themeSidebarButtonStyle ?? GUI.skin.button))
+                    {
+                        this.transferScanSource = i;
+                        this.transferScanSourceDropdownOpen = false;
+                        this.transferItems = null;
+                        this.selectedTransferIndex = -1;
+                        this.transferBatch.Clear();
+                    }
                 }
-                panelY += 35;
-                
-                if (this.DrawPrimaryActionButton(new Rect(30f, (float)panelY, 240f, 30f), "QUICK SELL ALL"))
+                num = Mathf.Max(num, Mathf.CeilToInt(dropdownPanel.yMax + 8f));
+            }
+
+            if (this.transferBatch.Count > 0)
+            {
+                Rect batchBar = new Rect(left, (float)num, panelWidth, 34f);
+                GUI.Box(batchBar, "", this.themePanelStyle ?? GUI.skin.box);
+                this.DrawCardOutline(batchBar, 1f);
+                GUI.Label(new Rect(batchBar.x + 12f, batchBar.y + 8f, batchBar.width - 140f, 20f), "Batch selection: " + this.transferBatch.Count + " stack(s) ready to transfer", fieldLabelStyle);
+                if (GUI.Button(new Rect(batchBar.xMax - 118f, batchBar.y + 5f, 106f, 24f), "Clear batch", this.themeSidebarButtonStyle ?? GUI.skin.button))
                 {
-                    this.ExecuteBulkSell();
+                    this.transferBatch.Clear();
+                    this.transferStatus = "Batch cleared";
                 }
+                num += 40;
+            }
+
+            Rect statusCard = new Rect(left, (float)num, panelWidth, 44f);
+            GUI.Box(statusCard, "", this.themePanelStyle ?? GUI.skin.box);
+            this.DrawCardOutline(statusCard, 1f);
+            GUI.Label(new Rect(statusCard.x + 12f, statusCard.y + 12f, statusCard.width - 24f, 20f), this.transferStatus ?? "Idle", tinyStyle);
+            num += 52;
+
+            if (this.transferItems != null && this.transferItems.Count > 0)
+            {
+                GUI.Label(new Rect(left, (float)num, panelWidth, 22f), this.LF("{0} stacks ({1})", this.GetTransferScanSourceLabel(), this.transferItems.Count), fieldLabelStyle);
+                num += 24;
+
+                float cellW = 92f;
+                float cellH = 100f;
+                int columns = 6;
+                int rows = Mathf.CeilToInt(this.transferItems.Count / (float)columns);
+                float listHeight = Mathf.Min(rows * cellH, 276f);
+                Rect scrollViewRect = new Rect(left, (float)num, panelWidth, listHeight);
+                Rect scrollContentRect = new Rect(0f, 0f, panelWidth - 20f, rows * cellH);
+                this.transferItemScrollPos = GUI.BeginScrollView(scrollViewRect, this.transferItemScrollPos, scrollContentRect);
+
+                int firstVisibleRow = Mathf.Max(0, Mathf.FloorToInt(this.transferItemScrollPos.y / cellH));
+                int visibleRowCount = Mathf.CeilToInt(listHeight / cellH) + 1;
+                int lastVisibleRow = Mathf.Min(rows - 1, firstVisibleRow + visibleRowCount);
+                int firstVisibleIndex = Mathf.Clamp(firstVisibleRow * columns, 0, this.transferItems.Count);
+                int lastVisibleIndexExclusive = Mathf.Clamp((lastVisibleRow + 1) * columns, 0, this.transferItems.Count);
+                GUIStyle itemStyle = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.UpperCenter, fontSize = 9, wordWrap = true };
+                itemStyle.normal.textColor = new Color(this.uiTextR, this.uiTextG, this.uiTextB);
+                itemStyle.clipping = TextClipping.Overflow;
+                GUIStyle stackBadgeStyle = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.UpperLeft, fontSize = 9, fontStyle = FontStyle.Bold, clipping = TextClipping.Overflow };
+                stackBadgeStyle.normal.textColor = Color.white;
+                GUIStyle starBadgeStyle = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.UpperRight, fontSize = 9, fontStyle = FontStyle.Bold, clipping = TextClipping.Overflow };
+                starBadgeStyle.normal.textColor = new Color(1f, 0.86f, 0.36f);
+                GUIStyle pickQtyStyle = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontSize = 11, fontStyle = FontStyle.Bold, clipping = TextClipping.Overflow };
+                pickQtyStyle.normal.textColor = new Color(this.uiAccentR, this.uiAccentG, this.uiAccentB);
+                GUIStyle tileBtnStyle = new GUIStyle(GUI.skin.button) { fontSize = 12, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+                tileBtnStyle.normal.textColor = Color.white;
+                tileBtnStyle.hover.textColor = Color.white;
+                tileBtnStyle.active.textColor = Color.white;
+                GUIStyle initialsStyle = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontSize = 14, fontStyle = FontStyle.Bold };
+
+                for (int i = firstVisibleIndex; i < lastVisibleIndexExclusive; i++)
+                {
+                    TransferItemEntry entry = this.transferItems[i];
+                    if (entry == null)
+                    {
+                        continue;
+                    }
+
+                    int col = i % columns;
+                    int row = i / columns;
+                    Rect cellRect = new Rect(col * cellW + 2f, row * cellH + 2f, cellW - 8f, cellH - 8f);
+                    bool isSelected = this.selectedTransferIndex == i;
+                    bool inBatch = this.transferBatch.ContainsKey(entry.NetId);
+                    int pickQty = this.GetTransferTilePickQuantity(entry, i, out bool showPickQty);
+                    GUI.Box(cellRect, "", isSelected || inBatch ? (this.themeTopTabActiveStyle ?? this.themePanelStyle ?? GUI.skin.box) : (this.themeContentStyle ?? this.themePanelStyle ?? GUI.skin.box));
+                    this.DrawCardOutline(cellRect, isSelected ? 2f : 1f);
+                    if (entry.IsLocked)
+                    {
+                        GUI.color = new Color(1f, 1f, 1f, 0.45f);
+                    }
+
+                    Rect iconRect = new Rect(cellRect.x + 21f, cellRect.y + 14f, 42f, 36f);
+                    if (this.TryGetTransferItemTexture(entry, out Texture2D tex) && tex != null)
+                    {
+                        GUI.DrawTexture(iconRect, tex, ScaleMode.ScaleToFit, true);
+                    }
+                    else
+                    {
+                        GUI.Label(iconRect, this.GetAutoSellItemInitials(entry.DisplayName), initialsStyle);
+                    }
+
+                    if (entry.Count > 0)
+                    {
+                        GUI.Label(new Rect(cellRect.x + 4f, cellRect.y + 3f, 36f, 18f), "x" + entry.Count, stackBadgeStyle);
+                    }
+
+                    string starLabel = this.GetTransferTileStarLabel(entry);
+                    if (!string.IsNullOrEmpty(starLabel))
+                    {
+                        GUI.Label(new Rect(cellRect.x + cellRect.width - 36f, cellRect.y + 3f, 32f, 18f), starLabel, starBadgeStyle);
+                    }
+
+                    GUI.Label(new Rect(cellRect.x + 3f, cellRect.y + 68f, cellRect.width - 6f, 28f), entry.DisplayName, itemStyle);
+
+                    if (!entry.IsLocked)
+                    {
+                        if (isSelected)
+                        {
+                            float controlY = cellRect.y + 50f;
+                            float controlH = 16f;
+                            Rect minusRect = new Rect(cellRect.x + 5f, controlY, 18f, controlH);
+                            Rect plusRect = new Rect(cellRect.x + cellRect.width - 23f, controlY, 18f, controlH);
+                            Rect qtyRect = new Rect(cellRect.x + (cellRect.width - 22f) * 0.5f, controlY, 22f, controlH);
+
+                            Rect iconSelectRect = new Rect(cellRect.x + 4f, cellRect.y + 10f, cellRect.width - 8f, 38f);
+                            Rect nameSelectRect = new Rect(cellRect.x + 3f, cellRect.y + 66f, cellRect.width - 6f, 30f);
+                            if (GUI.Button(iconSelectRect, GUIContent.none, GUIStyle.none)
+                                || GUI.Button(nameSelectRect, GUIContent.none, GUIStyle.none))
+                            {
+                                this.SelectTransferTile(entry, i);
+                            }
+
+                            this.DrawTransferQtyStepButton(minusRect, "-", -1, entry, i, tileBtnStyle);
+                            if (showPickQty)
+                            {
+                                GUI.Label(qtyRect, pickQty.ToString(), pickQtyStyle);
+                            }
+                            this.DrawTransferQtyStepButton(plusRect, "+", 1, entry, i, tileBtnStyle);
+                        }
+                        else
+                        {
+                            if (showPickQty)
+                            {
+                                GUI.Label(new Rect(cellRect.x + (cellRect.width - 22f) * 0.5f, cellRect.y + 50f, 22f, 16f), pickQty.ToString(), pickQtyStyle);
+                            }
+
+                            if (GUI.Button(cellRect, GUIContent.none, GUIStyle.none))
+                            {
+                                this.SelectTransferTile(entry, i);
+                            }
+                        }
+                    }
+                    GUI.color = Color.white;
+                }
+                GUI.EndScrollView();
+                num += Mathf.CeilToInt(listHeight + 12f);
+            }
+            else if (this.transferItems != null)
+            {
+                GUI.Label(new Rect(left, (float)num, panelWidth, 24f), "No stacks in " + this.GetTransferScanSourceLabel().ToLowerInvariant() + ".");
+                num += 28;
             }
             else
             {
-                GUI.Label(new Rect(20f, (float)num, 260f, 160f), "Select an item from the list\nto enable bulk actions", centeredGrayLabel);
+                GUI.Label(new Rect(left, (float)num, panelWidth, 24f), "Press Scan Items to load inventory from BackPackSystem.");
+                num += 28;
             }
-            
-            num += 165;
-            
-            // Footer
-            GUIStyle footerStyle = new GUIStyle(GUI.skin.label) { fontSize = 10, alignment = TextAnchor.MiddleCenter };
-            footerStyle.normal.textColor = Color.white;
-            GUI.Label(new Rect(20f, (float)num, 260f, 20f), "Scans items only when you press Refresh & Scan", footerStyle);
-            return (float)num + 40f;
-        }
-        
-        // Token: 0x06000026C - Execute Bulk Selection
-        private void ExecuteBulkSelection()
-        {
-            if (!HeartopiaComplete.slotCache.ContainsKey(this.selectedBulkItemID))
-            {
-                ModLogger.Msg("[BULK SELECTOR] No slots found for selected item!");
-                return;
-            }
-            
-            PointerEventData pointerData = new PointerEventData(EventSystem.current);
-            int clickedSlots = 0;
-            
-            foreach (Transform slot in HeartopiaComplete.slotCache[this.selectedBulkItemID])
-            {
-                if (slot == null || !slot.gameObject.activeInHierarchy) continue;
-                
-                Transform addBtn = slot.Find("Root/add@w");
-                if (addBtn != null && addBtn.gameObject.activeInHierarchy)
-                {
-                    for (int i = 0; i < 200; i++)
-                    {
-                        ExecuteEvents.Execute(addBtn.gameObject, pointerData, ExecuteEvents.pointerClickHandler);
-                    }
-                    clickedSlots++;
-                }
-            }
-            
-            string displayName = this.selectedBulkItemID.Replace("ui_item_normal_p_", "").Replace("ui_item_normal_", "");
-            ModLogger.Msg($"[BULK SELECTOR] Executed 200 clicks on {clickedSlots} slots for {displayName}");
-        }
-        
-        // Token: 0x06000026D - Execute Bulk Sell
-        private void ExecuteBulkSell()
-        {
-            // Find the sell confirm button in the ItemSellPanel
-            GameObject sellButton = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Popup/ItemSellPanel(Clone)/commonSidePicker@w/bagPanel@go/bottom@go/confirmButton@btn");
-            
-            if (sellButton == null || !sellButton.activeInHierarchy)
-            {
-                ModLogger.Msg("[BULK SELL] Sell panel not found or not active! Make sure sell panel is open.");
-                return;
-            }
-            
-            PointerEventData pointerData = new PointerEventData(EventSystem.current);
-            
-            // Click the sell button
-            ExecuteEvents.Execute(sellButton, pointerData, ExecuteEvents.pointerClickHandler);
-            
-            string displayName = this.selectedBulkItemID.Replace("ui_item_normal_p_", "").Replace("ui_item_normal_", "");
-            ModLogger.Msg($"[BULK SELL] Clicked sell button for {displayName}");
-        }
-        
-        // Token: 0x06000026E - Refresh Bulk Selector Cache
-        private void RefreshBulkSelectorCache()
-        {
-            HeartopiaComplete.discoveredItems.Clear();
-            HeartopiaComplete.slotCache.Clear();
-            this.selectedBulkItemID = "";
-            
-            // Find all currently active Image components and check for inventory items
-            UnityEngine.UI.Image[] allImages = UnityEngine.Object.FindObjectsOfType<UnityEngine.UI.Image>(true);
-            int foundItems = 0;
-            
-            foreach (UnityEngine.UI.Image img in allImages)
-            {
-                if (img.sprite != null && img.sprite.name.Contains("ui_item_normal"))
-                {
-                    string spriteName = img.sprite.name;
-                    if (!HeartopiaComplete.discoveredItems.Contains(spriteName))
-                    {
-                        HeartopiaComplete.discoveredItems.Add(spriteName);
-                        foundItems++;
-                    }
-                    
-                    // Find the slot transform (same logic as the Harmony patch)
-                    Transform slot = img.transform.parent?.parent;
-                    if (slot != null)
-                    {
-                        if (!HeartopiaComplete.slotCache.ContainsKey(spriteName))
-                        {
-                            HeartopiaComplete.slotCache[spriteName] = new List<Transform>();
-                        }
-                        if (!HeartopiaComplete.slotCache[spriteName].Contains(slot))
-                        {
-                            HeartopiaComplete.slotCache[spriteName].Add(slot);
-                        }
-                    }
-                }
-            }
-            
-            ModLogger.Msg($"[BULK SELECTOR] Cache refreshed! Found {foundItems} unique items from {HeartopiaComplete.discoveredItems.Count} total detections.");
+
+            return (float)num + 12f;
         }
 
         private float DrawSettingsTab(int startY)
@@ -62281,12 +63277,32 @@ namespace HeartopiaMod
         private float _cachedRadarGameObjectsAt = -999f;
         private const float RadarGOScanInterval = 2f;
 
-        // Bulk Selector Variables
-        public static bool bulkSelectorLiveScanEnabled = false;
-        public static List<string> discoveredItems = new List<string>();
-        public static Dictionary<string, List<Transform>> slotCache = new Dictionary<string, List<Transform>>();
-        private string selectedBulkItemID = "";
-        private Vector2 bulkSelectorScrollPos = Vector2.zero;
+        // Bag / Warehouse (backpack <-> warehouse transfer via BackPackSystem protocol)
+        private const int TransferBatchMaxCount = 256;
+        private const float TransferQtyHoldRepeatDelay = 0.5f;
+        private const float TransferQtyHoldSlowInterval = 0.1f;
+        private const float TransferQtyHoldFastInterval = 0.05f;
+        private const float TransferQtyHoldFastAfterSeconds = 1f;
+        private readonly string[] transferScanSourceLabels = { "Bag", "Warehouse" };
+        private int transferScanSource = 0;
+        private bool transferScanSourceDropdownOpen = false;
+        private bool transferMultiSelectMode = false;
+        private bool transferSelectFullStack = false;
+        private List<TransferItemEntry> transferItems = null;
+        private int selectedTransferIndex = -1;
+        private int transferQty = 1;
+        private int transferQtyHoldDirection = 0;
+        private uint transferQtyHoldNetId = 0U;
+        private int transferQtyHoldItemIndex = -1;
+        private float transferQtyHoldStartedAt = 0f;
+        private float transferQtyHoldLastStepAt = 0f;
+        private Vector2 transferItemScrollPos = Vector2.zero;
+        private string transferStatus = "Idle";
+        private float transferPendingRescanAt = 0f;
+        private int transferPendingRescanRetries = 0;
+        private readonly Dictionary<uint, int> transferBatch = new Dictionary<uint, int>();
+        private IntPtr transferMonoMoveBatchMethod = IntPtr.Zero;
+        private MethodInfo cachedMoveBatchBackpackItemsMethod = null;
 
         // Token: 0x04000035 RID: 53
         private Dictionary<int, float> blueberryCooldowns = new Dictionary<int, float>();
