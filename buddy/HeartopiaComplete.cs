@@ -58866,6 +58866,7 @@ namespace HeartopiaMod
                     }
 
                     string descriptor = this.GetDirectBackpackItemDescriptor(itemObj);
+
                     if (starRate <= 0 && this.IsAutoSellBirdPhotoDescriptor(descriptor))
                     {
                         if (this.TryGetAutoSellCachedUiStar(descriptor, count, out int uiStar))
@@ -58911,7 +58912,7 @@ namespace HeartopiaMod
             }
 
             string spriteName = this.GetAutoSellSpriteNameFromMatchKey(matchKey);
-            string displayName = this.GetAutoSellItemDisplayName(matchKey);
+            string displayName = this.ResolveBagItemDisplayName(matchKey, staticId);
             this.RememberRadarStaticIdIconMapping(staticId, spriteName);
             items.Add(new TransferItemEntry
             {
@@ -59233,7 +59234,7 @@ namespace HeartopiaMod
                 entry = new AutoSellBagItemEntry
                 {
                     SpriteName = this.GetAutoSellSpriteNameFromMatchKey(matchKey),
-                    DisplayName = this.GetAutoSellItemDisplayName(matchKey) + (normalizedStar > 0 ? (" " + normalizedStar + "*") : ""),
+                    DisplayName = this.ResolveBagItemDisplayName(matchKey, staticId) + (normalizedStar > 0 ? (" " + normalizedStar + "*") : ""),
                     MatchKey = matchKey,
                     NetId = netId,
                     Count = Math.Max(1, count),
@@ -59586,6 +59587,79 @@ namespace HeartopiaMod
             return System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(itemName);
         }
 
+        private string ResolveBagItemDisplayName(string matchKey, int staticId)
+        {
+            if (staticId > 0 && this.TryGetResolvedFoodNameFromStaticId(staticId, out string tableName) && !this.IsPoorBagItemDisplayName(tableName, staticId))
+            {
+                return tableName;
+            }
+
+            string spriteName = this.GetAutoSellItemDisplayName(matchKey);
+            if (!this.IsPoorBagItemDisplayName(spriteName, staticId))
+            {
+                return spriteName;
+            }
+
+            return staticId > 0 ? ("Item " + staticId) : (string.IsNullOrWhiteSpace(spriteName) ? "Unknown Item" : spriteName);
+        }
+
+        private bool IsPoorBagItemDisplayName(string displayName, int staticId)
+        {
+            if (string.IsNullOrWhiteSpace(displayName))
+            {
+                return true;
+            }
+
+            string trimmed = displayName.Trim();
+            if (staticId > 0 && trimmed.StartsWith(staticId.ToString(), StringComparison.Ordinal))
+            {
+                string suffix = trimmed.Substring(staticId.ToString().Length).Trim();
+                if (suffix.Length == 0 || this.IsNumericTokenSequence(suffix))
+                {
+                    return true;
+                }
+            }
+
+            if (this.IsNumericTokenSequence(trimmed))
+            {
+                return true;
+            }
+
+            for (int i = 0; i < trimmed.Length; i++)
+            {
+                if (!char.IsDigit(trimmed[i]))
+                {
+                    return false;
+                }
+            }
+
+            return trimmed.Length > 0;
+        }
+
+        private bool IsNumericTokenSequence(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            string[] tokens = value.Split(new[] { ' ', '\t', ',', ';', '|', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 2)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                if (!int.TryParse(tokens[i], out _))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         private void CacheScannedBagFoodDisplayName(string spriteName)
         {
             string normalizedSprite = this.NormalizeAutoSellMatchKey(spriteName);
@@ -59732,16 +59806,6 @@ namespace HeartopiaMod
                 Type tableDataType = this.FindLoadedType("TableData", "EcsClient.TableData");
                 if (tableDataType != null)
                 {
-                    MethodInfo getEntityMethod = tableDataType.GetMethod("GetEntity", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(int), typeof(bool) }, null);
-                    if (getEntityMethod != null)
-                    {
-                        object entityObj = getEntityMethod.Invoke(null, new object[] { staticId, false });
-                        if (entityObj != null && this.TryGetResolvedFoodNameFromEntityObject(entityObj, out displayName))
-                        {
-                            return true;
-                        }
-                    }
-
                     MethodInfo getBackpackNameMethod = tableDataType.GetMethod("GetBackPackName", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(int), typeof(int), typeof(uint) }, null);
                     if (getBackpackNameMethod != null)
                     {
@@ -59753,13 +59817,89 @@ namespace HeartopiaMod
                             return true;
                         }
                     }
+
+                    MethodInfo getEntityMethod = tableDataType.GetMethod("GetEntity", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(int), typeof(bool) }, null);
+                    if (getEntityMethod != null)
+                    {
+                        object entityObj = getEntityMethod.Invoke(null, new object[] { staticId, false });
+                        if (entityObj != null && this.TryGetResolvedFoodNameFromEntityObject(entityObj, out displayName))
+                        {
+                            return true;
+                        }
+                    }
                 }
             }
             catch
             {
             }
 
-            return false;
+            return this.TryGetResolvedFoodNameFromStaticIdAuraMono(staticId, out displayName);
+        }
+
+        private unsafe bool TryGetResolvedFoodNameFromStaticIdAuraMono(int staticId, out string displayName)
+        {
+            displayName = string.Empty;
+            if (staticId <= 0 || !this.EnsureAuraMonoApiReady() || auraMonoClassFromName == null || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                IntPtr ecsImage = this.FindAuraMonoImage(new[] { "EcsClient", "EcsClient.dll" });
+                if (ecsImage == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                IntPtr tableDataClass = auraMonoClassFromName(ecsImage, string.Empty, "TableData");
+                if (tableDataClass == IntPtr.Zero)
+                {
+                    tableDataClass = auraMonoClassFromName(ecsImage, "EcsClient", "TableData");
+                }
+
+                if (tableDataClass == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                IntPtr getBackpackNameMethod = this.FindAuraMonoMethodOnHierarchy(tableDataClass, "GetBackPackName", 3);
+                if (getBackpackNameMethod != IntPtr.Zero)
+                {
+                    int starRate = 0;
+                    uint netId = 0U;
+                    IntPtr exc = IntPtr.Zero;
+                    IntPtr* args = stackalloc IntPtr[3];
+                    args[0] = (IntPtr)(&staticId);
+                    args[1] = (IntPtr)(&starRate);
+                    args[2] = (IntPtr)(&netId);
+                    IntPtr nameObj = auraMonoRuntimeInvoke(getBackpackNameMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+                    if (exc == IntPtr.Zero && nameObj != IntPtr.Zero && this.TryReadMonoString(nameObj, out string rawName))
+                    {
+                        displayName = this.CleanResolvedBagFoodName(rawName);
+                        if (!string.IsNullOrWhiteSpace(displayName))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                if (this.TryResolveNetCookRecipeNameFromTableDataMono(tableDataClass, staticId, out displayName))
+                {
+                    displayName = this.CleanResolvedBagFoodName(displayName);
+                    if (!string.IsNullOrWhiteSpace(displayName))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+            catch
+            {
+                displayName = string.Empty;
+                return false;
+            }
         }
 
         private bool TryGetResolvedFoodNameFromEntityObject(object entityObj, out string displayName)
@@ -59795,7 +59935,7 @@ namespace HeartopiaMod
             }
 
             name = name.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
-            if (int.TryParse(name, out _))
+            if (int.TryParse(name, out _) || this.IsNumericTokenSequence(name))
             {
                 return string.Empty;
             }
