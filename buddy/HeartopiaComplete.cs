@@ -349,6 +349,7 @@ namespace HeartopiaMod
             public int lodCustomMaxLevel;
             public bool customCameraFOVEnabled;
             public float cameraFOV;
+            public bool hideJumpButtonEnabled;
             public float snowClickInterval;
             public float sculptIconClickInterval;
             public float cookingAutoSpeed;
@@ -910,6 +911,7 @@ namespace HeartopiaMod
             data.lodCustomMaxLevel = this.lodCustomMaxLevel;
             data.customCameraFOVEnabled = this.customCameraFOVEnabled;
             data.cameraFOV = this.cameraFOV;
+            data.hideJumpButtonEnabled = this.hideJumpButtonEnabled;
             data.snowClickInterval = this.snowClickInterval;
             data.sculptIconClickInterval = this.sculptIconClickInterval;
             data.cookingAutoSpeed = this.cookingAutoSpeed;
@@ -1026,6 +1028,7 @@ namespace HeartopiaMod
             this.SyncLodOverrideAfterConfigLoad();
             this.customCameraFOVEnabled = data.customCameraFOVEnabled;
             this.cameraFOV = data.cameraFOV;
+            this.hideJumpButtonEnabled = data.hideJumpButtonEnabled;
             this.snowClickInterval = data.snowClickInterval;
             this.sculptIconClickInterval = data.sculptIconClickInterval;
             this.cookingAutoSpeed = data.cookingAutoSpeed;
@@ -1342,6 +1345,7 @@ namespace HeartopiaMod
                         else if (line.Contains("lodCustomMaxLevel")) this.lodCustomMaxLevel = Mathf.Clamp(GetJsonInt(line, "\"lodCustomMaxLevel\":"), 0, 4);
                         else if (line.Contains("customCameraFOVEnabled")) this.customCameraFOVEnabled = GetJsonInt(line, "\"customCameraFOVEnabled\":") != 0;
                         else if (line.Contains("cameraFOV")) this.cameraFOV = GetJsonFloat(line, "\"cameraFOV\":");
+                        else if (line.Contains("hideJumpButtonEnabled")) this.hideJumpButtonEnabled = GetJsonInt(line, "\"hideJumpButtonEnabled\":") != 0;
                         else if (line.Contains("snowClickInterval")) this.snowClickInterval = GetJsonFloat(line, "\"snowClickInterval\":");
                         else if (line.Contains("sculptIconClickInterval")) this.sculptIconClickInterval = GetJsonFloat(line, "\"sculptIconClickInterval\":");
             else if (line.Contains("cookingAutoSpeed")) this.cookingAutoSpeed = GetJsonFloat(line, "\"cookingAutoSpeed\":");
@@ -1948,6 +1952,7 @@ namespace HeartopiaMod
                 this.nextFpsBypassApplyAt = Time.unscaledTime + 0.5f;
             }
             this.ProcessLodOverrideOnUpdate();
+            this.ProcessHideJumpButtonOnUpdate();
             this.FlushPendingGameSpeedConfigSave();
             this.FlushPendingRadarSettingsSave();
             bool flag2 = HeartopiaComplete.OverridePlayerPosition && this.teleportFramesRemaining > 0;
@@ -23656,6 +23661,15 @@ namespace HeartopiaMod
                 float toggleHeight = this.GetSwitchToggleHeight(automationToggleWidth, "Hide UI + Player (Client Side)", 25f);
                 this.bypassEnabled = this.DrawWrappedSwitchToggle(new Rect(20f, (float)num, automationToggleWidth, toggleHeight), this.bypassEnabled, "Hide UI + Player (Client Side)", 25f);
                 num += Mathf.CeilToInt(toggleHeight + 8f);
+                bool prevHideJumpButton = this.hideJumpButtonEnabled;
+                toggleHeight = this.GetSwitchToggleHeight(automationToggleWidth, "Hide Jump Button (Space still works)", 25f);
+                this.hideJumpButtonEnabled = this.DrawWrappedSwitchToggle(new Rect(20f, (float)num, automationToggleWidth, toggleHeight), this.hideJumpButtonEnabled, "Hide Jump Button (Space still works)", 25f);
+                if (this.hideJumpButtonEnabled != prevHideJumpButton)
+                {
+                    this.cachedJumpButtonGo = null;
+                    try { this.SaveKeybinds(false); } catch { }
+                }
+                num += Mathf.CeilToInt(toggleHeight + 8f);
                 toggleHeight = this.GetSwitchToggleHeight(automationToggleWidth, "Bird Vacuum (Client Side)", 25f);
                 this.birdVacuumEnabled = this.DrawWrappedSwitchToggle(new Rect(20f, (float)num, automationToggleWidth, toggleHeight), this.birdVacuumEnabled, "Bird Vacuum (Client Side)", 25f);
                 num += Mathf.CeilToInt(toggleHeight + 10f);
@@ -23708,6 +23722,8 @@ namespace HeartopiaMod
                 {
                     this.autoFarmEnabled = false;
                     this.bypassEnabled = false;
+                    this.hideJumpButtonEnabled = false;
+                    this.cachedJumpButtonGo = null;
                     this.birdVacuumEnabled = false;
                     this.antiAfkEnabled = false;
                     this.antiAfkMouseDownClearAt = 0f;
