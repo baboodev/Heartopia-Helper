@@ -1,4 +1,4 @@
-using HarmonyLib;
+﻿using HarmonyLib;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Il2CppInterop.Runtime.Runtime;
@@ -17908,27 +17908,30 @@ namespace HeartopiaMod
                     if (this.TryOpenShopPanelByStoreId(52, 0, "Fishing Store")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 8:
-                    if (this.TryOpenShopPanelByStoreId(86, 0, "Fortune Store - Rainbow")) { status = this.forceOpenShopStatus; return true; }
+                    if (this.TryOpenShopPanelByStoreId(6, 0, "Furniture Extra")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 9:
-                    if (this.TryOpenShopPanelByStoreId(87, 0, "Fortune Store - Rain")) { status = this.forceOpenShopStatus; return true; }
+                    if (this.TryOpenShopPanelByStoreId(86, 0, "Fortune Store - Rainbow")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 10:
-                    if (this.TryOpenShopPanelByStoreId(51, 0, "Garden Store")) { status = this.forceOpenShopStatus; return true; }
+                    if (this.TryOpenShopPanelByStoreId(87, 0, "Fortune Store - Rain")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 11:
-                    if (this.TryOpenGeneralStore()) { status = this.forceOpenShopStatus; return true; }
+                    if (this.TryOpenShopPanelByStoreId(51, 0, "Garden Store")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 12:
-                    if (this.TryOpenShopPanelByStoreId(56, 0, "Insect Catching Store")) { status = this.forceOpenShopStatus; return true; }
+                    if (this.TryOpenGeneralStore()) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 13:
-                    if (this.TryOpenShopPanelByStoreId(54, 0, "Pet Store")) { status = this.forceOpenShopStatus; return true; }
+                    if (this.TryOpenShopPanelByStoreId(56, 0, "Insect Catching Store")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 14:
-                    if (this.TryOpenShopPanelByStoreId(82, 0, "Special Home Decor Store")) { status = this.forceOpenShopStatus; return true; }
+                    if (this.TryOpenShopPanelByStoreId(54, 0, "Pet Store")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 15:
+                    if (this.TryOpenShopPanelByStoreId(82, 0, "Special Home Decor Store")) { status = this.forceOpenShopStatus; return true; }
+                    status = this.forceOpenShopStatus; return false;
+                case 16:
                     if (this.TryOpenShopPanelByStoreId(7, 0, "Showroom")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 default:
@@ -62999,6 +63002,7 @@ namespace HeartopiaMod
             "Cooking Store",
             "Face Shop Panel",
             "Fishing Store",
+            "Furniture Extra",
             "Fortune Store - Rainbow",
             "Fortune Store - Rain",
             "Garden Store",
