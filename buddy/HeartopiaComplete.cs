@@ -49,6 +49,7 @@ namespace HeartopiaMod
         private KeyCode keyAuraFarm = KeyCode.None;
         private KeyCode keyAutoFish = KeyCode.None;
         private KeyCode keyAutoFishingTeleport = KeyCode.None;
+        private KeyCode keyAutoFishShadowNet = KeyCode.None;
         private KeyCode keyBypassUI = KeyCode.None;
         private KeyCode keyDisableAll = KeyCode.None;
         private KeyCode keyInspectPlayer = KeyCode.None;
@@ -306,6 +307,7 @@ namespace HeartopiaMod
             public int keyAuraFarm;
             public int keyAutoFish;
             public int keyAutoFishingTeleport;
+            public int keyAutoFishShadowNet;
             public int keyBypassUI;
             public int keyDisableAll;
             public int keyInspectPlayer;
@@ -873,6 +875,7 @@ namespace HeartopiaMod
             data.keyAuraFarm = (int)this.keyAuraFarm;
             data.keyAutoFish = (int)this.keyAutoFish;
             data.keyAutoFishingTeleport = (int)this.keyAutoFishingTeleport;
+            data.keyAutoFishShadowNet = (int)this.keyAutoFishShadowNet;
             data.keyBypassUI = (int)this.keyBypassUI;
             data.keyDisableAll = (int)this.keyDisableAll;
             data.keyInspectPlayer = (int)this.keyInspectPlayer;
@@ -994,6 +997,7 @@ namespace HeartopiaMod
             this.keyAuraFarm = (KeyCode)data.keyAuraFarm;
             this.keyAutoFish = (KeyCode)data.keyAutoFish;
             this.keyAutoFishingTeleport = (KeyCode)data.keyAutoFishingTeleport;
+            this.keyAutoFishShadowNet = (KeyCode)data.keyAutoFishShadowNet;
             this.keyBypassUI = (KeyCode)data.keyBypassUI;
             this.keyDisableAll = (KeyCode)data.keyDisableAll;
             this.keyInspectPlayer = (KeyCode)data.keyInspectPlayer;
@@ -1328,6 +1332,7 @@ namespace HeartopiaMod
                         else if (line.Contains("keyAuraFarm")) this.keyAuraFarm = (KeyCode)GetJsonInt(line, "\"keyAuraFarm\":");
                         else if (line.Contains("keyAutoFishFarm") || line.Contains("keyAutoFishingTeleport")) this.keyAutoFishingTeleport = (KeyCode)GetJsonInt(line, line.Contains("keyAutoFishFarm") ? "\"keyAutoFishFarm\":" : "\"keyAutoFishingTeleport\":");
                         else if (line.Contains("keyAutoFish")) this.keyAutoFish = (KeyCode)GetJsonInt(line, "\"keyAutoFish\":");
+                        else if (line.Contains("keyAutoFishShadowNet")) this.keyAutoFishShadowNet = (KeyCode)GetJsonInt(line, "\"keyAutoFishShadowNet\":");
                         else if (line.Contains("keyBypassUI")) this.keyBypassUI = (KeyCode)GetJsonInt(line, "\"keyBypassUI\":");
                         else if (line.Contains("keyDisableAll")) this.keyDisableAll = (KeyCode)GetJsonInt(line, "\"keyDisableAll\":");
                         else if (line.Contains("keyInspectPlayer")) this.keyInspectPlayer = (KeyCode)GetJsonInt(line, "\"keyInspectPlayer\":");
@@ -2116,6 +2121,14 @@ namespace HeartopiaMod
                     BirdNetFarm.ToggleEnabled(this);
                     bool birdFarmEnabled = BirdNetFarm.IsEnabled;
                     this.AddMenuNotification($"Auto Bird Farm {(birdFarmEnabled ? "Enabled" : "Disabled")}", birdFarmEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
+                }
+                if (Input.GetKeyDown(this.keyAutoFishShadowNet))
+                {
+                    AutoFishingFarm.ToggleEnabled(this);
+                    bool fishShadowNetEnabled = AutoFishingFarm.IsEnabled;
+                    this.AddMenuNotification(
+                        "Fish Shadow Net " + (fishShadowNetEnabled ? "Enabled" : "Disabled"),
+                        fishShadowNetEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
                 if (Input.GetKeyDown(this.keyMassCook))
                 {
@@ -3199,7 +3212,7 @@ namespace HeartopiaMod
             // Settings tab with sub-tabs
             if (this.settingsSubTab == 1)
             {
-                return string.IsNullOrEmpty(this.keyBindingActive) ? 1220f : 300f;
+                return string.IsNullOrEmpty(this.keyBindingActive) ? 1400f : 300f;
             }
             if (this.settingsSubTab == 2)
             {
@@ -19022,12 +19035,200 @@ namespace HeartopiaMod
             return 0;
         }
 
+        private bool TryFacePlayerTowardCastTarget(Vector3 targetPos, out string status)
+        {
+            status = "Player unavailable";
+
+            try
+            {
+                GameObject playerRoot = this.FindPlayerRoot();
+                if (playerRoot == null)
+                {
+                    return false;
+                }
+
+                Vector3 playerPos = playerRoot.transform.position;
+                Vector3 flatDir = targetPos - playerPos;
+                flatDir.y = 0f;
+                if (flatDir.sqrMagnitude < 0.04f)
+                {
+                    status = "Cast target too close to rotate";
+                    return false;
+                }
+
+                flatDir.Normalize();
+                Quaternion faceRot = Quaternion.LookRotation(flatDir, Vector3.up);
+                float targetYaw = faceRot.eulerAngles.y;
+                Vector3 eulerAngles = new Vector3(0f, targetYaw, 0f);
+
+                if (this.TrySyncLocalPlayerCastFacingMono(playerPos, eulerAngles, faceRot, flatDir, out string monoStatus))
+                {
+                    status = monoStatus;
+                    this.AutoFishLog("Pre-cast entity facing yaw=" + targetYaw.ToString("F1") + " " + status + " target=" + targetPos);
+                    return true;
+                }
+
+                playerRoot.transform.rotation = faceRot;
+                GameObject skeleton = HeartopiaComplete.GetLocalPlayer();
+                if (skeleton != null && skeleton != playerRoot)
+                {
+                    skeleton.transform.rotation = faceRot;
+                }
+
+                status = "visual-only fallback yaw=" + targetYaw.ToString("F1");
+                this.AutoFishLog("Pre-cast facing fallback " + status + " target=" + targetPos);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                status = "Pre-cast facing failed: " + ex.Message;
+                this.AutoFishLog(status);
+                return false;
+            }
+        }
+
+        private unsafe bool TrySyncLocalPlayerCastFacingMono(Vector3 playerPos, Vector3 eulerAngles, Quaternion faceRot, Vector3 flatDir, out string status)
+        {
+            status = "Mono entity facing unavailable";
+
+            if (!this.EnsureAuraMonoApiReady()
+                || !this.AttachAuraMonoThread()
+                || auraMonoRuntimeInvoke == null
+                || auraMonoObjectGetClass == null)
+            {
+                return false;
+            }
+
+            IntPtr playerObj = IntPtr.Zero;
+            if (!this.TryGetFishingPlayerMonoObject(out playerObj, out _, out _) || playerObj == IntPtr.Zero)
+            {
+                this.TryGetAuraMonoLocalPlayerObject(out playerObj);
+            }
+
+            if (playerObj == IntPtr.Zero)
+            {
+                status = "Mono player unavailable";
+                return false;
+            }
+
+            IntPtr playerClass = auraMonoObjectGetClass(playerObj);
+            IntPtr transferMethod = this.FindAuraMonoMethodOnHierarchy(playerClass, "Transfer", 4);
+            if (transferMethod == IntPtr.Zero)
+            {
+                transferMethod = this.FindAuraMonoMethodOnHierarchy(playerClass, "Transfer", 2);
+            }
+
+            if (transferMethod != IntPtr.Zero)
+            {
+                int transferArgCount = this.TryGetAuraMonoMethodParamCount(transferMethod);
+                IntPtr exc = IntPtr.Zero;
+                if (transferArgCount >= 4)
+                {
+                    Vector3 posValue = playerPos;
+                    Vector3 eulerValue = eulerAngles;
+                    uint parentNetId = 0U;
+                    bool checkCollision = false;
+                    IntPtr* transferArgs = stackalloc IntPtr[4];
+                    transferArgs[0] = (IntPtr)(&posValue);
+                    transferArgs[1] = (IntPtr)(&eulerValue);
+                    transferArgs[2] = (IntPtr)(&parentNetId);
+                    transferArgs[3] = (IntPtr)(&checkCollision);
+                    auraMonoRuntimeInvoke(transferMethod, playerObj, (IntPtr)transferArgs, ref exc);
+                }
+                else
+                {
+                    Vector3 posValue = playerPos;
+                    Vector3 eulerValue = eulerAngles;
+                    IntPtr* transferArgs = stackalloc IntPtr[2];
+                    transferArgs[0] = (IntPtr)(&posValue);
+                    transferArgs[1] = (IntPtr)(&eulerValue);
+                    auraMonoRuntimeInvoke(transferMethod, playerObj, (IntPtr)transferArgs, ref exc);
+                }
+
+                if (exc == IntPtr.Zero)
+                {
+                    status = "Transfer yaw=" + eulerAngles.y.ToString("F1");
+                    return true;
+                }
+            }
+
+            if (!this.TryGetBunnyHopMonoMoveComponent(playerObj, out IntPtr moveObj) || moveObj == IntPtr.Zero)
+            {
+                status = "Mono moveComponent unavailable";
+                return false;
+            }
+
+            IntPtr moveClass = auraMonoObjectGetClass(moveObj);
+            IntPtr worldFaceMethod = this.FindAuraMonoMethodOnHierarchy(moveClass, "WorldFaceTo", 1);
+            if (worldFaceMethod == IntPtr.Zero)
+            {
+                status = "WorldFaceTo unavailable";
+                return false;
+            }
+
+            Quaternion rotValue = faceRot;
+            IntPtr exc2 = IntPtr.Zero;
+            IntPtr* faceArgs = stackalloc IntPtr[1];
+            faceArgs[0] = (IntPtr)(&rotValue);
+            auraMonoRuntimeInvoke(worldFaceMethod, moveObj, (IntPtr)faceArgs, ref exc2);
+            if (exc2 != IntPtr.Zero)
+            {
+                status = "WorldFaceTo exception";
+                return false;
+            }
+
+            IntPtr setPosRotMethod = this.FindAuraMonoMethodOnHierarchy(moveClass, "SetPositionAndRotation", 3);
+            if (setPosRotMethod != IntPtr.Zero)
+            {
+                Vector3 posValue = playerPos;
+                Quaternion rotArg = faceRot;
+                bool worldSpace = true;
+                IntPtr* setArgs = stackalloc IntPtr[3];
+                setArgs[0] = (IntPtr)(&posValue);
+                setArgs[1] = (IntPtr)(&rotArg);
+                setArgs[2] = (IntPtr)(&worldSpace);
+                exc2 = IntPtr.Zero;
+                auraMonoRuntimeInvoke(setPosRotMethod, moveObj, (IntPtr)setArgs, ref exc2);
+            }
+
+            Vector2 forward2D = new Vector2(flatDir.x, flatDir.z);
+            this.TrySetMonoVector2Member(moveObj, "_Forward", forward2D);
+            this.TrySetMonoVector2Member(moveObj, "Forward", forward2D);
+
+            status = "WorldFaceTo yaw=" + eulerAngles.y.ToString("F1");
+            return true;
+        }
+
+        private unsafe bool TrySetMonoVector2Member(IntPtr obj, string memberName, Vector2 value)
+        {
+            if (obj == IntPtr.Zero || string.IsNullOrEmpty(memberName) || auraMonoObjectGetClass == null || auraMonoFieldSetValue == null)
+            {
+                return false;
+            }
+
+            IntPtr classPtr = auraMonoObjectGetClass(obj);
+            IntPtr fieldPtr = this.FindAuraMonoFieldOnHierarchy(classPtr, memberName);
+            if (fieldPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            Vector2 fieldValue = value;
+            auraMonoFieldSetValue(obj, fieldPtr, (IntPtr)(&fieldValue));
+            return true;
+        }
+
         public bool TryEnterFishingAtTarget(Vector3 targetPos, out string status)
         {
             status = "GameplayApi unavailable";
 
             try
             {
+                if (!this.TryFacePlayerTowardCastTarget(targetPos, out string faceStatus))
+                {
+                    this.AutoFishLog("Pre-cast facing skipped: " + faceStatus);
+                }
+
                 if (this.TryResolveGameplayFishingApi(out Type _, out Type fishingSubStateType, out MethodInfo enterFishingMethod, out MethodInfo _))
                 {
                     object waitingState = Enum.Parse(fishingSubStateType, "Waiting");
@@ -60871,6 +61072,8 @@ namespace HeartopiaMod
                             case "Auto Fish Farm (Auto Teleport)": this.keyAutoFishingTeleport = newKey; break;
                             case "Auto Fishing (Teleport)": this.keyAutoFishingTeleport = newKey; break;
                             case "Auto Fish (No Teleport)": this.keyAutoFish = newKey; break;
+                            case "Fish Shadow Net":
+                            case "Auto Fish Shadow Net": this.keyAutoFishShadowNet = newKey; break;
                             case "Bypass UI": this.keyBypassUI = newKey; break;
                             case "Disable All": this.keyDisableAll = newKey; break;
                             case "Inspect Player": this.keyInspectPlayer = newKey; break;
@@ -60922,11 +61125,12 @@ namespace HeartopiaMod
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Inspect Move", ref this.keyInspectMove);
             num += 14;
 
-            this.BeginKeybindSection(ref num, left, contentWidth, "AUTOMATION", 17, subHeaderStyle, accent, panelFill, panelLine);
+            this.BeginKeybindSection(ref num, left, contentWidth, "AUTOMATION", 16, subHeaderStyle, accent, panelFill, panelLine);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Foraging", ref this.keyAutoForaging);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Aura Farm", ref this.keyAuraFarm);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Insect Farm", ref this.keyAutoInsectFarm);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Bird Farm", ref this.keyAutoBirdFarm);
+            this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Fish Shadow Net", ref this.keyAutoFishShadowNet);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Mass Cook", ref this.keyMassCook);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Puzzle", ref this.keyAutoPuzzle);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Cat Play", ref this.keyAutoCatPlay);
@@ -60966,6 +61170,7 @@ namespace HeartopiaMod
                 this.keyAuraFarm = KeyCode.None;
                 this.keyAutoFish = KeyCode.None;
                 this.keyAutoFishingTeleport = KeyCode.None;
+                this.keyAutoFishShadowNet = KeyCode.None;
                 this.keyBypassUI = KeyCode.None;
                 this.keyDisableAll = KeyCode.None;
                 this.keyInspectPlayer = KeyCode.None;
