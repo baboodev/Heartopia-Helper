@@ -1,0 +1,747 @@
+# Decompiled Source Map and Mod Interaction Reference
+
+Detailed guide to the **`ilspy-dumps/`** folder (ILSpy/dnSpy, Mono PE) and **every game type** that **Heartopia Helper** touches.
+
+See also: [ARCHITECTURE.md](./ARCHITECTURE.md), [TYPE_RESOLUTION.md](./TYPE_RESOLUTION.md), [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md).
+
+---
+
+## Access method legend
+
+| Code | Method | Description |
+|------|--------|-------------|
+| **I** | Interop | Direct reference in `buddy.csproj` (Unity, rarely game stubs). Harmony patches via `typeof(...)` |
+| **R** | Reflection | `FindLoadedType` → `MethodInfo.Invoke` / fields / properties in loaded `AppDomain` |
+| **N** | IL2CPP native | `TryFindIl2CppClass`, `IL2CPP.il2cpp_*`, `IL2CPP.GetIl2CppClass` — no managed stub |
+| **A** | AuraMono | `mono_class_from_name`, `mono_runtime_invoke`, `FindAuraMonoImage("EcsClient")` |
+| **H** | Harmony | Prefix/Postfix on a method after type resolve |
+| **W** | Win32 / UI path | `SendInput`, `PostMessage`, `GameObject.Find`, uGUI clicks |
+| **S** | SendCommand | `WebRequestUtility.SendCommand<T>` — generic invoke with command struct |
+| **G** | GameObject scan | `FindObjectsOfType`, prefab name, radar hierarchy |
+
+**Mod file:** `HC` = `HeartopiaComplete.cs`, otherwise the partial/farm file is listed.
+
+---
+
+## 1. Overview of `ilspy-dumps/`
+
+Folder is in `.gitignore`; local copy of **Mono-side** game assembly decompilation. Do **not** copy into `BepInEx/interop`.
+
+### 1.1 Root assemblies
+
+| Folder | ~`.cs` files | Purpose |
+|--------|-------------|---------|
+| **EcsClient** | 8170 | Tables (`Table*`), shared modules (`XDT.Scene.Shared.*`), command structs |
+| **XDTLevelAndEntity** | 3602 | ECS world: `Entities`, components, interact, fishing, gathering |
+| **XDTDataAndProtocol** | 2209 | Protocols, `WebRequestUtility`, events, component data |
+| **XDTGameUI** | 3735 | UI panels, HUD, shops |
+| **XDTGameSystem** | 910 | Gameplay modules: backpack, pet, cooking, tool, puzzle |
+| **EcsSystem** | 879 | Client network managers |
+| **XDTBaseService** | — | Texture cache, base services |
+| **EngineWrapper, ScriptBridge, MonoShared, Plugins, DnsClient, MonoUniTask, MsgPackFormatters, XDTViewBase** | small | Infrastructure |
+
+### 1.2 Typical path nesting
+
+```
+ilspy-dumps/<AssemblyRoot>/<ProjectName>/.../Namespace/ClassName.cs
+```
+
+Examples:
+
+```
+ilspy-dumps/XDTLevelAndEntity/XDTLevelAndEntity/BaseSystem/EntitiesManager/Entities.cs
+ilspy-dumps/EcsClient/XDT/Scene/Shared/Modules/Backpack/ItemNetPair.cs
+ilspy-dumps/XDTDataAndProtocol/XDTDataAndProtocol/ProtocolService/WebRequestUtility.cs
+```
+
+### 1.3 Namespace duplication (`ScriptsRefactory`)
+
+Some types are duplicated under **`ScriptsRefactory.*`** (level/entity refactor). The mod searches **both** variants:
+
+- `XDTLevelAndEntity.BaseSystem.EntitiesManager.Entities`
+- `ScriptsRefactory.LevelAndEntity.BaseSystem.EntitiesManager.Entities`
+
+Same for `BirdScannableComponent`, `LevelObjectManager`, `Entity`.
+
+---
+
+## 2. Assembly navigation (where to look in ILSpy)
+
+### 2.1 EcsClient
+
+**Root:** `ilspy-dumps/EcsClient/`
+
+| Area | Path / pattern | Contents |
+|------|----------------|----------|
+| All configs | `Table*.cs` (thousands at root) | Excel data: `TableFish`, `TableBird`, `TableNpc`, `TableTaskOrder`, … |
+| Aggregator | `TableData.cs` | `TableData.GetXxx()`, static fields `TableNpcs`, `TableFish`, … |
+| Shared modules | `XDT/Scene/Shared/Modules/**` | Command structs, backpack, pet, animal, bubble, cooking, bird watching |
+| ItemNetPair | `XDT/Scene/Shared/Modules/Backpack/ItemNetPair.cs` | `{ uint NetId; int Count; }` for quest submit |
+| EcsClient glue | `EcsClient/` | Client-specific types on top of shared |
+
+**Mod uses EcsClient most often via:** `TableData`, `ItemNetPair`, `EStorageType`, `EntityType`, command structs in `XDT.Scene.Shared.Modules.*`.
+
+### 2.2 XDTLevelAndEntity
+
+**Project root:** `ilspy-dumps/XDTLevelAndEntity/XDTLevelAndEntity/`
+
+| Subfolder | Key types |
+|-----------|-----------|
+| `BaseSystem/EntitiesManager/` | **`Entities`**, **`EntityUtil`** |
+| `BaseSystem/InteractSystem/` | **`InteractSystem`**, **`SelectPriorityInfo`** |
+| `Gameplay/Component/Gather/` | CollectableObject, CollectableBush, DynamicBush |
+| `Gameplay/Component/Fish/` | **HandHoldFishingRod**, FloatComponent, PlayerFishAreaChecker |
+| `Gameplay/Component/Equip/` | AxeChecker, HandholdCylinderChecker, tools |
+| `Gameplay/Component/Player/` | LocalPlayerComponent, LocalPlayerLookInteractTarget |
+| `Gameplay/Component/Bubble/` | BubbleComponent, BubbleMoveComponent |
+| `Gameplay/Interaction/` | PlayerInteraction, BackpackBirdCamouflage, BirdCamouflageComponent |
+| `GameplaySystem/` | **GameplayApi** (photo mode, fishing API) |
+| `Game/GameMode/` | **Character**, GamePhotoMode |
+| `EntityView/` | LevelEntityComponent |
+| `Utils/` | **EntityHelper** |
+| `Core/World/` | **Entity** |
+
+**ScriptsRefactory** (same assembly or separate paths): `BirdComponent`, `BirdScannableComponent`, `LevelObjectManager`.
+
+### 2.3 XDTDataAndProtocol
+
+**Root:** `ilspy-dumps/XDTDataAndProtocol/XDTDataAndProtocol/`
+
+| Path | Contents |
+|------|----------|
+| `ProtocolService/WebRequestUtility.cs` | **`SendCommand<T>`** — central outbound command entry |
+| `ProtocolService/*/` | Domain managers (see §3) |
+| `ComponentsData/` | JigsawPuzzleComponentData, DataCenter, serialized ECS data |
+| `Events/` | Event bus |
+
+**ProtocolService subfolders** (useful for search):
+
+`Resource`, `Task`, `BackPack`, `Pet`, `WildAnimal`, `Meow`, `Bubble`, `ActivityEvent`, `Cooking`, `JigsawPuzzle`, `Insect`, `GamePlay/Bird`, `Login`, `Store`, `Player`, …
+
+### 2.4 XDTGameSystem
+
+**Root:** `ilspy-dumps/XDTGameSystem/XDTGameSystem/GameplaySystem/`
+
+| Module | File / class | Mod |
+|--------|--------------|-----|
+| `BackPack/` | **BackPackSystem** | Bag, auto sell, daily quest, wild feed |
+| `Tool/` | **ToolSystem** | Auto repair, equip rod/axe/net, fishing |
+| `Pet/` | **PetSystem** | Pet feed |
+| `WildAnimal/` | **WildAnimalSystem** | Wild animal feed |
+| `Bird/` | BirdWatchingSystem, BirdManager | Bird farm |
+| `Cooking/` | CookingSystem | Net cook (PrepareCooking) |
+| `JigsawPuzzle/` | **JigsawPuzzleSystem** | Puzzle solver |
+| `Insect/` | LevelInscetManager (typo in game) | Insect net farm |
+| `SelfRoom/` | SelfRoomSystem | Join town / room helpers |
+| `Shop/` | Store-related | Auto buy |
+
+### 2.5 XDTGameUI
+
+**Root:** `ilspy-dumps/XDTGameUI/` (panels under `XDTGame.UI.Panel.*`)
+
+| Panel | Mod |
+|-------|-----|
+| ScannerStatusPanel | Bird farm — scanner status |
+| BagPanel | Warehouse bypass, bag automation |
+| TrackingPanel / TrackingCatPlay | Cat play automation |
+| CatPlayStatusPanel, DogPlayStatusPanel | Pet play |
+| DressShopPanel, FaceShopPanel | Force-open shop helpers |
+
+**UIManager:** `XDTGame.Core.UIManager` — AuraMono `GetView<T>()`.
+
+### 2.6 EcsSystem
+
+| Type | Mod |
+|------|-----|
+| `EcsSystem.World.XDTownClientNetworkManager` | Bird photo ACK probe, pet play |
+| `EcsSystem.XD.GameGerm.Ecs.Boost.Client.ClientNetworkManager` | Fallback network manager |
+
+---
+
+## 3. Type catalog with mod interaction
+
+Below: **only types the mod actually resolves or patches**. For each: dump path, feature, access method, members called.
+
+---
+
+### 3.1 Network and infrastructure
+
+#### `WebRequestUtility`
+- **Dump:** `XDTDataAndProtocol/.../ProtocolService/WebRequestUtility.cs`
+- **Namespace:** `XDTDataAndProtocol.ProtocolService`
+- **Features:** Bubble spawn, bird photo, net cook commands, generic network actions
+- **Access:** **R** + **H** + **S**
+- **How:**
+  1. `FindLoadedType("XDTDataAndProtocol.ProtocolService.WebRequestUtility", "Il2CppXDTDataAndProtocol...")`
+  2. Find static generic `SendCommand` (3 parameters) → `MakeGenericMethod(commandType)` → `Invoke`
+  3. **Harmony prefix** on generic `SendCommand` — rewrite command struct fields (bubble location) without world component types
+- **Files:** `BubbleFeature.cs`, `HC` (bird, net cook)
+
+#### `ChannelType`
+- **Dump:** `XD.GameGerm.Network` (often in Client/EcsSystem assemblies)
+- **Access:** **R**
+- **How:** third argument to `SendCommand`; enum `Reliable`, etc.
+
+#### `XDTownClientNetworkManager` / `ClientNetworkManager`
+- **Dump:** `EcsSystem/...`
+- **Features:** Bird farm server ACK, pet play
+- **Access:** **R** — instance fields/methods via reflection
+
+---
+
+### 3.2 ECS — entities and interact
+
+#### `Entities`
+- **Dump:** `XDTLevelAndEntity/.../BaseSystem/EntitiesManager/Entities.cs`
+- **Features:** Aura farm, radar, bird/insect scan, net cook entity enum, bubble entity query
+- **Access:** **R**, **A**, **G**
+- **How (R):**
+  - `FindLoadedType` + shape check (`GetComponents`, `SphereQueryEntities`)
+  - Static `GetComponents<T>()`, `SphereQueryEntities`, create/destroy — `Invoke`
+- **How (A):**
+  - `FindAuraMonoImage("XDTLevelAndEntity")` → class `Entities` → `get_Instance` → instance methods
+  - Collection walk via `TryEnumerateAuraMonoCollectionItems` (HC)
+- **Key methods (from dump):** entity factory, physics queries, VFX, `GetComponents` patterns
+
+#### `EntityUtil`
+- **Dump:** `.../EntityUtil.cs`
+- **Features:** Bird farm, insect, radar metadata, player entity lookup
+- **Access:** **R**, **A**
+- **How:** static/instance `GetEntity`, `GetSelfPlayerEntity`, `GetLevelObject(netId)` — reflection or AuraMono hierarchy walk
+
+#### `EntityHelper`
+- **Dump:** `XDTLevelAndEntity/Utils/EntityHelper.cs`
+- **Features:** Aura farm — interact target list
+- **Access:** **R**, **A**
+- **How:**
+  - `GetPlayerInteractTargetList(...)` — managed Invoke
+  - `GetLevelObjectOwner`, `GetLevelObject` — AuraMono `mono_runtime_invoke`
+- **File:** `AuraFarm.cs`
+
+#### `Entity`
+- **Dump:** `XDTLevelAndEntity/Core/World/Entity.cs`
+- **Features:** Bird/insect/puzzle component enumeration
+- **Access:** **A**
+- **How:** `GetAllComponents()`, `get_alived`, `get_spawned`, `GetNetId` / `get_netId` — AuraMono on each entity object
+
+#### `InteractSystem`
+- **Dump:** `.../InteractSystem/InteractSystem.cs`
+- **Features:** Aura farm, foraging interact context
+- **Access:** **R**, **A**
+- **How:**
+  - Instance: `get_Instance` / field `_instance`
+  - Fields: `_currentSelectTarget`, `_focusLevelObjects`, `_selected`, `_selectPriorityInfoArray`, `interactCylinder`
+  - `GetInteractTargetList`, `get_player`
+  - AuraMono: same fields via `mono_field_get_value` / invoke
+- **File:** `AuraFarm.cs`, `HC`
+
+#### `SelectPriorityInfo`
+- **Dump:** next to InteractSystem
+- **Features:** Aura — interact target priority
+- **Access:** **R**, **A**
+
+#### `LevelObjectManager` / `LevelObjectTag`
+- **Dump:** `ScriptsRefactory.LevelAndEntity.LevelObjectManager`, `EcsClient...LevelObjectTag`
+- **Features:** Aura farm — resource owner netId
+- **Access:** **R**
+
+#### `CollectableObjectComponent` / `CollectableBushComponent` / `DynamicBushComponent`
+- **Dump:** `Gameplay/Component/Gather/`
+- **Features:** Aura farm, radar labels
+- **Access:** **R** — `Entities.GetComponents` scan
+
+#### `Cylinder` (scene query)
+- **Dump:** `XDTGame.Core.SceneQuery.Cylinder` or `XDT.Physics.Cylinder`
+- **Features:** Aura — interact overlap cylinder
+- **Access:** **R**
+
+---
+
+### 3.3 Resources — aura / foraging / chop-mine
+
+#### `ResourceProtocolManager`
+- **Dump:** `XDTDataAndProtocol/.../ProtocolService/Resource/ResourceProtocolManager.cs`
+- **Features:** **Aura farm** (gather, chop, mine)
+- **Access:** **R**, **A**
+- **How:**
+  - **R:** `FindTypeByName` / `FindTypeBySignature` → static methods:
+    - `SendPickBushCommand(uint ownerNetId)`
+    - `SendAttackTreeCommand(uint ownerNetId, bool isCombo)`
+    - `SendHitStoneCommand(uint ownerNetId, bool isCombo)`
+  - **A:** `mono_class_get_method_from_name(resourceClass, "SendPickBushCommand", 1)` → `mono_runtime_invoke(null, args)`
+- **Flow:** scan entities → resolve owner netId → 20ms cooldown → send command (server authoritative)
+- **File:** `AuraFarm.cs`
+
+#### `AxeChecker` / `HandholdCylinderChecker`
+- **Dump:** `Gameplay/Component/Equip/`
+- **Features:** Aura — axe range check
+- **Access:** **A** (Mono class resolve)
+
+#### `LocalPlayerComponent` / `LocalPlayerLookInteractTarget`
+- **Dump:** `Gameplay/Component/Player/`
+- **Features:** Aura — local player and look-target
+- **Access:** **A**
+
+---
+
+### 3.4 Fishing
+
+#### `HandHoldFishingRod`
+- **Dump:** `Gameplay/Component/Fish/HandHoldFishingRod.cs`
+- **Features:** Auto fishing — rod state (indirectly via host)
+- **Access:** **R**, **A** (component scan on player equip)
+- **How:** HC finds handhold class name containing `HandHoldFishingRod`; reads motion/fish state via reflection/AuraMono on player components
+- **Related in dump:** `FloatComponent`, `PlayerFishAreaChecker`, `FishLine`
+
+#### `FishingSubState`
+- **Dump:** `XDT.Scene.Shared.Creatures.FishingSubState` (enum, EcsClient/shared)
+- **Features:** Auto fishing — `Waiting`, `Battle`, hook states
+- **Access:** **R**, **N**
+- **How:**
+  - `FindLoadedType` + `Enum.Parse` for grace/recast logic
+  - IL2CPP enum read when managed enum unavailable
+- **Files:** `HC`, `AutoFishingFarm.cs` (via host)
+
+#### `GameplayApi`
+- **Dump:** `XDTLevelAndEntity/GameplaySystem/GameplayApi.cs`
+- **Features:** Bird photo mode resolution (fallback path)
+- **Access:** **R**
+- **How:** static/instance `photoMode` property → `GamePhotoMode`
+
+#### Fish shadows (world objects)
+- **Dump:** prefab/components in level entity (no single class — scan by name/tag)
+- **Features:** Auto fishing target selection
+- **Access:** **G** + **R**
+- **How:**
+  - `GetCachedFishShadowTargetObjects()` — `FindObjectsOfType<GameObject>` + `ShouldTrackFishShadowObject`
+  - Scoring by distance, visual priority, occupancy (`TryGetFishShadowOccupancy`)
+- **File:** `HC` (~line 18191+)
+
+#### `TrySetFishingPressed` (mod API on host, not a game type)
+- **Game targets:** fishing UI button / motion state — resolved via **A** on player/fishing state objects
+- **How:** `TrySetFishingPressedMono` → `TrySetFishingStateButtonPressedMono` — AuraMono bool pulse; **not** Harmony Input patches
+- **File:** `HC` (~line 20000+), `AutoFishingFarm.cs`
+
+#### `ToolSystem`
+- **Dump:** `XDTGameSystem/GameplaySystem/Tool/ToolSystem.cs`
+- **Features:** Equip rod/axe/net, auto repair durability, fishing tool restore
+- **Access:** **R**, **A**
+- **How:**
+  - **R:** `DataModule<ToolSystem>.Instance`, `GetCurrentTool()` → tool id, durability fields
+  - **A:** `TryResolveAuraMonoModule("...ToolSystem")` → `GetCurrentTool` invoke
+- **Files:** `HC`, farms
+
+#### `EcsService`
+- **Dump:** `ProtocolService/EcsService.cs`
+- **Features:** Tool durability fallback via service locator
+- **Access:** **R** + shape scan `FindLoadedEcsServiceType`
+
+---
+
+### 3.5 Birds
+
+#### `BirdScannableComponent`
+- **Dump:** `ScriptsRefactory/.../BirdScannableComponent.cs`
+- **Features:** Bird farm, radar, vacuum
+- **Access:** **R**, **A**
+- **How:** `Entities.GetComponents<BirdScannableComponent>()` or AuraMono entity component walk
+
+#### `BirdComponent`, `PerchBirdComponent`, `BirdCamouflageComponent`, `LevelEntityComponent`
+- **Dump:** see §2.2
+- **Features:** Bird scan filters, camouflage skip
+- **Access:** **A** — `GetAllComponents` on entity
+
+#### `BirdWatchingSystem` / `BirdManager`
+- **Dump:** `XDTGameSystem/GameplaySystem/Bird/`
+- **Features:** Bird farm runtime state
+- **Access:** **R**
+
+#### `ScannerStatusPanel`
+- **Dump:** `XDTGameUI` — `XDTGame.UI.Panel.ScannerStatusPanel`
+- **Features:** Bird farm — equipped scanner detection
+- **Access:** **R** — UI instance fields
+
+#### `TakingBirdPhotoCommand`
+- **Dump:** `EcsClient/XDT/Scene/Shared/Modules/BirdWatching/` (command struct)
+- **Features:** Bird photo send
+- **Access:** **R** + **S** + shape validation `IsBirdPhotoCommandShape`
+- **How:** `Activator.CreateInstance` → fill fields → `WebRequestUtility.SendCommand`
+
+#### `BirdProtocolManager`
+- **Dump:** `ProtocolService/GamePlay/Bird/BirdProtocolManager.cs`
+- **Features:** Bird photo submit, multi-catch
+- **Access:** **R**, **A**
+- **How:** static method invoke OR AuraMono `FindAuraMonoClassByFullName`
+
+#### `BirdPhotoDetailInfo`
+- **Dump:** shared module bird watching
+- **Features:** Perfect photo / exchange data
+- **Access:** **A** — native struct alloc
+
+#### `BirdPhotoExchangeData`
+- **Dump:** `EcsClient/.../ItemExchange/BirdPhotoExchangeData.cs`
+- **Features:** `BirdPhotoSubmitFeature`
+- **Access:** **A**
+
+#### `BackpackBirdCamouflage`
+- **Dump:** `XDTLevelAndEntity/Gameplay/Interaction/BackpackBirdCamouflage.cs`
+- **Features:** Bird vacuum / backpack camouflage interaction
+- **Access:** **A**
+
+#### `GamePhotoMode` / `Character`
+- **Dump:** `Game/GameMode/`
+- **Features:** Photo mode for bird camera
+- **Access:** **R**, **A**
+- **How:** `UpdateAllComponent` AuraMono on photo mode instance
+
+---
+
+### 3.6 Insects
+
+#### `ServerInsectComponent` / `InsectAIStateComponent`
+- **Dump:** `EcsClient/XDT/Scene/Shared/Modules/InsectCatching/`
+- **Features:** Insect net farm — alived/spawned/state filter
+- **Access:** **A** on entity components
+
+#### `InsectProtocolManager`
+- **Dump:** `ProtocolService/Insect/`
+- **Features:** Catch commands (via host scan + protocol)
+- **Access:** **A**, **R**
+
+#### `LevelInscetManager` (game typo)
+- **Dump:** `XDTLevelAndEntity/GameplaySystem/Insect/`
+- **Features:** Insect farm bug dictionary — `FindInRangeBugs`, `GetCatchingInsects`
+- **Access:** **R**, **A**
+- **File:** `HC`, `InsectNetFarm.cs`
+
+---
+
+### 3.7 Bubbles
+
+#### `BubbleComponent` / `BubbleMoveComponent`
+- **Dump:** `Gameplay/Component/Bubble/`
+- **Features:** Radar, ESP, spawn helpers
+- **Access:** **R**, suffix scan `FindBubbleComponentRuntimeType`
+
+#### `CreateBubbleNetworkCommand` / `CreateActivityEventPersonalRewardBubbleNetworkCommand`
+- **Dump:** `EcsClient/XDT/Scene/Shared/Modules/Bubble/`
+- **Features:** Bubble spawn at player
+- **Access:** **S** + **H** (Harmony rewrites `location` on SendCommand)
+
+#### `ActivityEventProtocolManager`
+- **Dump:** `ProtocolService/ActivityEvent/`
+- **Features:** `CreateActivityBubble` — fast bubble gen
+- **Access:** **A** + native **H** (`BubbleMonoNativeHook` detour on method thunk)
+
+#### `BubbleProtocolManager`
+- **Dump:** `ProtocolService/Bubble/`
+- **Features:** `CreateBubble(Vector3)`
+- **Access:** **A** + native hook
+
+#### `ActivityEventModule` (time counter field)
+- **Features:** Fast bubble gen — field `ActivityEventTimeCounter` via AuraMono
+- **Access:** **A**
+
+#### `IBubbleService` / bubble client services
+- **Features:** Radar GM list `GmGetAllBubble` (optional)
+- **Access:** **R** — `FindLoadedBubbleServiceType`
+
+---
+
+### 3.8 Inventory, bag, auto sell
+
+#### `BackPackSystem`
+- **Dump:** `XDTGameSystem/GameplaySystem/BackPack/BackPackSystem.cs`
+- **Features:** Bag tab, warehouse transfer, auto sell, daily quest, wild feed, auto eat
+- **Access:** **R**, **A** (primary for enumeration)
+- **How:**
+  - **A:** `TryResolveAuraMonoModule("XDTGameSystem.GameplaySystem.BackPack.BackPackSystem")`
+  - Methods: `GetAllItem(EStorageType)` arity 1 or 0; `CheckSubmitItem`, `CheckSubmitItems`; `GetItemPrice()`
+  - `TryEnumerateAuraMonoCollectionItems` on returned `List<BackpackItem>`
+  - **R:** managed `Instance` + same methods when Mono fails
+- **Storage:** `EStorageType.Backpack = 1`, `Warehouse = 2`
+
+#### `BackpackItem` / `BackpackItemData`
+- **Dump:** `XDTGameSystem/UISystem/BackPack/`, internal `_itemData` in BackPackSystem
+- **Features:** Stack fields: `netId`, `count`, `staticId`, `starRate`, lock flags
+- **Access:** **R**, **A** field reads
+
+#### `BackpackProtocolManager`
+- **Dump:** `ProtocolService/BackPack/`
+- **Features:** `MoveBatchBackpackItems(Dictionary<uint,int>, targetStorage)` — max 256 stacks
+- **Access:** **R**, **A**, **S**
+
+#### `ItemNetPair`
+- **Dump:** `EcsClient/XDT/Scene/Shared/Modules/Backpack/ItemNetPair.cs`
+- **Features:** Daily quest submit list
+- **Access:** **A** (native list build), **N** (IL2CPP `GetIl2CppClass`), **R** (managed fallback)
+- **How (A):** alloc struct pairs → `List<ItemNetPair>.Add` via Mono; **do not** use `mono_class_bind_generic_parameters`
+- **File:** `DailyQuestSubmitFeature.cs`
+
+#### `EStorageType`
+- **Dump:** `EcsClient.XDT.Scene.Shared.Data.StaticPartial.EStorageType`
+- **Access:** **R**, **A** enum box
+
+#### `TableData` (inventory-related)
+- **Methods used:** `GetItemPrice` context via items; `GetGameTask`; table row lookups for food/pet/sell filters
+- **Access:** **R**, **A**, **N**
+
+#### `BagPanel` / bag UI modules
+- **Features:** Warehouse bypass, bulk selector, Win32 click automation
+- **Access:** **A** (`UIManager.GetView`), **W**, **H** (sprite postfix on `Image.set_sprite` for bulk selector)
+
+---
+
+### 3.9 Quests and tasks
+
+#### `TaskProtocolManager`
+- **Dump:** `ProtocolService/Task/TaskProtocolManager.cs`
+- **Features:** Daily quest item delivery
+- **Access:** **A** (primary), **R**
+- **Methods:**
+  - `ClientSubmitNpcTaskItem(taskId, npcId, List<ItemNetPair>)` — arity variants probed
+  - `ClientSubmitTaskItem` — fallback
+- **File:** `DailyQuestSubmitFeature.cs`
+
+#### Submit target tables
+- **Dump:** `TableTaskOrder`, `TableSubmitTargetItem`, `TableGameTask` via `TableData`
+- **Access:** **A** `GetGameTask(taskId)`, **R**
+
+---
+
+### 3.10 Pets
+
+#### `PetSystem`
+- **Dump:** `XDTGameSystem/GameplaySystem/Pet/PetSystem.cs`
+- **Features:** Feed all pets
+- **Access:** **R**, **A**
+- **How:** enumerate pets by staticId → build `List<uint>` netIds → protocol feed
+
+#### `PetProtocolManager`
+- **Dump:** `ProtocolService/Pet/`
+- **Features:** Feed, dog tease QTE
+- **Access:** **R**, **A**
+- **Methods:** feed batch; `TeaseQte` (PetPlay)
+
+#### `MeowProtocolManager`
+- **Dump:** `ProtocolService/Meow/`
+- **Features:** Cat tease QTE
+- **Access:** **R**, **A**
+
+#### `PetType`, `EntityType`
+- **Dump:** shared modules / EcsClient
+- **Features:** Filter cats/dogs
+- **Access:** **R**, **A**
+
+#### `TableData.GetDogLearningMotion` / `GetDogmotion`
+- **Features:** Dog train automation
+- **Access:** **A**, **R**
+- **File:** `PetPlayFeature.cs`
+
+#### UI: `TrackingCatPlay`, `CatPlayStatusPanel`, `DogPlayStatusPanel`
+- **Features:** Auto cat play / dog train
+- **Access:** **A** — `UIManager.GetView`, enumerate question cells, `RemoveQuestionCell`
+
+---
+
+### 3.11 Wild animals
+
+#### `WildAnimalSystem`
+- **Dump:** `XDTGameSystem/GameplaySystem/WildAnimal/WildAnimalSystem.cs`
+- **Features:** Trough feed plans
+- **Access:** **R**, **A**
+- **How:** get animal groups collection → fullness ratio → feed command
+
+#### `WildAnimalProtocolManager`
+- **Dump:** `ProtocolService/WildAnimal/`
+- **Methods:** feed with `List<uint>` food net ids per group
+- **Access:** **R**, **A**
+- **File:** `WildAnimalFeedFeature.cs`
+
+#### `AnimalProtocolManager`
+- **Features:** Claim all gifts (`WildAnimalGiftFeature`)
+- **Access:** **A**
+
+#### `AnimalGroup`
+- **Dump:** `XDT.Scene.Shared.Modules.Animal.AnimalGroup`
+- **Features:** Group id / name for feed plans
+- **Access:** **R**, **A**
+
+#### `TableAnimalGroup`, `TableAnimalFoodThough`, etc.
+- **Features:** Feed eligibility via `TableData`
+- **Access:** **R**, **A**
+
+---
+
+### 3.12 Cooking (net cook / mass cook)
+
+#### `CookingSystem`
+- **Dump:** `XDTGameSystem/GameplaySystem/Cooking/`
+- **Features:** Mass cook at stoves
+- **Access:** **A**, **R**
+- **Methods:** `PrepareCooking(cookerNetId, recipeId, materials...)` — AuraMono primary
+
+#### `PrepareCookingNetworkCommand`
+- **Dump:** `XDT.Scene.Shared.Modules.Cooking/`
+- **Features:** Fallback direct SendCommand
+- **Access:** **S**, **R**
+
+#### World cooker registration
+- **Features:** Harmony patch on cooker registration (dynamic `EnsureNetCookWorldCookerRegistrationPatch`)
+- **Access:** **H** — intercept when player captures stove targets
+
+#### `TableCookingRecipe` / recipe cache
+- **Features:** Recipe list in UI, material validation
+- **Access:** **R**, **N** on `TableData`
+
+---
+
+### 3.13 Puzzle
+
+#### `JigsawPuzzleSystem`
+- **Dump:** `XDTGameSystem/GameplaySystem/JigsawPuzzle/`
+- **Features:** Auto puzzle solver
+- **Access:** **R**, **A**
+- **Methods:** `GetBag`, `GetDraft` on board netId
+
+#### `JigsawPuzzleProtocolManager`
+- **Dump:** `ProtocolService/JigsawPuzzle/` (alt namespace `MiniGame`)
+- **Methods:** `JoinJigsawPuzzle`, `LockJigsawPuzzlePiece`, `MoveJigsawPuzzlePiecePos`, `SetJigsawPuzzlePieceBingo`
+- **Access:** **R** Invoke, **A** mono_runtime_invoke
+- **File:** `PuzzleNetFeature.cs`
+
+#### `JigsawPuzzleComponentData`, `DataCenter`, `NetId`
+- **Dump:** `ComponentsData/`
+- **Features:** Board/piece component lookup via `DataCenter.TryGetComponent`
+- **Access:** **R**
+
+#### `LevelObjectManager.GetLevelObject`
+- **Features:** Resolve puzzle board entity
+- **Access:** **R**, **A**
+
+---
+
+### 3.14 Teleport, NPC, tables
+
+#### `TableData` (general)
+- **Dump:** `EcsClient/TableData.cs` (~36k lines)
+- **Features:** NPC teleport map, item names, prices, pets, tasks, recipes, teleports
+- **Access:** **R**, **A**, **N**
+- **Key members:**
+  - Static `TableNpcs` — NPC teleport id map (**A** field enumerate, **R** reflection)
+  - `GetGameTask`, `GetDogLearningMotion`, `GetDogmotion`, row getters
+- **IL2CPP:** `TryFindIl2CppClass("TableData", "EcsClient", ...)` when interop missing
+
+#### `TableTeleportation`, `TableNpc`, …
+- **Features:** Teleport tab locations
+- **Access:** via TableData static dictionaries
+
+#### `SelfRoomSystem` / `SelfRoomProtocolManager`
+- **Dump:** GameplaySystem/SelfRoom, ProtocolService/Login
+- **Features:** Join my town / room helpers
+- **Access:** **A** module resolve + protocol invoke
+
+---
+
+### 3.15 UI and shops
+
+#### `UIManager`
+- **Dump:** `XDTGame.Core.UIManager` (XDTGameUI / XDTGame)
+- **Features:** GetView for panels; warehouse bypass
+- **Access:** **A** — `get_Instance`, `GetView(Type)`
+
+#### `Managers._serviceDic`
+- **Features:** Fallback find UIManager from service dictionary
+- **Access:** **A**
+
+#### `LocalTextureCacheUtility` / `ImageEnum`
+- **Dump:** `XDTBaseService/Services/Texture/`
+- **Features:** Pet feed UI icons
+- **Access:** **R**
+
+#### Shop panels (`DressShopPanel`, `FaceShopPanel`)
+- **Features:** Force open shop from mod menu
+- **Access:** **A** static `Open` / `OpenAvatarPanelShop`
+
+---
+
+### 3.16 Movement, Unity (interop)
+
+| Unity type | Harmony patch | Feature |
+|------------|---------------|---------|
+| `CharacterController.Move` | Prefix | Noclip, teleport override |
+| `Transform.position` setter | Prefix | Block snap-back |
+| `Transform.rotation` setter | Prefix (×2) | Rotation guard |
+| `Input.GetKey*` / `GetKeyDown` / `GetKeyUp` | Postfix | F-key simulation (legacy; registered at startup) |
+| `UnityEngine.UI.Image.set_sprite` | Postfix | Bulk item selector |
+
+**Access:** **I** + **H** — the only game-adjacent types with direct compile-time interop.
+
+---
+
+### 3.17 Miscellaneous
+
+#### `BunnyHopFeature`
+- **Game types:** Player state / move component — AuraMono `OnJumpButton`, `SetJumpInput` pulse
+- **Access:** **A**
+- **Dump:** player components under `Gameplay/Component/Player/`
+
+#### `LodSettingsFeature` / `HideJumpButtonFeature`
+- **Access:** **R** / **H** on Unity or UI types (minimal game namespace)
+
+#### `WarehouseBypassFeature`
+- **Access:** **W** + **A** on bag panel tab bar (`GetChildAt`, `SetInteractable` on tab widgets)
+- **Paths:** hard-coded relative UI paths under bag panel
+
+#### `AnimalCareFeature`
+- **Wiring only** — delegates to `WildAnimalFeedFeature` / `WildAnimalGiftFeature`
+
+---
+
+## 4. Matrix: Feature → types → mod file
+
+| Feature | Key game types | Mod file(s) | Dominant access |
+|---------|----------------|-------------|-----------------|
+| Aura farm | ResourceProtocolManager, InteractSystem, Entities, EntityHelper, gather components | AuraFarm.cs | R + A |
+| Auto fishing | HandHoldFishingRod, FishingSubState, ToolSystem, fish shadow GOs | AutoFishingFarm.cs, HC | R + A + G |
+| Insect farm | LevelInscetManager, InsectProtocolManager, ServerInsectComponent | InsectNetFarm.cs, HC | R + A + G |
+| Bird farm | BirdScannableComponent, TakingBirdPhotoCommand, BirdProtocolManager, ScannerStatusPanel | BirdNetFarm.cs, HC | R + A + S |
+| Bubble | WebRequestUtility, Create*Bubble*Command, ActivityEvent/Bubble protocol | BubbleFeature.cs | H + S + A |
+| Radar / ESP | Entities, resource components, BubbleComponent | HC, HeartopiaResourceVisualEsp.cs | R + G |
+| Bag / transfer | BackPackSystem, BackpackProtocolManager, EStorageType | HC, DailyQuestSubmitFeature | A + R |
+| Daily quest submit | BackPackSystem, TaskProtocolManager, ItemNetPair, TableData | DailyQuestSubmitFeature.cs | A (+ N) |
+| Auto sell | BackPackSystem, TableData, sell protocol (HC) | HC | A + R + N |
+| Net cook | CookingSystem, PrepareCookingNetworkCommand, Entities | HC | A + S + H |
+| Pet feed | PetSystem, PetProtocolManager, TableData | PetFeedFeature.cs | A + R |
+| Pet play | Meow/PetProtocolManager, TrackingCatPlay, TableDogLearningMotion | PetPlayFeature.cs | A + R |
+| Wild animal feed | WildAnimalSystem, WildAnimalProtocolManager, BackPackSystem | WildAnimalFeedFeature.cs | R + A |
+| Wild animal gifts | AnimalProtocolManager | WildAnimalGiftFeature.cs | A |
+| Puzzle | JigsawPuzzleSystem, JigsawPuzzleProtocolManager, DataCenter | PuzzleNetFeature.cs | R + A |
+| NPC teleport | TableData.TableNpcs | HC | A + R + N |
+| Noclip / TP | Unity CharacterController, Transform | *Patch.cs | I + H |
+| Bunny hop | Player move/state components | BunnyHopFeature.cs | A |
+| Auto repair / eat | ToolSystem, BackPackSystem, EcsService | HC | R + A |
+| Warehouse bypass | BagPanel UI hierarchy | WarehouseBypassFeature.cs | W + A |
+
+---
+
+## 5. Workflow: from dump to mod fix
+
+1. Enable the feature in-game → read the log (`auraLastError`, `[BubbleFeature]`, `[AutoFishing]`).
+2. Find the type in **`ilspy-dumps`** using the namespace from the log or §3.
+3. Verify **method name and arity** against the mod source (`FindAuraMonoMethodOnHierarchy(..., "GetAllItem", 1)`).
+4. Add aliases to `FindLoadedType` if the namespace changed (`Gameplay` vs `GamePlay`, `Il2Cpp` prefix).
+5. Pick the channel: server action → **S**; client read → **R**/**A**; Unity motion → **H**.
+6. Test **in town**, not on the main menu.
+
+---
+
+## 6. Related documentation
+
+| Document | Contents |
+|----------|----------|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Overall game + mod architecture |
+| [TYPE_RESOLUTION.md](./TYPE_RESOLUTION.md) | FindLoadedType, miss cache, shape checks |
+| [GAME_ASSEMBLIES_AND_TOOLS.md](./GAME_ASSEMBLIES_AND_TOOLS.md) | Interop vs MonoDump vs DotnetAssemblies |
+| [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md) | Three inventory pipelines |
+| [FEATURES.md](./FEATURES.md) | User-facing menu features |

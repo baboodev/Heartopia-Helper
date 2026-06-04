@@ -26,6 +26,8 @@ Configure your game path: copy `buddy/Directory.Build.props.example` → `buddy/
 
 | Document | Contents |
 |----------|----------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Game + mod architecture, source maps, interop/reflection/AuraMono matrix |
+| [docs/DECOMPILED_SOURCE_MAP.md](docs/DECOMPILED_SOURCE_MAP.md) | Detailed `ilspy-dumps/` map + mod interaction per game type |
 | [docs/BUILD_AND_RUN.md](docs/BUILD_AND_RUN.md) | Prerequisites, build, deploy, logs |
 | [docs/FEATURES.md](docs/FEATURES.md) | Menu tabs and features |
 | [docs/BACKPACK_AND_ITEMS.md](docs/BACKPACK_AND_ITEMS.md) | Inventory scan, filters, sorting (auto sell, transfer, daily quests, feed) |
