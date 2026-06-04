@@ -30,11 +30,11 @@ namespace HeartopiaMod
 
         private void StartDailyQuestAutoSubmitItems(bool silent)
         {
-            if (this.dailyQuestSubmitCoroutine != null)
+            if (this.dailyQuestSubmitCoroutine != null || this.birdPhotoSubmitCoroutine != null)
             {
                 if (!silent)
                 {
-                    this.AddMenuNotification("Daily item submit already running", new Color(0.45f, 0.88f, 1f));
+                    this.AddMenuNotification("Submit already running", new Color(0.45f, 0.88f, 1f));
                 }
 
                 return;
@@ -1402,7 +1402,7 @@ namespace HeartopiaMod
             const float left = 40f;
             const float width = 520f;
 
-            bool busy = this.dailyQuestSubmitCoroutine != null;
+            bool busy = this.dailyQuestSubmitCoroutine != null || this.birdPhotoSubmitCoroutine != null;
             GUI.enabled = !busy;
             if (GUI.Button(new Rect(left, y, 240f, 32f), this.L("Auto Submit Daily Items"), this.themePrimaryButtonStyle ?? GUI.skin.button))
             {

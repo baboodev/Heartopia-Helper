@@ -124,6 +124,7 @@ namespace HeartopiaMod
         private const bool MasterLogWildAnimalFeed = false;
         private const bool MasterLogWildAnimalGift = false;
         private const bool MasterLogDailyQuestSubmit = true;
+        private const bool MasterLogBirdPhotoSubmit = false;
         private const bool MasterLogStrangerChat = false;
 
         private void AutoFishLog(string message)
