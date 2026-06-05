@@ -578,6 +578,19 @@ namespace HeartopiaMod
                 any = true;
             }
 
+            MethodInfo onSpawned = bubbleComponentType.GetMethod(
+                "OnSpawned",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            MethodInfo onSpawnedPostfix = typeof(BubbleFeaturePatches).GetMethod(
+                nameof(BubbleFeaturePatches.BubbleComponent_OnSpawned_Postfix),
+                BindingFlags.Public | BindingFlags.Static);
+            if (onSpawned != null && onSpawnedPostfix != null)
+            {
+                harmonyInstance.Patch(onSpawned, null, new HarmonyMethod(onSpawnedPostfix), null, null, null);
+                ModLogger.Msg("[OK] Patched BubbleComponent.OnSpawned (ship bubble claim)");
+                any = true;
+            }
+
             if (any)
             {
                 this.bubbleVisualPatchesApplied = true;
@@ -1151,6 +1164,18 @@ namespace HeartopiaMod
 
         public static class BubbleFeaturePatches
         {
+            private const int BubbleRefreshTypeFishingShip = 4;
+            private const float ShipBubbleAutoClaimCooldownSeconds = 2f;
+            private static readonly Dictionary<uint, float> ShipBubbleAutoClaimCooldownUntil = new Dictionary<uint, float>();
+            private static MethodInfo cachedGetBubbleAwardMethod;
+
+            public static bool ShouldApplyShipFishingBubbles()
+            {
+                return Instance != null
+                    && Instance.spawnBubbleAtPlayerEnabled
+                    && Instance.IsLocalPlayerOnFishingShip(out _);
+            }
+
             public static Vector3 GetSpawnPositionAtPlayer()
             {
                 if (Instance == null)
@@ -1258,52 +1283,34 @@ namespace HeartopiaMod
 
             public static void BubbleMoveComponent_MoveOnStart_Postfix(object __instance)
             {
-                if (Instance == null || !Instance.spawnBubbleAtPlayerEnabled || __instance == null)
+                if (Instance == null || __instance == null)
                 {
                     return;
                 }
 
                 try
                 {
-                    Vector3 spawn = GetSpawnPositionAtPlayer();
-                    if (spawn == Vector3.zero)
+                    bool onShip = ShouldApplyShipFishingBubbles();
+                    bool fishingShip = TryGetBubbleRefreshType(__instance, out int refreshType)
+                        && refreshType == BubbleRefreshTypeFishingShip;
+
+                    if (onShip)
+                    {
+                        if (!fishingShip)
+                        {
+                            return;
+                        }
+
+                        ApplyBubbleSpawnAtPlayer(__instance, forceEntityPosition: true);
+                        return;
+                    }
+
+                    if (!Instance.spawnBubbleAtPlayerEnabled || fishingShip)
                     {
                         return;
                     }
 
-                    Type type = __instance.GetType();
-                    FieldInfo bornPosField = type.GetField("_bornPos", BindingFlags.Instance | BindingFlags.NonPublic);
-                    if (bornPosField != null)
-                    {
-                        bornPosField.SetValue(__instance, spawn);
-                    }
-
-                    FieldInfo flyTimeField = type.GetField("_flyTime", BindingFlags.Instance | BindingFlags.NonPublic);
-                    if (flyTimeField != null)
-                    {
-                        flyTimeField.SetValue(__instance, 0f);
-                    }
-
-                    FieldInfo componentDataField = type.GetField("_componentData", BindingFlags.Instance | BindingFlags.NonPublic);
-                    if (componentDataField != null)
-                    {
-                        object dataVal = componentDataField.GetValue(__instance);
-                        if (dataVal != null)
-                        {
-                            Type dataType = dataVal.GetType();
-                            FieldInfo bornPositionField = dataType.GetField("bornPosition", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                            FieldInfo tarPositionField = dataType.GetField("tarPosition", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                            if (bornPositionField != null)
-                            {
-                                bornPositionField.SetValue(dataVal, spawn);
-                            }
-                            if (tarPositionField != null)
-                            {
-                                tarPositionField.SetValue(dataVal, spawn);
-                            }
-                            componentDataField.SetValue(__instance, dataVal);
-                        }
-                    }
+                    ApplyBubbleSpawnAtPlayer(__instance, forceEntityPosition: false);
                 }
                 catch (Exception ex)
                 {
@@ -1311,9 +1318,41 @@ namespace HeartopiaMod
                 }
             }
 
+            public static void BubbleComponent_OnSpawned_Postfix(object __instance)
+            {
+                if (!ShouldApplyShipFishingBubbles() || __instance == null)
+                {
+                    return;
+                }
+
+                try
+                {
+                    if (!TryGetBubbleRefreshType(__instance, out int refreshType) || refreshType != BubbleRefreshTypeFishingShip)
+                    {
+                        return;
+                    }
+
+                    Vector3 spawn = GetSpawnPositionAtPlayer();
+                    if (spawn == Vector3.zero)
+                    {
+                        return;
+                    }
+
+                    ApplyBubbleSpawnAtPlayer(__instance, forceEntityPosition: true);
+                    if (TryGetBubbleNetId(__instance, out uint bubbleNetId))
+                    {
+                        TryAutoClaimBubble(bubbleNetId);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ModLogger.Msg("[BubbleFeature] OnSpawned postfix: " + ex.Message);
+                }
+            }
+
             public static void BubbleComponent_Born_Prefix(object __instance, ref Vector3 location)
             {
-                if (Instance == null || !Instance.spawnBubbleAtPlayerEnabled)
+                if (!ShouldRewriteBubbleVisualLocation(__instance, out bool fishingShip))
                 {
                     return;
                 }
@@ -1323,11 +1362,365 @@ namespace HeartopiaMod
                 {
                     location = spawn;
                 }
+
+                if (fishingShip && TryGetBubbleNetId(__instance, out uint bubbleNetId))
+                {
+                    TryAutoClaimBubble(bubbleNetId);
+                }
             }
 
             public static void BubbleComponent_Place_Prefix(object __instance, ref Vector3 location)
             {
                 BubbleComponent_Born_Prefix(__instance, ref location);
+            }
+
+            private static bool ShouldRewriteBubbleVisualLocation(object bubbleComponent, out bool fishingShip)
+            {
+                fishingShip = false;
+                if (Instance == null || bubbleComponent == null)
+                {
+                    return false;
+                }
+
+                bool onShip = ShouldApplyShipFishingBubbles();
+                fishingShip = TryGetBubbleRefreshType(bubbleComponent, out int refreshType)
+                    && refreshType == BubbleRefreshTypeFishingShip;
+
+                if (onShip)
+                {
+                    return fishingShip;
+                }
+
+                return Instance.spawnBubbleAtPlayerEnabled && !fishingShip;
+            }
+
+            private static void ApplyBubbleSpawnAtPlayer(object bubbleComponent, bool forceEntityPosition)
+            {
+                Vector3 spawn = GetSpawnPositionAtPlayer();
+                if (spawn == Vector3.zero)
+                {
+                    return;
+                }
+
+                ApplyBubbleMoveComponentSpawnFields(bubbleComponent, spawn);
+                TryApplyBubbleComponentDataPositions(bubbleComponent, spawn);
+
+                Type type = bubbleComponent.GetType();
+                FieldInfo moveComponentField = type.GetField("_moveComponent", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (moveComponentField != null)
+                {
+                    object moveComponent = moveComponentField.GetValue(bubbleComponent);
+                    if (moveComponent != null)
+                    {
+                        ApplyBubbleMoveComponentSpawnFields(moveComponent, spawn);
+                        TryApplyBubbleComponentDataPositions(moveComponent, spawn);
+                    }
+                }
+
+                if (forceEntityPosition)
+                {
+                    TrySetEntityWorldPosition(bubbleComponent, spawn);
+                }
+            }
+
+            private static void ApplyBubbleMoveComponentSpawnFields(object moveComponent, Vector3 spawn)
+            {
+                if (moveComponent == null)
+                {
+                    return;
+                }
+
+                Type type = moveComponent.GetType();
+                FieldInfo bornPosField = type.GetField("_bornPos", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (bornPosField != null)
+                {
+                    bornPosField.SetValue(moveComponent, spawn);
+                }
+
+                FieldInfo flyTimeField = type.GetField("_flyTime", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (flyTimeField != null)
+                {
+                    flyTimeField.SetValue(moveComponent, 0f);
+                }
+
+                FieldInfo bornFinishedField = type.GetField("_bornFinished", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (bornFinishedField != null && bornFinishedField.FieldType == typeof(bool))
+                {
+                    bornFinishedField.SetValue(moveComponent, true);
+                }
+            }
+
+            private static bool TryApplyBubbleComponentDataPositions(object component, Vector3 spawn)
+            {
+                return TryApplyBubbleComponentDataPositions(component, "ComponentData", spawn)
+                    || TryApplyBubbleComponentDataPositions(component, "_componentData", spawn)
+                    || TryApplyBubbleComponentDataPositions(component, "componentData", spawn);
+            }
+
+            private static bool TryApplyBubbleComponentDataPositions(object component, string dataMemberName, Vector3 spawn)
+            {
+                if (component == null || string.IsNullOrEmpty(dataMemberName))
+                {
+                    return false;
+                }
+
+                Type type = component.GetType();
+                FieldInfo dataField = type.GetField(dataMemberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (dataField == null)
+                {
+                    return false;
+                }
+
+                object dataVal = dataField.GetValue(component);
+                if (dataVal == null)
+                {
+                    return false;
+                }
+
+                Type dataType = dataVal.GetType();
+                FieldInfo bornPositionField = dataType.GetField("bornPosition", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                FieldInfo tarPositionField = dataType.GetField("tarPosition", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                FieldInfo bornWithAnimField = dataType.GetField("bornWithAnim", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (bornPositionField != null)
+                {
+                    bornPositionField.SetValue(dataVal, spawn);
+                }
+
+                if (tarPositionField != null)
+                {
+                    tarPositionField.SetValue(dataVal, spawn);
+                }
+
+                if (bornWithAnimField != null && bornWithAnimField.FieldType == typeof(bool))
+                {
+                    bornWithAnimField.SetValue(dataVal, false);
+                }
+
+                dataField.SetValue(component, dataVal);
+                return bornPositionField != null || tarPositionField != null;
+            }
+
+            private static bool TryGetBubbleRefreshType(object component, out int refreshType)
+            {
+                refreshType = -1;
+                if (component == null)
+                {
+                    return false;
+                }
+
+                if (TryReadEnumIntFromMember(component, "ComponentData", "bubbleRefreshType", out refreshType)
+                    || TryReadEnumIntFromMember(component, "_componentData", "bubbleRefreshType", out refreshType)
+                    || TryReadEnumIntFromMember(component, "componentData", "bubbleRefreshType", out refreshType))
+                {
+                    return true;
+                }
+
+                Type type = component.GetType();
+                FieldInfo moveComponentField = type.GetField("_moveComponent", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (moveComponentField != null)
+                {
+                    object moveComponent = moveComponentField.GetValue(component);
+                    if (moveComponent != null)
+                    {
+                        return TryGetBubbleRefreshType(moveComponent, out refreshType);
+                    }
+                }
+
+                return false;
+            }
+
+            private static bool TryReadEnumIntFromMember(object instance, string dataMemberName, string fieldName, out int value)
+            {
+                value = -1;
+                if (instance == null)
+                {
+                    return false;
+                }
+
+                Type type = instance.GetType();
+                FieldInfo dataField = type.GetField(dataMemberName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (dataField == null)
+                {
+                    return false;
+                }
+
+                object dataVal = dataField.GetValue(instance);
+                if (dataVal == null)
+                {
+                    return false;
+                }
+
+                FieldInfo refreshField = dataVal.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (refreshField == null)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    value = Convert.ToInt32(refreshField.GetValue(dataVal));
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            private static bool TrySetEntityWorldPosition(object component, Vector3 position)
+            {
+                if (component == null)
+                {
+                    return false;
+                }
+
+                for (Type type = component.GetType(); type != null; type = type.BaseType)
+                {
+                    FieldInfo entityField = type.GetField("entity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (entityField == null)
+                    {
+                        continue;
+                    }
+
+                    object entity = entityField.GetValue(component);
+                    if (entity == null)
+                    {
+                        continue;
+                    }
+
+                    Type entityType = entity.GetType();
+                    PropertyInfo positionProperty = entityType.GetProperty("position", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (positionProperty != null && positionProperty.CanWrite && positionProperty.PropertyType == typeof(Vector3))
+                    {
+                        positionProperty.SetValue(entity, position, null);
+                        return true;
+                    }
+
+                    FieldInfo positionField = entityType.GetField("position", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (positionField != null && positionField.FieldType == typeof(Vector3))
+                    {
+                        positionField.SetValue(entity, position);
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private static bool TryGetBubbleNetId(object bubbleComponent, out uint netId)
+            {
+                netId = 0U;
+                if (bubbleComponent == null)
+                {
+                    return false;
+                }
+
+                for (Type type = bubbleComponent.GetType(); type != null; type = type.BaseType)
+                {
+                    FieldInfo entityField = type.GetField("entity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (entityField == null)
+                    {
+                        continue;
+                    }
+
+                    object entity = entityField.GetValue(bubbleComponent);
+                    if (entity == null)
+                    {
+                        continue;
+                    }
+
+                    Type entityType = entity.GetType();
+                    FieldInfo netIdField = entityType.GetField("netId", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (netIdField != null)
+                    {
+                        try
+                        {
+                            netId = Convert.ToUInt32(netIdField.GetValue(entity));
+                            if (netId != 0U)
+                            {
+                                return true;
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    PropertyInfo netIdProperty = entityType.GetProperty("netId", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (netIdProperty != null)
+                    {
+                        try
+                        {
+                            netId = Convert.ToUInt32(netIdProperty.GetValue(entity, null));
+                            if (netId != 0U)
+                            {
+                                return true;
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+
+                return false;
+            }
+
+            private static void TryAutoClaimBubble(uint bubbleNetId)
+            {
+                if (bubbleNetId == 0U || Instance == null)
+                {
+                    return;
+                }
+
+                float now = Time.unscaledTime;
+                if (ShipBubbleAutoClaimCooldownUntil.TryGetValue(bubbleNetId, out float cooldownUntil) && cooldownUntil > now)
+                {
+                    return;
+                }
+
+                ShipBubbleAutoClaimCooldownUntil[bubbleNetId] = now + ShipBubbleAutoClaimCooldownSeconds;
+                if (ShipBubbleAutoClaimCooldownUntil.Count > 128)
+                {
+                    List<uint> expired = new List<uint>();
+                    foreach (KeyValuePair<uint, float> entry in ShipBubbleAutoClaimCooldownUntil)
+                    {
+                        if (entry.Value <= now)
+                        {
+                            expired.Add(entry.Key);
+                        }
+                    }
+
+                    for (int i = 0; i < expired.Count; i++)
+                    {
+                        ShipBubbleAutoClaimCooldownUntil.Remove(expired[i]);
+                    }
+                }
+
+                try
+                {
+                    if (cachedGetBubbleAwardMethod == null)
+                    {
+                        Type protocolType = Instance.ResolveBubbleGameType(
+                            "XDTDataAndProtocol.ProtocolService.Bubble.BubbleProtocolManager",
+                            "BubbleProtocolManager");
+                        cachedGetBubbleAwardMethod = protocolType?.GetMethod(
+                            "GetBubbleAward",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                            null,
+                            new Type[] { typeof(uint) },
+                            null);
+                    }
+
+                    if (cachedGetBubbleAwardMethod != null)
+                    {
+                        cachedGetBubbleAwardMethod.Invoke(null, new object[] { bubbleNetId });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    ModLogger.Msg("[BubbleFeature] Auto-claim ship bubble failed netId=" + bubbleNetId + ": " + ex.Message);
+                }
             }
         }
     }

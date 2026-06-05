@@ -8,6 +8,7 @@ tools/reports
 tools/ilspy-verify
 tools/InspectIl2Cpp
 tools/PeekDll
+docs/superpowers
 .cursor
 ilspy-dumps
 scratch
