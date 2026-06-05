@@ -122,7 +122,7 @@ namespace HeartopiaMod
         private const bool MasterLogPetPlay = false;
         private const bool MasterLogPetFeed = false;
         private const bool MasterLogWildAnimalFeed = false;
-        private const bool MasterLogWildAnimalGift = false;
+        private const bool MasterLogWildAnimalGift = true;
         private const bool MasterLogDailyQuestSubmit = true;
         private const bool MasterLogBirdPhotoSubmit = false;
         private const bool MasterLogStrangerChat = false;
@@ -11983,6 +11983,11 @@ namespace HeartopiaMod
         {
             value = 0;
             if (!this.TryGetMonoObjectMember(obj, memberName, out IntPtr boxed) || boxed == IntPtr.Zero || auraMonoObjectUnbox == null)
+            {
+                return false;
+            }
+
+            if (!this.TryAuraMonoBoxedIsValueType(boxed))
             {
                 return false;
             }

@@ -240,6 +240,7 @@ Features should **not** call `FindLoadedType` every frame without cache; use mis
 | Bubbles (world) | `BubbleComponent`, `BubbleMoveComponent`, `ActivityEventModule` |
 | Cooking | `PrepareCookingNetworkCommand`, cooking protocol / `CookingSystem` (Mono) |
 | Backpack / tasks | `BackPackSystem`, `BackpackProtocolManager`, `TaskProtocolManager`, `ItemNetPair` |
+| Wild animal gifts | **AuraMono class lookup only** — `WildAnimalProtocolManager`, `AnimalUtil`, `AnimalProtocolManager` (no `FindLoadedType`, no `IWildAnimalService` interop) |
 | Player | `Character`, `p_player_skeleton(Clone)` via `GameObject.Find` |
 
 Exact strings change with game version — always verify in ILSpy for your build.
@@ -256,6 +257,7 @@ Exact strings change with game version — always verify in ILSpy for your build
 | `buddy/BirdNetFarm.cs` | Uses host resolvers + bird caches |
 | `buddy/PetFeedFeature.cs`, `PetPlayFeature.cs`, `PuzzleNetFeature.cs` | `FindLoadedType` per feature |
 | `buddy/DailyQuestSubmitFeature.cs`, `buddy/WildAnimalFeedFeature.cs` | Backpack + task protocol resolution |
+| `buddy/WildAnimalGiftFeature.cs` | AuraMono `FindAuraMonoClassByFullName` / `mono_runtime_invoke` only — see [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md#wild-animal-gifts-detail) |
 
 ---
 

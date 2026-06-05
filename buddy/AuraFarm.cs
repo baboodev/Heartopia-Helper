@@ -3321,10 +3321,21 @@ namespace HeartopiaMod
                 + (currentHandholdInteract.HasValue ? currentHandholdInteract.Value.ToString() : "n/a"));
         }
 
+        private bool TryAuraMonoBoxedIsValueType(IntPtr boxed)
+        {
+            if (boxed == IntPtr.Zero || auraMonoObjectGetClass == null || auraMonoClassIsValueType == null)
+            {
+                return false;
+            }
+
+            IntPtr klass = auraMonoObjectGetClass(boxed);
+            return klass != IntPtr.Zero && auraMonoClassIsValueType(klass) != 0;
+        }
+
         private unsafe bool TryUnboxMonoInt32(IntPtr boxed, out int value)
         {
             value = 0;
-            if (boxed == IntPtr.Zero || auraMonoObjectUnbox == null)
+            if (boxed == IntPtr.Zero || auraMonoObjectUnbox == null || !this.TryAuraMonoBoxedIsValueType(boxed))
             {
                 return false;
             }
@@ -3367,7 +3378,7 @@ namespace HeartopiaMod
         private unsafe bool TryUnboxMonoUInt32(IntPtr boxed, out uint value)
         {
             value = 0U;
-            if (boxed == IntPtr.Zero || auraMonoObjectUnbox == null)
+            if (boxed == IntPtr.Zero || auraMonoObjectUnbox == null || !this.TryAuraMonoBoxedIsValueType(boxed))
             {
                 return false;
             }
@@ -3406,7 +3417,7 @@ namespace HeartopiaMod
         private unsafe bool TryUnboxMonoBoolean(IntPtr boxed, out bool value)
         {
             value = false;
-            if (boxed == IntPtr.Zero || auraMonoObjectUnbox == null)
+            if (boxed == IntPtr.Zero || auraMonoObjectUnbox == null || !this.TryAuraMonoBoxedIsValueType(boxed))
             {
                 return false;
             }

@@ -553,14 +553,42 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 - **How:** get animal groups collection → fullness ratio → feed command
 
 #### `WildAnimalProtocolManager`
-- **Dump:** `ProtocolService/WildAnimal/`
-- **Methods:** feed with `List<uint>` food net ids per group
-- **Access:** **R**, **A**
-- **File:** `WildAnimalFeedFeature.cs`
+- **Dump:** `ProtocolService/WildAnimal/WildAnimalProtocolManager.cs`
+- **Feed:** `List<uint>` food net ids per group — **File:** `WildAnimalFeedFeature.cs`
+- **Gifts (mod):**
+  - `HaveGift()` → `IWildAnimalService.HaveGift()` — pending `AnimalGroup` list (red dots)
+  - `HaveGift(EcsEntity)` — `AnimalGiftComponent` + visit daily limits
+  - `SpawnGift(EcsEntity, AnimalGroup)` — creates level entity with interact 31 + `WildAnimalGiftComponentData`
+- **Access:** **A** (AuraMono invoke in `WildAnimalGiftFeature`)
+- **Not used by mod:** managed `EcsService.TryGet<IWildAnimalService>` (BepInEx interop gap)
+
+#### `IWildAnimalService`
+- **Dump:** `ProtocolService/WildAnimal/IWildAnimalService.cs`
+- **Vanilla gift enumeration:** `GetGifts()`, `GetAnimals(AnimalGroup)`, `HaveGift()`
+- **Mod:** reference only — implementation not called; mod uses ECS entity scan + `AnimalUtil` instead
+
+#### `AnimalUtil`
+- **Dump:** `EcsClient/XDT/Scene/Shared/Modules/Animal/AnimalUtil.cs`
+- **Gift scan:** `IsGiftBox(EcsEntity)`, `GetGroup(EcsEntity)` → `GiftBoxGroupProperty.Group` or animal group
+- **Access:** **A**
+- **File:** `WildAnimalGiftFeature.cs` (entity scan primary path)
 
 #### `AnimalProtocolManager`
-- **Features:** Claim all gifts (`WildAnimalGiftFeature`)
+- **Dump:** `ProtocolService/Animal/AnimalProtocolManager.cs`
+- **Gifts:** `GetNetworkEntity(uint)`, `TakeGift(uint)` → `AnimalGiftTakeNetworkCommand`
 - **Access:** **A**
+- **File:** `WildAnimalGiftFeature.cs`
+
+#### `WildAnimalGiftCommand`
+- **Dump:** `XDTLevelAndEntity/Gameplay/Interaction/Command/WildAnimalGiftCommand.cs`
+- **Interact id:** 31
+- **IsDisplayable:** `DataCenter` `WildAnimalGiftComponentData.value` or `WildAnimalComponentData.haveGift`
+- **OnExecute:** `AnimalProtocolManager.TakeGift(ownerNetId)`
+- **Mod:** not hooked — mod replicates claimability via `AnimalUtil` + `HaveGift(entity)` on network entities
+
+#### `GiftBoxGroupProperty`
+- **Dump:** `EcsClient/.../GiftBoxGroupProperty.cs` (struct, field `AnimalGroup Group`)
+- **Mod:** read indirectly via `AnimalUtil.GetGroup` on gift box entities
 
 #### `AnimalGroup`
 - **Dump:** `XDT.Scene.Shared.Modules.Animal.AnimalGroup`
@@ -715,7 +743,7 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 | Pet feed | PetSystem, PetProtocolManager, TableData | PetFeedFeature.cs | A + R |
 | Pet play | Meow/PetProtocolManager, TrackingCatPlay, TableDogLearningMotion | PetPlayFeature.cs | A + R |
 | Wild animal feed | WildAnimalSystem, WildAnimalProtocolManager, BackPackSystem | WildAnimalFeedFeature.cs | R + A |
-| Wild animal gifts | AnimalProtocolManager | WildAnimalGiftFeature.cs | A |
+| Wild animal gifts | WildAnimalProtocolManager.HaveGift, AnimalUtil, AnimalProtocolManager.TakeGift | WildAnimalGiftFeature.cs | A |
 | Puzzle | JigsawPuzzleSystem, JigsawPuzzleProtocolManager, DataCenter | PuzzleNetFeature.cs | R + A |
 | NPC teleport | TableData.TableNpcs | HC | A + R + N |
 | Noclip / TP | Unity CharacterController, Transform | *Patch.cs | I + H |

@@ -362,7 +362,7 @@ All merge into `public partial class HeartopiaComplete`:
 | `DailyQuestSubmitFeature.cs` | 1467 | CanSubmit daily orders, ItemNetPair lists |
 | `BubbleFeature.cs` | 1164 | Bubble radar, spawn, SendCommand Harmony |
 | `BirdPhotoSubmitFeature.cs` | 504 | Bird photo submit helper |
-| `WildAnimalGiftFeature.cs` | 415 | Claim wild animal gifts |
+| `WildAnimalGiftFeature.cs` | ~700 | Claim wild animal gifts (AuraMono entity scan) |
 | `HeartopiaResourceVisualEsp.cs` | 587 | On-screen resource ESP |
 | `HeartopiaDebugEsp.cs` | 319 | Internal debug overlays |
 | `BunnyHopFeature.cs` | small | Jump via AuraMono player state |
@@ -541,14 +541,14 @@ Resolved via `FindLoadedType` / `FindLoadedTypeBySuffix` / shape scans:
 | **Inventory** | `BackPackSystem`, `BackpackProtocolManager`, `BackpackItem`, `EStorageType` |
 | **Tasks** | `TaskProtocolManager`, submit command structs |
 | **Pets** | `PetSystem`, `PetProtocolManager`, `MeowProtocolManager`, cat/dog UI panels |
-| **Wild animals** | `WildAnimalSystem`, `WildAnimalProtocolManager`, `AnimalGroup` |
+| **Wild animals** | `WildAnimalSystem`, `WildAnimalProtocolManager`, `AnimalProtocolManager`, `AnimalUtil`, `AnimalGroup` |
 | **Tables** | `TableData` |
 | **Cooking** | `PrepareCookingNetworkCommand`, cooking protocol types |
 | **Player** | `Character`, `GamePhotoMode` |
 | **Network managers** | `XDTownClientNetworkManager`, `ClientNetworkManager` |
 | **UI services** | `LocalTextureCacheUtility`, `ImageEnum` |
 
-Features with heavy `FindLoadedType` usage: core (`HeartopiaComplete`), `BubbleFeature`, `PetFeedFeature`, `PetPlayFeature`, `WildAnimalFeedFeature`, `PuzzleNetFeature`, `DailyQuestSubmitFeature` (fallback), `BirdNetFarm` (via host).
+Features with heavy `FindLoadedType` usage: core (`HeartopiaComplete`), `BubbleFeature`, `PetFeedFeature`, `PetPlayFeature`, `WildAnimalFeedFeature`, `PuzzleNetFeature`, `DailyQuestSubmitFeature` (fallback), `BirdNetFarm` (via host). **`WildAnimalGiftFeature` uses AuraMono only** (no `FindLoadedType`).
 
 ### 5.4 IL2CPP native — when and what
 
@@ -576,6 +576,9 @@ Used when **`EcsClient.dll` interop is missing** or generic `List<ItemNetPair>` 
 | `CookingSystem` / prepare cook | Net cook (HeartopiaComplete) | Some builds |
 | `PetSystem` / feed APIs | PetFeedFeature | `List<uint>` via Mono when Il2Cpp list fails |
 | `WildAnimalSystem` | WildAnimalFeedFeature | Feed trough |
+| `WildAnimalProtocolManager.HaveGift` / `HaveGift(EcsEntity)` | WildAnimalGiftFeature | Pending groups + animal gift filter |
+| `AnimalUtil.IsGiftBox` / `GetGroup` | WildAnimalGiftFeature | Gift box entity scan |
+| `AnimalProtocolManager.GetNetworkEntity` / `TakeGift` | WildAnimalGiftFeature | Resolve ECS entity + claim command |
 | `ActivityEventProtocolManager.Create*` | BubbleFeature | Native hook + mono invoke |
 | `Player` move / jump methods | BunnyHopFeature | `OnJumpButton`, `SetJumpInput` pulse |
 | `TableData.GetGameTask` | DailyQuestSubmitFeature | Task metadata |
@@ -596,7 +599,8 @@ Used when **`EcsClient.dll` interop is missing** or generic `List<ItemNetPair>` 
 | Daily quest submit | AuraMono submit + native `ItemNetPair` list | IL2CPP `ItemNetPair`, managed reflection |
 | Auto sell | Managed + AuraMono + optional IL2CPP TableData | — |
 | Pet feed / play | AuraMono + reflection on protocols/UI | — |
-| Wild animal feed / gifts | AuraMono + reflection | — |
+| Wild animal feed | AuraMono + reflection (`WildAnimalFeedFeature`) | Managed `BackPackSystem` |
+| Wild animal gifts | AuraMono only (`WildAnimalGiftFeature`) | — (no interop / level scan) |
 | Net cook | SendCommand + Harmony registration patch | AuraMono CookingSystem |
 | Puzzle solver | Reflection on puzzle types | — |
 | NPC teleport / tables | `TableData` reflection / IL2CPP / AuraMono | — |

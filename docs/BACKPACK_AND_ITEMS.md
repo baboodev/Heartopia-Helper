@@ -109,7 +109,7 @@ Transfer grid can filter tiles by star when picking stacks (same `autoSellStarFi
 | **Daily Quest submit** | New Features → Daily Quests | **Backpack + warehouse together** | Managed + AuraMono; dedupe by `netId` | `CheckSubmitItem` per target row; locked skipped; skip 5★ optional | **Price ↑**, then **star ↑** (same as game `CompareSubmitItem`); greedy stack fill for `needNum` | `ClientSubmitNpcTaskItem` / Il2Cpp `List<ItemNetPair>`; verifies task state leaves `CanSubmit` (4) |
 | **Daily Quest probe** | Same | N/A (reads `DailyOrderSystem` / tasks) | AuraMono table + task rows | Logs only | N/A | BepInEx / `helper.log` dump |
 | **Wild animal feed** | New Features → Animal Care | Backpack (+ AuraMono path) | `GetAllItem` per storage; `GetAnimalFoodThough` | Allowed food static IDs; fullness for animal **group**; skip 5★ food; favorites boost bond in score | **SortScore ↓** = `bondExp×10000 + fullness` (favorite bond % bonus) | Trough feed commands |
-| **Wild animal gifts** | Animal Care | World scan (`WildAnimalGiftFeature`) | Level entity scan chunks | Gift entities with takeable state | Order discovered | `TakeGift` per `netId` |
+| **Wild animal gifts** | Animal Care | ECS entity scan (`WildAnimalGiftFeature`) | Pending `AnimalGroup` from `HaveGift()`; gift box or `HaveGift(entity)` + group match | Order discovered in entity list | `AnimalProtocolManager.TakeGift` per `netId` (~0.45 s apart) |
 | **Pet feed** | Features → Pet Care | `PetSystem.GetFoods()` (not full bag scan) | Managed + AuraMono pet APIs | `Count > 0`, `Fullness > 0`, not locked; user **selected food** filter | **Fullness ↑**, then **StaticId ↑** | `Begin` feed with food `netId` list per pet |
 | **Auto Eat / Auto Repair** | Features → Food & Repair | Bag UI automation | Hard-coded UI paths under `XDUIRoot` | Repair kit / configured food key | First matching UI slot | Clicks Use / eat |
 | **Warehouse Anywhere** | Bag / Warehouse (toggle) | N/A while bag closed | Detects bag open via Mono | Unlocks warehouse tab in bag UI (`TabWidget`, `SetBtnFrame`) | N/A | Client UI only — **not** API transfer |
@@ -183,6 +183,69 @@ Manual **Feed** button in UI; not the same code path as daily quest submit.
 
 ---
 
+## Wild animal gifts (detail)
+
+**File:** `buddy/WildAnimalGiftFeature.cs` (~700 lines). **Access:** AuraMono only (`mono_runtime_invoke`) — no `FindLoadedType`, no Il2Cpp interop types, no `mono_class_bind_generic_parameters`.
+
+### Vanilla flow (ILSpy)
+
+| Step | Game API | Role |
+|------|----------|------|
+| Red dot / pending groups | `WildAnimalProtocolManager.HaveGift()` → `IWildAnimalService.HaveGift()` | Which `AnimalGroup` values have unclaimed gifts |
+| Gift box entities | `IWildAnimalService.GetGifts()` + `GiftBoxGroupProperty.Group` | Server-side gift boxes (mod uses entity scan instead — see below) |
+| Animal gifts | `IWildAnimalService.GetAnimals(group)` + `WildAnimalProtocolManager.HaveGift(EcsEntity)` | Animals carrying visit/travel gifts |
+| UI interact | `WildAnimalGiftCommand` (`InteractSetting(31)`) — `IsDisplayable` reads `WildAnimalGiftComponentData.value` or `WildAnimalComponentData.haveGift` | Manual pickup in world |
+| Claim | `AnimalProtocolManager.TakeGift(uint)` → `AnimalGiftTakeNetworkCommand` | Authoritative server take |
+
+Dump paths: `ProtocolService/WildAnimal/WildAnimalProtocolManager.cs`, `ProtocolService/Animal/AnimalProtocolManager.cs`, `XDT/Scene/Shared/Modules/Animal/AnimalUtil.cs`, `Gameplay/Interaction/Command/WildAnimalGiftCommand.cs`.
+
+### Mod flow (`Claim All Wild Gifts`)
+
+```
+1. WildAnimalProtocolManager.HaveGift()          → giftCount + target AnimalGroup ids {2, 8, …}
+2. TryEnumerateAuraMonoLoadedEntityObjects()
+   For each entity netId:
+     AnimalProtocolManager.GetNetworkEntity(netId)
+     If AnimalUtil.IsGiftBox(entity) && GetGroup in target groups → add netId
+     Else if WildAnimalProtocolManager.HaveGift(entity) && GetGroup in target groups → add netId
+3. For each collected netId (re-validate alive + claimable):
+     AnimalProtocolManager.TakeGift(netId)
+```
+
+**Pre-claim validation** (`TryOwnerNetIdHasClaimableWildGift`): same AuraMono checks as step 2 — `IsGiftBox`/`GetGroup` or `HaveGift(entity)`/`GetGroup`. No managed `DataCenter` fallback.
+
+### Removed / non-working paths (do not re-add without BepInEx interop fix)
+
+| Path | Why removed |
+|------|-------------|
+| `EcsService.TryGet<IWildAnimalService>` + `GetGifts()` / `GetAnimals()` | Interop types not loaded in BepInEx (`EcsService=False IWildAnimalService=False`) |
+| Level-object scan (`LevelObjectManager`, interact id 31) | `displayable=0` — managed `DataCenter` unavailable; redundant once entity scan works |
+| `GetSpecies(AnimalGroup)` | Species/trough entity, not a gift target |
+| Managed `DataCenter.TryGetComponentData` | Same interop gap as daily-quest types; gift feature does not depend on it |
+
+### Logs (`WildAnimalGiftLogsEnabled = true` in feature file)
+
+Typical success:
+
+```
+[WildAnimalGift] HaveGift: count=2, groups=2
+[WildAnimalGift] Entity scan: 2 from entity scan (inspected=… giftBoxes=2 animalGifts=0)
+[WildAnimalGift] Collect done targets=2/2 netIds=[…]
+[WildAnimalGift] TakeGift ok netId=…
+```
+
+| Log | Meaning |
+|-----|---------|
+| `HaveGift: count=0` | No pending gifts (red dots cleared) |
+| `Entity scan failed: …` | AuraMono unavailable or empty entity list — enter world / wait for sync |
+| `giftBoxes=0 animalGifts=0` with `pending>0` | Groups have gifts but entities not loaded yet — retry after animals/boxes spawn |
+| `TakeGift failed: gift entity unavailable` | Entity despawned between scan and claim |
+| `TakeGift failed: gift box wrong group` | Group filter mismatch (rare) |
+
+Cooldown: 1.25 s between **Claim All** presses; 0.45 s between individual `TakeGift` calls in one run.
+
+---
+
 ## Pet feed (detail)
 
 - Does **not** scan `BackPackSystem` for all items.
@@ -212,8 +275,10 @@ Manual **Feed** button in UI; not the same code path as daily quest submit.
 | `price=2147483647` in logs | `GetItemPrice` failed; sort uses `int.MaxValue` (sorts last) — table fallback may still apply |
 | Auto sell finds nothing | Wrong item key, star filter, or scan source set to Warehouse while items are in bag |
 | Transfer skips stack | `isLocked` or zero `netId` |
+| Wild gifts `targets=0` with `pending>0` | Entity scan found no matching `GiftBoxGroupProperty` / `AnimalGiftComponent` — reload area or retry after sync |
+| Wild gifts `AuraMono unavailable` | Mono API not ready — enter world, wait for AuraMono init |
 
-Enable verbose logs via `MasterLogDailyQuestSubmit`, `MasterLogWildAnimalGift`, etc. in `HeartopiaComplete.cs` (rebuild required).
+Enable verbose gift logs: set `WildAnimalGiftLogsEnabled = true` in `WildAnimalGiftFeature.cs` (default on; rebuild required). Other features: `MasterLogDailyQuestSubmit`, etc. in `HeartopiaComplete.cs`.
 
 ---
 
@@ -225,7 +290,7 @@ Enable verbose logs via `MasterLogDailyQuestSubmit`, `MasterLogWildAnimalGift`, 
 | `buddy/DailyQuestSubmitFeature.cs` | Cheapest submit pairs + network send |
 | `buddy/DailyQuestProbeFeature.cs` | Diagnostic dump |
 | `buddy/WildAnimalFeedFeature.cs` | Trough food scan + sort score |
-| `buddy/WildAnimalGiftFeature.cs` | Gift collection |
+| `buddy/WildAnimalGiftFeature.cs` | Gift pending groups + ECS entity scan + `TakeGift` |
 | `buddy/PetFeedFeature.cs` | Pet food list + sort |
 | `buddy/WarehouseBypassFeature.cs` | Bag UI warehouse tab unlock |
 | `ilspy-dumps/.../BackPackSystem.cs` | Vanilla `CompareSubmitItem`, `CheckSubmitItem` |

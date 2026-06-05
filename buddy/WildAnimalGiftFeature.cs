@@ -8,17 +8,22 @@ namespace HeartopiaMod
 {
     public partial class HeartopiaComplete
     {
-        private const bool WildAnimalGiftLogsEnabled = MasterLogWildAnimalGift;
+        private const bool WildAnimalGiftLogsEnabled = true;
         private const float WildAnimalGiftActionCooldownSeconds = 1.25f;
         private const float WildAnimalGiftDelayBetweenTakesSeconds = 0.45f;
-        private const int WildAnimalGiftLevelScanChunkSize = 24;
+
+        private IntPtr wildAnimalGiftAuraWildAnimalProtocolClass = IntPtr.Zero;
+        private IntPtr wildAnimalGiftAuraHaveGiftGroupsMethod = IntPtr.Zero;
+        private IntPtr wildAnimalGiftAuraHaveGiftEntityMethod = IntPtr.Zero;
+        private IntPtr wildAnimalGiftAuraGetNetworkEntityMethod = IntPtr.Zero;
+        private IntPtr wildAnimalGiftAuraAnimalUtilIsGiftBoxMethod = IntPtr.Zero;
+        private IntPtr wildAnimalGiftAuraAnimalUtilGetGroupMethod = IntPtr.Zero;
+        private IntPtr wildAnimalGiftAuraTakeGiftMethod = IntPtr.Zero;
 
         private object wildAnimalGiftCoroutine = null;
         private float wildAnimalGiftBusyUntil = 0f;
         private string wildAnimalGiftLastStatus = "Idle.";
-
-        private IntPtr wildAnimalGiftAuraTakeGiftMethod = IntPtr.Zero;
-        private IntPtr wildAnimalGiftAuraHaveGiftGroupsMethod = IntPtr.Zero;
+        private HashSet<int> wildAnimalGiftActiveTargetGroupIds = null;
 
         private void StartWildAnimalClaimAllGifts(bool silent)
         {
@@ -70,6 +75,7 @@ namespace HeartopiaMod
                     this.AddMenuNotification("Wild gifts: " + collectStatus, new Color(0.45f, 0.88f, 1f));
                 }
 
+                this.wildAnimalGiftActiveTargetGroupIds = null;
                 this.wildAnimalGiftCoroutine = null;
                 this.wildAnimalGiftBusyUntil = Time.realtimeSinceStartup + WildAnimalGiftActionCooldownSeconds;
                 yield break;
@@ -112,6 +118,7 @@ namespace HeartopiaMod
             }
             finally
             {
+                this.wildAnimalGiftActiveTargetGroupIds = null;
                 this.wildAnimalGiftCoroutine = null;
                 this.wildAnimalGiftBusyUntil = Time.realtimeSinceStartup + WildAnimalGiftActionCooldownSeconds;
             }
@@ -128,23 +135,33 @@ namespace HeartopiaMod
 
             yield return null;
 
-            if (!this.TryGetWildAnimalHaveGiftCountAuraMono(out int giftCount, out string groupNote) || giftCount <= 0)
+            List<IntPtr> haveGiftGroups = new List<IntPtr>();
+            if (!this.TryCollectWildAnimalHaveGiftGroupsAuraMono(haveGiftGroups, out int giftCount, out string groupNote) || giftCount <= 0)
             {
                 this.WildAnimalGiftLog("HaveGift: " + groupNote);
                 complete?.Invoke("no wild gifts available");
                 yield break;
             }
 
-            this.WildAnimalGiftLog("HaveGift: " + groupNote);
+            this.WildAnimalGiftLog("HaveGift: " + groupNote + ", groups=" + haveGiftGroups.Count);
 
             yield return null;
 
             HashSet<uint> seen = new HashSet<uint>();
-            IEnumerator levelOwnersRoutine = this.CollectWildAnimalGiftNetIdsFromLevelOwnersRoutine(seen, netIds, giftCount);
-            while (levelOwnersRoutine.MoveNext())
+            HashSet<int> targetGroupIds = this.BuildWildAnimalGiftTargetGroupIds(haveGiftGroups);
+            this.wildAnimalGiftActiveTargetGroupIds = targetGroupIds;
+
+            if (this.TryCollectWildAnimalGiftNetIdsFromEntityScanAuraMono(targetGroupIds, seen, netIds, giftCount, out string entityScanNote))
             {
-                yield return levelOwnersRoutine.Current;
+                this.WildAnimalGiftLog("Entity scan: " + entityScanNote);
             }
+            else
+            {
+                this.WildAnimalGiftLog("Entity scan failed: " + entityScanNote);
+            }
+
+            this.WildAnimalGiftLog("Collect done targets=" + netIds.Count + "/" + giftCount
+                + (netIds.Count > 0 ? " netIds=[" + string.Join(",", netIds) + "]" : string.Empty));
 
             string status = netIds.Count > 0
                 ? netIds.Count + " target(s), pending=" + giftCount
@@ -152,10 +169,11 @@ namespace HeartopiaMod
             complete?.Invoke(status);
         }
 
-        private unsafe bool TryGetWildAnimalHaveGiftCountAuraMono(out int giftCount, out string status)
+        private unsafe bool TryCollectWildAnimalHaveGiftGroupsAuraMono(List<IntPtr> groupItems, out int giftCount, out string status)
         {
             giftCount = 0;
             status = "unavailable";
+            groupItems?.Clear();
 
             if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
             {
@@ -163,22 +181,14 @@ namespace HeartopiaMod
                 return false;
             }
 
+            if (!this.TryEnsureWildAnimalGiftAuraWildAnimalProtocolClass(out IntPtr protocolClass))
+            {
+                status = "WildAnimalProtocolManager missing";
+                return false;
+            }
+
             if (this.wildAnimalGiftAuraHaveGiftGroupsMethod == IntPtr.Zero)
             {
-                IntPtr protocolClass = this.FindAuraMonoClassByFullName("XDTDataAndProtocol.ProtocolService.WildAnimal.WildAnimalProtocolManager");
-                if (protocolClass == IntPtr.Zero)
-                {
-                    protocolClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
-                        "XDTDataAndProtocol.ProtocolService.WildAnimal",
-                        "WildAnimalProtocolManager");
-                }
-
-                if (protocolClass == IntPtr.Zero)
-                {
-                    status = "WildAnimalProtocolManager missing";
-                    return false;
-                }
-
                 this.wildAnimalGiftAuraHaveGiftGroupsMethod = this.FindAuraMonoMethodOnHierarchy(protocolClass, "HaveGift", 0);
                 if (this.wildAnimalGiftAuraHaveGiftGroupsMethod == IntPtr.Zero)
                 {
@@ -210,9 +220,23 @@ namespace HeartopiaMod
 
             for (int i = 0; i < items.Count; i++)
             {
-                if (items[i] != IntPtr.Zero)
+                if (items[i] == IntPtr.Zero)
                 {
-                    giftCount++;
+                    continue;
+                }
+
+                giftCount++;
+                if (groupItems != null)
+                {
+                    groupItems.Add(items[i]);
+                    if (this.TryGetWildAnimalFeedGroupIdAuraMono(items[i], out int groupId))
+                    {
+                        this.WildAnimalGiftLog("HaveGift group[" + i + "] id=" + groupId);
+                    }
+                    else
+                    {
+                        this.WildAnimalGiftLog("HaveGift group[" + i + "] id unreadable");
+                    }
                 }
             }
 
@@ -220,171 +244,346 @@ namespace HeartopiaMod
             return true;
         }
 
-        private IEnumerator CollectWildAnimalGiftNetIdsFromLevelOwnersRoutine(HashSet<uint> seen, List<uint> netIds, int targetCount)
+        private HashSet<int> BuildWildAnimalGiftTargetGroupIds(List<IntPtr> haveGiftGroups)
         {
-            if (seen == null || netIds == null || targetCount <= 0)
+            HashSet<int> targetGroupIds = new HashSet<int>();
+            if (haveGiftGroups == null)
             {
-                yield break;
+                return targetGroupIds;
+            }
+
+            for (int i = 0; i < haveGiftGroups.Count; i++)
+            {
+                if (this.TryGetWildAnimalFeedGroupIdAuraMono(haveGiftGroups[i], out int groupId) && groupId > 0)
+                {
+                    targetGroupIds.Add(groupId);
+                }
+            }
+
+            return targetGroupIds;
+        }
+
+        private bool TryCollectWildAnimalGiftNetIdsFromEntityScanAuraMono(
+            HashSet<int> targetGroupIds,
+            HashSet<uint> seen,
+            List<uint> netIds,
+            int targetCount,
+            out string status)
+        {
+            status = "entity scan skipped";
+            if (targetGroupIds == null || targetGroupIds.Count <= 0 || seen == null || netIds == null || targetCount <= 0)
+            {
+                status = "entity scan inputs empty";
+                return false;
             }
 
             if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
             {
-                yield break;
+                status = "AuraMono unavailable";
+                return false;
             }
 
-            if (!this.TryResolveAuraMonoLevelObjectManager(out IntPtr managerObj, out _, out _))
+            if (!this.TryEnumerateAuraMonoLoadedEntityObjects(out List<IntPtr> entities, out string enumerateStatus) || entities.Count <= 0)
             {
-                yield break;
+                status = enumerateStatus;
+                return false;
             }
 
-            IntPtr dictionaryObj = IntPtr.Zero;
-            if ((!this.TryGetMonoObjectMember(managerObj, "_dictionary", out dictionaryObj) || dictionaryObj == IntPtr.Zero)
-                && (!this.TryGetMonoObjectMember(managerObj, "dictionary", out dictionaryObj) || dictionaryObj == IntPtr.Zero))
-            {
-                yield break;
-            }
+            int inspected = 0;
+            int giftBoxes = 0;
+            int animalGifts = 0;
+            int added = 0;
+            this.WildAnimalGiftLog("Entity scan: entities=" + entities.Count + " targetGroups=" + targetGroupIds.Count);
 
-            List<IntPtr> entries = new List<IntPtr>();
-            if (!this.TryEnumerateAuraMonoCollectionItems(dictionaryObj, entries) || entries.Count <= 0)
+            for (int i = 0; i < entities.Count && i < 4096 && netIds.Count < targetCount; i++)
             {
-                yield break;
-            }
-
-            int processed = 0;
-            for (int i = 0; i < entries.Count && netIds.Count < targetCount; i++)
-            {
-                processed++;
-                IntPtr entryObj = entries[i];
-                if (entryObj == IntPtr.Zero)
+                IntPtr entityObj = entities[i];
+                if (entityObj == IntPtr.Zero || !this.TryGetAuraMonoEntityNetId(entityObj, out uint entityNetId) || entityNetId == 0U)
                 {
                     continue;
                 }
 
-                IntPtr levelObjectObj = IntPtr.Zero;
-                if ((!this.TryGetMonoObjectMember(entryObj, "Value", out levelObjectObj) || levelObjectObj == IntPtr.Zero)
-                    && (!this.TryGetMonoObjectMember(entryObj, "value", out levelObjectObj) || levelObjectObj == IntPtr.Zero))
-                {
-                    levelObjectObj = entryObj;
-                }
-
-                if (levelObjectObj == IntPtr.Zero)
+                inspected++;
+                if (!this.TryGetNetworkEntityAuraMono(entityNetId, out IntPtr networkEntityObj) || networkEntityObj == IntPtr.Zero)
                 {
                     continue;
                 }
 
-                if (this.TryGetMonoBoolMember(levelObjectObj, "isActive", out bool isActive) && !isActive)
+                bool matched = false;
+                bool isGiftBox = false;
+                int groupId = 0;
+                if (this.TryAuraMonoAnimalUtilIsGiftBox(networkEntityObj, out isGiftBox) && isGiftBox)
                 {
-                    continue;
-                }
-
-                ulong levelObjectNetId = 0UL;
-                if (!this.TryGetMonoUInt64Member(levelObjectObj, "netId", out levelObjectNetId) || levelObjectNetId == 0UL)
-                {
-                    if (!this.TryGetMonoUInt64Member(entryObj, "Key", out levelObjectNetId))
+                    giftBoxes++;
+                    if (this.TryAuraMonoAnimalUtilGetGroup(networkEntityObj, out groupId)
+                        && groupId > 0
+                        && targetGroupIds.Contains(groupId))
                     {
-                        continue;
+                        matched = true;
                     }
                 }
 
-                uint ownerNetId = 0U;
-                if (!this.TryResolveOwnerIdFromLevelObjectIdMono(levelObjectNetId, out ownerNetId) || ownerNetId == 0U)
+                if (!matched
+                    && this.TryAuraMonoWildAnimalHaveGiftEntity(networkEntityObj)
+                    && this.TryAuraMonoAnimalUtilGetGroup(networkEntityObj, out groupId)
+                    && groupId > 0
+                    && targetGroupIds.Contains(groupId))
                 {
-                    if (!this.TryInvokeAuraMonoZeroArg(levelObjectObj, out IntPtr boxedOwner, "get_ownerNetId")
-                        || !this.TryUnboxMonoUInt32(boxedOwner, out ownerNetId)
-                        || ownerNetId == 0U)
-                    {
-                        if (levelObjectNetId <= uint.MaxValue)
-                        {
-                            ownerNetId = (uint)levelObjectNetId;
-                        }
-                        else
-                        {
-                            continue;
-                        }
-                    }
+                    animalGifts++;
+                    matched = true;
                 }
 
-                if (!this.TryGetAuraMonoEntityObjectByNetId(ownerNetId, out IntPtr entityObj) || entityObj == IntPtr.Zero)
+                if (!matched)
                 {
                     continue;
                 }
 
-                if (!this.TryEntityHasWildAnimalComponentAuraMono(entityObj))
-                {
-                    continue;
-                }
+                this.WildAnimalGiftLog("Entity gift netId=" + entityNetId + " group=" + groupId
+                    + (isGiftBox ? " giftBox" : " animalGift"));
 
-                if (this.TryAddWildAnimalGiftNetId(ownerNetId, seen, netIds))
+                if (this.TryAddWildAnimalGiftNetId(entityNetId, seen, netIds))
                 {
-                    this.WildAnimalGiftLog("Level owner netId=" + ownerNetId);
-                }
-
-                if (processed % WildAnimalGiftLevelScanChunkSize == 0)
-                {
-                    yield return null;
+                    added++;
                 }
             }
+
+            status = added + " from entity scan (inspected=" + inspected + " giftBoxes=" + giftBoxes + " animalGifts=" + animalGifts + ")";
+            return true;
         }
 
-        private bool TryEntityHasWildAnimalComponentAuraMono(IntPtr entityObj)
+        private bool TryEnsureWildAnimalGiftAuraWildAnimalProtocolClass(out IntPtr protocolClass)
         {
-            if (entityObj == IntPtr.Zero || auraMonoObjectGetClass == null || auraMonoRuntimeInvoke == null)
+            protocolClass = this.wildAnimalGiftAuraWildAnimalProtocolClass;
+            if (protocolClass != IntPtr.Zero)
+            {
+                return true;
+            }
+
+            protocolClass = this.FindAuraMonoClassByFullName("XDTDataAndProtocol.ProtocolService.WildAnimal.WildAnimalProtocolManager");
+            if (protocolClass == IntPtr.Zero)
+            {
+                protocolClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                    "XDTDataAndProtocol.ProtocolService.WildAnimal",
+                    "WildAnimalProtocolManager");
+            }
+
+            if (protocolClass != IntPtr.Zero)
+            {
+                this.wildAnimalGiftAuraWildAnimalProtocolClass = protocolClass;
+            }
+
+            return protocolClass != IntPtr.Zero;
+        }
+
+        private unsafe bool TryGetNetworkEntityAuraMono(uint netId, out IntPtr entityObj)
+        {
+            entityObj = IntPtr.Zero;
+            if (netId == 0U || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
             {
                 return false;
             }
 
-            IntPtr entityClass = auraMonoObjectGetClass(entityObj);
-            IntPtr getAllComponentsMethod = this.FindAuraMonoMethodOnHierarchy(entityClass, "GetAllComponents", 0);
-            if (getAllComponentsMethod == IntPtr.Zero)
+            if (this.wildAnimalGiftAuraGetNetworkEntityMethod == IntPtr.Zero)
+            {
+                IntPtr protocolClass = this.FindAuraMonoClassByFullName("XDTDataAndProtocol.ProtocolService.Animal.AnimalProtocolManager");
+                if (protocolClass == IntPtr.Zero)
+                {
+                    protocolClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                        "XDTDataAndProtocol.ProtocolService.Animal",
+                        "AnimalProtocolManager");
+                }
+
+                if (protocolClass != IntPtr.Zero)
+                {
+                    this.wildAnimalGiftAuraGetNetworkEntityMethod = this.FindAuraMonoMethodOnHierarchy(protocolClass, "GetNetworkEntity", 1);
+                }
+            }
+
+            if (this.wildAnimalGiftAuraGetNetworkEntityMethod == IntPtr.Zero)
             {
                 return false;
             }
 
             IntPtr exc = IntPtr.Zero;
-            IntPtr componentsObj = auraMonoRuntimeInvoke(getAllComponentsMethod, entityObj, IntPtr.Zero, ref exc);
-            if (exc != IntPtr.Zero || componentsObj == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            List<IntPtr> components = new List<IntPtr>();
-            if (!this.TryEnumerateAuraMonoCollectionItems(componentsObj, components))
-            {
-                return false;
-            }
-
-            for (int i = 0; i < components.Count && i < 128; i++)
-            {
-                IntPtr componentObj = components[i];
-                if (componentObj == IntPtr.Zero)
-                {
-                    continue;
-                }
-
-                string className = this.GetAuraMonoClassDisplayName(auraMonoObjectGetClass(componentObj));
-                if (IsWildAnimalGameplayComponentClassName(className))
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            IntPtr* args = stackalloc IntPtr[1];
+            args[0] = (IntPtr)(&netId);
+            entityObj = auraMonoRuntimeInvoke(this.wildAnimalGiftAuraGetNetworkEntityMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+            return exc == IntPtr.Zero && entityObj != IntPtr.Zero;
         }
 
-        private static bool IsWildAnimalGameplayComponentClassName(string className)
+        private unsafe bool TryAuraMonoAnimalUtilIsGiftBox(IntPtr entityObj, out bool isGiftBox)
         {
-            if (string.IsNullOrEmpty(className))
+            isGiftBox = false;
+            if (entityObj == IntPtr.Zero || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
             {
                 return false;
             }
 
-            if (className.IndexOf("FeedTrough", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (this.wildAnimalGiftAuraAnimalUtilIsGiftBoxMethod == IntPtr.Zero)
+            {
+                IntPtr utilClass = this.FindAuraMonoClassByFullName("XDT.Scene.Shared.Modules.Animal.AnimalUtil");
+                if (utilClass == IntPtr.Zero)
+                {
+                    utilClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDT.Scene.Shared.Modules.Animal", "AnimalUtil");
+                }
+
+                if (utilClass != IntPtr.Zero)
+                {
+                    this.wildAnimalGiftAuraAnimalUtilIsGiftBoxMethod = this.FindAuraMonoMethodOnHierarchy(utilClass, "IsGiftBox", 1);
+                }
+            }
+
+            if (this.wildAnimalGiftAuraAnimalUtilIsGiftBoxMethod == IntPtr.Zero)
             {
                 return false;
             }
 
-            return className.IndexOf("WildAnimal.WildAnimalComponent", StringComparison.OrdinalIgnoreCase) >= 0
-                || className.EndsWith(".WildAnimalComponent", StringComparison.Ordinal);
+            return this.TryInvokeAuraMonoStaticBoolMethod(
+                this.wildAnimalGiftAuraAnimalUtilIsGiftBoxMethod,
+                entityObj,
+                out isGiftBox)
+                && isGiftBox;
+        }
+
+        private unsafe bool TryAuraMonoAnimalUtilGetGroup(IntPtr entityObj, out int groupId)
+        {
+            groupId = 0;
+            if (entityObj == IntPtr.Zero || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            if (this.wildAnimalGiftAuraAnimalUtilGetGroupMethod == IntPtr.Zero)
+            {
+                IntPtr utilClass = this.FindAuraMonoClassByFullName("XDT.Scene.Shared.Modules.Animal.AnimalUtil");
+                if (utilClass == IntPtr.Zero)
+                {
+                    utilClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDT.Scene.Shared.Modules.Animal", "AnimalUtil");
+                }
+
+                if (utilClass != IntPtr.Zero)
+                {
+                    this.wildAnimalGiftAuraAnimalUtilGetGroupMethod = this.FindAuraMonoMethodOnHierarchy(utilClass, "GetGroup", 1);
+                }
+            }
+
+            if (this.wildAnimalGiftAuraAnimalUtilGetGroupMethod == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr* args = stackalloc IntPtr[1];
+            args[0] = this.TryUnboxEntityArgForAuraMonoInvoke(entityObj);
+            IntPtr boxedGroup = auraMonoRuntimeInvoke(this.wildAnimalGiftAuraAnimalUtilGetGroupMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+            if (exc != IntPtr.Zero || boxedGroup == IntPtr.Zero)
+            {
+                args[0] = entityObj;
+                boxedGroup = auraMonoRuntimeInvoke(this.wildAnimalGiftAuraAnimalUtilGetGroupMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+            }
+
+            return exc == IntPtr.Zero
+                && boxedGroup != IntPtr.Zero
+                && this.TryGetWildAnimalFeedGroupIdAuraMono(boxedGroup, out groupId)
+                && groupId > 0;
+        }
+
+        private unsafe bool TryAuraMonoWildAnimalHaveGiftEntity(IntPtr entityObj)
+        {
+            if (entityObj == IntPtr.Zero || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            if (this.wildAnimalGiftAuraHaveGiftEntityMethod == IntPtr.Zero)
+            {
+                if (!this.TryEnsureWildAnimalGiftAuraWildAnimalProtocolClass(out IntPtr protocolClass))
+                {
+                    return false;
+                }
+
+                this.wildAnimalGiftAuraHaveGiftEntityMethod = this.FindAuraMonoMethodOnHierarchy(protocolClass, "HaveGift", 1);
+            }
+
+            if (this.wildAnimalGiftAuraHaveGiftEntityMethod == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return this.TryInvokeAuraMonoStaticBoolMethod(this.wildAnimalGiftAuraHaveGiftEntityMethod, entityObj, out bool hasGift) && hasGift;
+        }
+
+        private unsafe bool TryInvokeAuraMonoStaticBoolMethod(IntPtr method, IntPtr entityObj, out bool value)
+        {
+            value = false;
+            if (method == IntPtr.Zero || entityObj == IntPtr.Zero || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr* args = stackalloc IntPtr[1];
+            args[0] = this.TryUnboxEntityArgForAuraMonoInvoke(entityObj);
+            IntPtr boxedResult = auraMonoRuntimeInvoke(method, IntPtr.Zero, (IntPtr)args, ref exc);
+            if (exc != IntPtr.Zero || boxedResult == IntPtr.Zero)
+            {
+                args[0] = entityObj;
+                boxedResult = auraMonoRuntimeInvoke(method, IntPtr.Zero, (IntPtr)args, ref exc);
+            }
+
+            return exc == IntPtr.Zero && boxedResult != IntPtr.Zero && this.TryUnboxMonoBoolean(boxedResult, out value);
+        }
+
+        private IntPtr TryUnboxEntityArgForAuraMonoInvoke(IntPtr entityObj)
+        {
+            if (entityObj == IntPtr.Zero || auraMonoObjectUnbox == null)
+            {
+                return entityObj;
+            }
+
+            IntPtr unboxed = auraMonoObjectUnbox(entityObj);
+            return unboxed != IntPtr.Zero ? unboxed : entityObj;
+        }
+
+        private bool TryOwnerNetIdHasClaimableWildGift(uint ownerNetId, HashSet<int> targetGroupIds, out string note)
+        {
+            note = "not claimable";
+            if (ownerNetId == 0U)
+            {
+                return false;
+            }
+
+            if (!this.TryGetNetworkEntityAuraMono(ownerNetId, out IntPtr networkEntityObj) || networkEntityObj == IntPtr.Zero)
+            {
+                note = "network entity missing";
+                return false;
+            }
+
+            if (this.TryAuraMonoAnimalUtilIsGiftBox(networkEntityObj, out bool isGiftBox) && isGiftBox)
+            {
+                if (this.TryAuraMonoAnimalUtilGetGroup(networkEntityObj, out int giftBoxGroupId)
+                    && giftBoxGroupId > 0
+                    && (targetGroupIds == null || targetGroupIds.Count <= 0 || targetGroupIds.Contains(giftBoxGroupId)))
+                {
+                    note = "GiftBox group=" + giftBoxGroupId;
+                    return true;
+                }
+
+                note = "gift box wrong group";
+                return false;
+            }
+
+            if (this.TryAuraMonoWildAnimalHaveGiftEntity(networkEntityObj)
+                && this.TryAuraMonoAnimalUtilGetGroup(networkEntityObj, out int animalGroupId)
+                && animalGroupId > 0
+                && (targetGroupIds == null || targetGroupIds.Count <= 0 || targetGroupIds.Contains(animalGroupId)))
+            {
+                note = "AnimalGift group=" + animalGroupId;
+                return true;
+            }
+
+            note = "no gift component";
+            return false;
         }
 
         private bool TryAddWildAnimalGiftNetId(uint netId, HashSet<uint> seen, List<uint> netIds)
@@ -428,6 +627,18 @@ namespace HeartopiaMod
                     status = "AnimalProtocolManager.TakeGift missing";
                     return false;
                 }
+            }
+
+            if (!this.TryGetNetworkEntityAuraMono(netId, out _))
+            {
+                status = "gift entity unavailable";
+                return false;
+            }
+
+            if (!this.TryOwnerNetIdHasClaimableWildGift(netId, this.wildAnimalGiftActiveTargetGroupIds, out string claimNote))
+            {
+                status = claimNote;
+                return false;
             }
 
             IntPtr* args = stackalloc IntPtr[1];
