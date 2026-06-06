@@ -122,6 +122,7 @@ namespace HeartopiaMod
         private const bool MasterLogPetPlay = false;
         private const bool MasterLogPetFeed = false;
         private const bool MasterLogWildAnimalFeed = false;
+        private const bool MasterLogHomelandFarm = true;
         private const bool MasterLogWildAnimalGift = true;
         private const bool MasterLogDailyQuestSubmit = true;
         private const bool MasterLogBirdPhotoSubmit = false;
@@ -2604,6 +2605,7 @@ namespace HeartopiaMod
             try
             {
                 this.UpdateAuraFarm();
+                try { this.UpdateHomelandFarmBackground(); } catch (Exception ex) { ModLogger.Msg("[HomelandFarm] Update error: " + ex.Message); }
                 // Insect farm periodic update (from separate module)
                 try { BirdNetFarm.Update(this); } catch (Exception ex) { ModLogger.Msg("[BirdNetFarm] Update error: " + ex.Message); }
                 try { InsectNetFarm.Update(this); } catch (Exception ex) { ModLogger.Msg("[InsectNetFarm] Update error: " + ex.Message); }
@@ -11814,6 +11816,8 @@ namespace HeartopiaMod
             return false;
         }
 
+        private readonly Dictionary<IntPtr, string> auraMonoClassDisplayNameCache = new Dictionary<IntPtr, string>();
+
         private string GetAuraMonoClassDisplayName(IntPtr classPtr)
         {
             if (classPtr == IntPtr.Zero || auraMonoClassGetName == null)
@@ -11821,24 +11825,38 @@ namespace HeartopiaMod
                 return string.Empty;
             }
 
+            // Class pointers are stable for the lifetime of the runtime, and this is called
+            // once per component during entity scans (thousands of times with the same types).
+            // Cache the marshalled name to avoid repeated native string marshalling.
+            if (this.auraMonoClassDisplayNameCache.TryGetValue(classPtr, out string cached))
+            {
+                return cached;
+            }
+
+            string result;
             try
             {
                 string className = Marshal.PtrToStringAnsi(auraMonoClassGetName(classPtr)) ?? string.Empty;
                 if (string.IsNullOrEmpty(className))
                 {
-                    return string.Empty;
+                    result = string.Empty;
                 }
+                else
+                {
+                    string nameSpace = auraMonoClassGetNamespace != null
+                        ? (Marshal.PtrToStringAnsi(auraMonoClassGetNamespace(classPtr)) ?? string.Empty)
+                        : string.Empty;
 
-                string nameSpace = auraMonoClassGetNamespace != null
-                    ? (Marshal.PtrToStringAnsi(auraMonoClassGetNamespace(classPtr)) ?? string.Empty)
-                    : string.Empty;
-
-                return string.IsNullOrEmpty(nameSpace) ? className : (nameSpace + "." + className);
+                    result = string.IsNullOrEmpty(nameSpace) ? className : (nameSpace + "." + className);
+                }
             }
             catch
             {
-                return string.Empty;
+                result = string.Empty;
             }
+
+            this.auraMonoClassDisplayNameCache[classPtr] = result;
+            return result;
         }
 
         private bool IsAuraMonoClassAssignableTo(IntPtr classPtr, IntPtr targetClassPtr)
@@ -22997,7 +23015,9 @@ namespace HeartopiaMod
             try
             {
                 Type entityManagerType = this.FindLoadedType(
+                    "XDTLevelAndEntity.BaseSystem.EntityManager",
                     "ScriptsRefactory.LevelAndEntity.BaseSystem.EntityManager",
+                    "Il2CppXDTLevelAndEntity.BaseSystem.EntityManager",
                     "EntityManager");
                 if (entityManagerType == null)
                 {
@@ -23013,13 +23033,6 @@ namespace HeartopiaMod
 
                 if (this.TryGetObjectMember(entityManager, "selfPlayer", out object selfPlayerObj) && selfPlayerObj != null)
                 {
-                    if (this.TryInvokeMethodByName(selfPlayerObj, "GetComponent", out object localPlayerObj, new object[] { true }) && localPlayerObj != null)
-                    {
-                        playerObj = localPlayerObj;
-                        source = "EntityManager.Instance.selfPlayer.GetComponent(true)";
-                        return true;
-                    }
-
                     playerObj = selfPlayerObj;
                     source = "EntityManager.Instance.selfPlayer";
                     return true;
@@ -23320,6 +23333,7 @@ namespace HeartopiaMod
             {
                 tabs.Add(("Animal Care", () => this.newFeaturesSubTab == 0, () => this.SetNewFeaturesSubTab(0)));
                 tabs.Add(("Daily Quests", () => this.newFeaturesSubTab == 1, () => this.SetNewFeaturesSubTab(1)));
+                tabs.Add((this.L("homeland_farm.title"), () => this.newFeaturesSubTab == 2, () => this.SetNewFeaturesSubTab(2)));
             }
             else if (this.selectedTab == 4)
             {

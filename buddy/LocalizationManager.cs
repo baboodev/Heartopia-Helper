@@ -354,6 +354,44 @@ namespace HeartopiaMod
             { "Click 'Scan Bag' to find food items.", "Click 'Scan Bag' to find food items." },
             { "Open your bag and click 'Scan Bag'.", "Open your bag and click 'Scan Bag'." },
             { "Custom food set to: {0}", "Custom food set to: {0}" },
+            // Homeland Farm
+            { "homeland_farm.title", "Homeland Farm" },
+            { "homeland_farm.water_section", "WATER" },
+            { "homeland_farm.water_radius", "Radius: {0}m" },
+            { "homeland_farm.water_in_radius", "Water in radius" },
+            { "homeland_farm.water_own", "Water own" },
+            { "homeland_farm.water_friends", "Water friends" },
+            { "homeland_farm.water_unwatered", "Water unwatered" },
+            { "homeland_farm.harvest_section", "HARVEST" },
+            { "homeland_farm.harvest_crops_all", "Harvest all own crops" },
+            { "homeland_farm.plant_seeds_section", "PLANT SEEDS" },
+            { "homeland_farm.collect_plant_seeds_all", "Collect all own plant seeds" },
+            { "homeland_farm.weeds_section", "WEEDS" },
+            { "homeland_farm.weed_all", "Weed all own" },
+            { "homeland_farm.sow_section", "SOW CROPS" },
+            { "homeland_farm.sow_all", "Sow all" },
+            { "homeland_farm.fertilize_section", "FERTILIZE CROPS" },
+            { "homeland_farm.fertilize_all", "Fertilize all" },
+            { "homeland_farm.stop", "Stop" },
+            { "homeland_farm.status_idle", "Idle." },
+            { "homeland_farm.status_stopped", "Stopped." },
+            { "homeland_farm.need_homeland", "Enter homeland first." },
+            { "homeland_farm.seed_storage", "Seed source" },
+            { "homeland_farm.fert_storage", "Fertilizer source" },
+            { "homeland_farm.storage_backpack", "Backpack" },
+            { "homeland_farm.storage_warehouse", "Warehouse" },
+            { "homeland_farm.storage_both", "Both" },
+            { "homeland_farm.refresh", "Refresh" },
+            { "homeland_farm.refresh_seeds", "Refresh seeds" },
+            { "homeland_farm.refresh_fertilizers", "Refresh fertilizers" },
+            { "homeland_farm.cached_seeds", "Cached {0} seed(s)" },
+            { "homeland_farm.press_refresh_seeds", "Press Refresh seeds" },
+            { "homeland_farm.cached_fertilizers", "Cached {0} fertilizer(s)" },
+            { "homeland_farm.press_refresh_fertilizers", "Press Refresh fertilizers" },
+            { "homeland_farm.prev", "<" },
+            { "homeland_farm.next", ">" },
+            { "homeland_farm.no_seeds", "No crop seeds found." },
+            { "homeland_farm.no_fertilizers", "No crop fertilizers found." },
         };
 
         // Built-in Spanish fallback strings.
@@ -1030,6 +1068,44 @@ namespace HeartopiaMod
             { "Click 'Scan Bag' to find food items.", "点击 '扫描背包' 查找食物。" },
             { "Open your bag and click 'Scan Bag'.", "打开背包并点击 '扫描背包'。" },
             { "Custom food set to: {0}", "自定义食物已设置为：{0}" },
+            // Homeland Farm
+            { "homeland_farm.title", "家园农场" },
+            { "homeland_farm.water_section", "浇水" },
+            { "homeland_farm.water_radius", "半径：{0}米" },
+            { "homeland_farm.water_in_radius", "范围内浇水" },
+            { "homeland_farm.water_own", "浇灌自己的" },
+            { "homeland_farm.water_friends", "浇灌好友的" },
+            { "homeland_farm.water_unwatered", "浇灌未浇水的" },
+            { "homeland_farm.harvest_section", "收获" },
+            { "homeland_farm.harvest_crops_all", "收获所有自己的作物" },
+            { "homeland_farm.plant_seeds_section", "植物种子" },
+            { "homeland_farm.collect_plant_seeds_all", "收集所有自己的植物种子" },
+            { "homeland_farm.weeds_section", "除草" },
+            { "homeland_farm.weed_all", "除尽自己的杂草" },
+            { "homeland_farm.sow_section", "播种作物" },
+            { "homeland_farm.sow_all", "全部播种" },
+            { "homeland_farm.fertilize_section", "施肥作物" },
+            { "homeland_farm.fertilize_all", "全部施肥" },
+            { "homeland_farm.stop", "停止" },
+            { "homeland_farm.status_idle", "空闲。" },
+            { "homeland_farm.status_stopped", "已停止。" },
+            { "homeland_farm.need_homeland", "请先进入家园。" },
+            { "homeland_farm.seed_storage", "种子来源" },
+            { "homeland_farm.fert_storage", "肥料来源" },
+            { "homeland_farm.storage_backpack", "背包" },
+            { "homeland_farm.storage_warehouse", "仓库" },
+            { "homeland_farm.storage_both", "两者" },
+            { "homeland_farm.refresh", "刷新" },
+            { "homeland_farm.refresh_seeds", "刷新种子" },
+            { "homeland_farm.refresh_fertilizers", "刷新肥料" },
+            { "homeland_farm.cached_seeds", "已缓存 {0} 个种子" },
+            { "homeland_farm.press_refresh_seeds", "点击刷新种子" },
+            { "homeland_farm.cached_fertilizers", "已缓存 {0} 个肥料" },
+            { "homeland_farm.press_refresh_fertilizers", "点击刷新肥料" },
+            { "homeland_farm.prev", "<" },
+            { "homeland_farm.next", ">" },
+            { "homeland_farm.no_seeds", "未找到作物种子。" },
+            { "homeland_farm.no_fertilizers", "未找到作物肥料。" },
         };
         private static readonly Dictionary<string, string> PortugueseDefaults = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -1413,8 +1489,23 @@ namespace HeartopiaMod
 
         public static string Translate(string text)
         {
-            if (string.IsNullOrEmpty(text) || string.Equals(CurrentLanguage, "en", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrEmpty(text))
             {
+                return text;
+            }
+
+            if (string.Equals(CurrentLanguage, "en", StringComparison.OrdinalIgnoreCase))
+            {
+                if (currentTranslations.TryGetValue(text, out string englishOverride) && !string.IsNullOrEmpty(englishOverride))
+                {
+                    return englishOverride;
+                }
+
+                if (EnglishDefaults.TryGetValue(text, out string englishDefault) && !string.IsNullOrEmpty(englishDefault))
+                {
+                    return englishDefault;
+                }
+
                 return text;
             }
 

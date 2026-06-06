@@ -28,6 +28,11 @@ namespace HeartopiaMod
                 return this.DrawBirdPhotoSubmitControls(y) + 40f;
             }
 
+            if (this.newFeaturesSubTab == 2)
+            {
+                return this.DrawHomelandFarmTab(startY);
+            }
+
             return startY + 40f;
         }
 
@@ -48,6 +53,11 @@ namespace HeartopiaMod
             if (this.newFeaturesSubTab == 1)
             {
                 return 280f;
+            }
+
+            if (this.newFeaturesSubTab == 2)
+            {
+                return 1124f;
             }
 
             return 400f;

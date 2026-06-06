@@ -196,6 +196,7 @@
     <Compile Include="LocalizationManager.cs" />
     <Compile Include="LodSettingsFeature.cs" />
     <Compile Include="HideJumpButtonFeature.cs" />
+    <Compile Include="HomelandFarmFeature.cs" />
     <Compile Include="BunnyHopFeature.cs" />
     <Compile Include="BubbleFeature.cs" />
     <Compile Include="BubbleMonoNativeHook.cs" />
@@ -223,4 +224,30 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <!-- Auto-deploy the built mod into the game so a rebuild is actually picked up on the next
+       game launch. Without this the DLL only lands in bin/ and must be copied by hand, which made
+       stale builds look like "the fix didn't work". If the game is running it holds a lock on the
+       plugin DLL; the copy then fails with a clear warning instead of silently doing nothing. -->
+  <Target Name="DeployModToGame" AfterTargets="Build">
+    <PropertyGroup>
+      <DeployDir Condition="'$(Loader)' == 'BepInEx'">$(HeartopiaDir)\BepInEx\plugins</DeployDir>
+      <DeployDir Condition="'$(Loader)' == 'MelonLoader'">$(HeartopiaDir)\Mods</DeployDir>
+    </PropertyGroup>
+    <Copy SourceFiles="$(OutputPath)helper.dll"
+          DestinationFolder="$(DeployDir)"
+          ContinueOnError="true"
+          Condition="Exists('$(DeployDir)')">
+      <Output TaskParameter="CopiedFiles" ItemName="DeployedDll" />
+    </Copy>
+    <Copy SourceFiles="$(OutputPath)helper.pdb"
+          DestinationFolder="$(DeployDir)"
+          ContinueOnError="true"
+          Condition="Exists('$(DeployDir)') and Exists('$(OutputPath)helper.pdb')" />
+    <Warning Text="Could not deploy helper.dll to $(DeployDir) (is the game running? close it and rebuild)."
+             Condition="Exists('$(DeployDir)') and '@(DeployedDll)' == ''" />
+    <Message Importance="high"
+             Text="Deployed helper.dll -> $(DeployDir)"
+             Condition="'@(DeployedDll)' != ''" />
+  </Target>
 </Project>

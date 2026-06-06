@@ -277,6 +277,12 @@ namespace HeartopiaMod
         private delegate IntPtr MonoMethodGetNameDelegate(IntPtr method);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate IntPtr MonoClassGetFieldsDelegate(IntPtr klass, ref IntPtr iter);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate IntPtr MonoFieldGetNameDelegate(IntPtr field);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoMethodSignatureDelegate(IntPtr method);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -339,6 +345,8 @@ namespace HeartopiaMod
         private static MonoClassGetNamespaceDelegate auraMonoClassGetNamespace;
         private static MonoClassGetMethodsDelegate auraMonoClassGetMethods;
         private static MonoMethodGetNameDelegate auraMonoMethodGetName;
+        private static MonoClassGetFieldsDelegate auraMonoClassGetFields;
+        private static MonoFieldGetNameDelegate auraMonoFieldGetName;
         private static MonoMethodSignatureDelegate auraMonoMethodSignature;
         private static MonoSignatureGetParamCountDelegate auraMonoSignatureGetParamCount;
         private static MonoArrayLengthDelegate auraMonoArrayLength;
@@ -441,6 +449,11 @@ namespace HeartopiaMod
             if (!this.auraFarmEnabled)
             {
                 return;
+            }
+
+            if (this.auraFarmMethodsReady && !this.homelandFarmCropManureVisualPatchApplied)
+            {
+                this.EnsureHomelandFarmCropManureVisualPatch();
             }
 
             float now = Time.unscaledTime;
@@ -1448,6 +1461,7 @@ namespace HeartopiaMod
                     }
 
                     ModLogger.Msg("[AuraFarm] Runtime resolver ready. Resource=" + resourceState + " Interact=" + interactState);
+                    this.OnAuraFarmRuntimeResolverReady();
                 }
             }
             catch (Exception ex)
@@ -4143,6 +4157,8 @@ namespace HeartopiaMod
             auraMonoClassGetNamespace = this.GetAuraMonoExport<MonoClassGetNamespaceDelegate>(monoModule, "mono_class_get_namespace");
             auraMonoClassGetMethods = this.GetAuraMonoExport<MonoClassGetMethodsDelegate>(monoModule, "mono_class_get_methods");
             auraMonoMethodGetName = this.GetAuraMonoExport<MonoMethodGetNameDelegate>(monoModule, "mono_method_get_name");
+            auraMonoClassGetFields = this.GetAuraMonoExport<MonoClassGetFieldsDelegate>(monoModule, "mono_class_get_fields");
+            auraMonoFieldGetName = this.GetAuraMonoExport<MonoFieldGetNameDelegate>(monoModule, "mono_field_get_name");
             auraMonoMethodSignature = this.GetAuraMonoExport<MonoMethodSignatureDelegate>(monoModule, "mono_method_signature");
             auraMonoSignatureGetParamCount = this.GetAuraMonoExport<MonoSignatureGetParamCountDelegate>(monoModule, "mono_signature_get_param_count");
             auraMonoArrayLength = this.GetAuraMonoExport<MonoArrayLengthDelegate>(monoModule, "mono_array_length");
