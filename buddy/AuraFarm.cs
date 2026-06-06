@@ -4175,6 +4175,10 @@ namespace HeartopiaMod
                     this.auraMonoAttachedManagedThreadId = int.MinValue;
                     this.auraMonoAttachedDomain = IntPtr.Zero;
                 }
+
+                // Game Mono runtime is up and modules are loaded: auto-dump decrypted assemblies
+                // once, but only if the opt-in DecryptedAssemblies folder already exists.
+                MonoAssemblyDump.OnRuntimeReady();
             }
 
             return this.auraMonoApiReady && this.auraMonoRootDomain != IntPtr.Zero;

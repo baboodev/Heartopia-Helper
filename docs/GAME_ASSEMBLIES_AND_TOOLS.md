@@ -150,6 +150,64 @@ Checks you can run locally:
 
 ---
 
+## Decrypting DotnetAssemblies at runtime (built-in dumper)
+
+The mod can produce **decrypted, file-layout PEs** of every XDENCODE game module
+(`EcsClient`, `EcsSystem`, `XDT*`, `Plugins`, `EngineWrapper`, `ScriptBridge`, `MonoShared`,
+`MonoUniTask`, `MsgPackFormatters`, `XDKWPerf`) without reversing the XDENCODE format — it grabs
+the bytes the game itself hands its runtime *after* decryption.
+
+### Why a managed CoreCLR hook is not enough
+
+There are **two separate .NET runtimes in the process**, with different `System.Private.CoreLib`:
+
+| Runtime | corelib | What lives here |
+|---------|---------|-----------------|
+| BepInEx / `helper.dll` | `dotnet\System.Private.CoreLib.dll` (~10.6 MB) | BepInEx, Il2CppInterop, interop stubs, BCL |
+| **Game (embedded Mono)** | `DotnetAssemblies\System.Private.CoreLib.dll` (~4.5 MB) | **EcsClient, EcsSystem, XDT\*, …** |
+
+The game's modules run in an **embedded Mono runtime**, `xdt_Data\Plugins\x86_64\mono-2.0-sgen.dll`
+— *not* in the CoreCLR that hosts the mod. A managed hook on `AssemblyLoadContext.LoadFromStream`
+would only see BepInEx-side assemblies and **never** the game modules, so the dumper goes through the
+Mono C API instead.
+
+### How the dumper works
+
+[MonoAssemblyDump.cs](../buddy/MonoAssemblyDump.cs) talks to the Mono C API exported by
+`mono-2.0-sgen.dll`:
+
+1. `mono_get_root_domain` + `mono_thread_attach` — attach the calling thread.
+2. `mono_assembly_foreach` → `mono_assembly_get_image` — enumerate every loaded image.
+3. **Filter to game modules only** — keep `EcsClient`, `EcsSystem`, `Plugins`, `EngineWrapper`,
+   `ScriptBridge`, `MonoShared`, `MonoUniTask`, `MsgPackFormatters`, `XDKWPerf` and any `XDT*`; skip
+   the BCL and every other Mono image.
+4. Recover the decrypted PE from the `MonoImage` struct. `mono_image_get_raw_data` is **not
+   exported** by this build, so the `raw_data`/`raw_data_len` pair is found by scanning the struct
+   for a pointer to an `MZ` buffer that validates as a managed PE (`MZ` + `BSJB`). The offset is
+   discovered once and reused. **Every native read is guarded by `VirtualQuery`**, so a bad pointer
+   can never crash the process.
+5. `mono_image_get_name` names each file; bytes are written verbatim.
+
+If a future patch exports `mono_image_get_raw_data`, prefer it over the struct scan.
+
+### Trigger and the opt-in folder
+
+Output: `%USERPROFILE%\AppData\LocalLow\HelperSettings\DecryptedAssemblies\`.
+
+An **empty folder is the opt-in switch** — there is no hotkey:
+
+- **Folder exists and is empty** → the mod **auto-dumps once**, the first time the game's Mono
+  runtime becomes ready (hooked in `EnsureAuraMonoApiReady`, [AuraFarm.cs](../buddy/AuraFarm.cs)).
+- **Folder has files** (a previous dump) → **nothing runs** — clear it to re-dump.
+- **Folder absent** → **nothing is dumped and the folder is never created.**
+
+To enable: create the empty `DecryptedAssemblies` folder, then enter the world. Look for
+`[MonoDump] auto-dump after runtime ready: N game module(s)` and `[MonoDump] saved …` in
+`BepInEx\LogOutput.log`. Validate a result with `[Reflection.AssemblyName]::GetAssemblyName(path)` —
+it should report e.g. `EcsClient, Version=1.0.0.0`. Decompile the dumped PEs in ILSpy / dnSpy.
+
+---
+
 ## MonoDump (HelperSettings)
 
 If the mod (or a debug build) writes Mono module dumps, they often land under:
