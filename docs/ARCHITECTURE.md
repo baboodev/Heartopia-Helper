@@ -6,7 +6,7 @@ Specialized docs (still valid, linked from here):
 
 | Document | Focus |
 |----------|--------|
-| [DECOMPILED_SOURCE_MAP.md](./DECOMPILED_SOURCE_MAP.md) | **`ilspy-dumps/` navigation + every game type the mod touches** |
+| [DECOMPILED_SOURCE_MAP.md](./DECOMPILED_SOURCE_MAP.md) | **`ilspy-dumps/` + `gameassembly-dumps/` navigation + every game type the mod touches** |
 | [TECHNICAL.md](./TECHNICAL.md) | Patches, config schema, frame loops |
 | [TYPE_RESOLUTION.md](./TYPE_RESOLUTION.md) | `FindLoadedType`, SendCommand, pitfalls |
 | [GAME_ASSEMBLIES_AND_TOOLS.md](./GAME_ASSEMBLIES_AND_TOOLS.md) | Disk paths, interop generation, tools |
@@ -65,11 +65,11 @@ flowchart TB
 
 | Layer | Physical location | Role |
 |-------|-------------------|------|
-| **IL2CPP** | `<Game>/GameAssembly.dll`, `Heartopia_Data/il2cpp_data/Metadata/global-metadata.dat` | Primary gameplay code, Unity integration, what Harmony patches at runtime |
+| **IL2CPP** | `<Game>/GameAssembly.dll`, `xdt_Data/il2cpp_data/Metadata/global-metadata.dat` | Bootstrap, engine, launcher; Harmony targets at runtime |
 | **Interop stubs** | `<Game>/BepInEx/interop/` or `<Game>/MelonLoader/Il2CppAssemblies/` | Managed wrappers (`Il2Cpp*`) for compile-time references and `AppDomain` reflection |
 | **Embedded Mono** | Game ships Mono module; logical images mirror `EcsClient`, `XDTLevelAndEntity`, etc. | Parallel managed universe accessed via `mono_class_from_name` / `mono_runtime_invoke` |
 
-**Important:** Interop assemblies are **not a full export** of the game. Many types exist only in native IL2CPP or only in Mono until resolved at runtime. Mono PE dumps (`HelperSettings/MonoDump/`) and repo `ilspy-dumps/` describe the **Mono-side** naming; interop describes the **IL2CPP-side** naming (`Il2Cpp` prefix on `FullName`).
+**Important:** Interop assemblies are **not a full export** of the game. Many types exist only in native IL2CPP or only in Mono until resolved at runtime. Offline research uses two dump trees: **`ilspy-dumps/`** (Mono, full C# bodies) and **`gameassembly-dumps/`** (IL2CPP, signatures + RVAs). Interop describes the **IL2CPP-side** naming at runtime (`Il2Cpp` prefix on `FullName`).
 
 ### 2.2 Logical module map (game assemblies)
 
@@ -231,9 +231,19 @@ Prefer resolving via `Character`, `EntityUtil`, or component queries when possib
 
 ---
 
-## 3. Decompiled source map (`ilspy-dumps/`)
+## 3. Decompiled source map (`ilspy-dumps/` + `gameassembly-dumps/`)
 
-Local folder: `ilspy-dumps/` (in `.gitignore`; must exist on dev machine). ILSpy output from Mono-side assemblies (normal PE). Structure: **`<AssemblyRoot>/...`** with nested project folders mirroring original namespaces.
+Local folders (both in `.gitignore`):
+
+| Folder | Source | Contents |
+|--------|--------|----------|
+| **`ilspy-dumps/`** | Mono PE (~20k+ `.cs` files) | `EcsClient`, `XDT*`, protocols — **full method bodies** |
+| **`gameassembly-dumps/`** | Il2CppDumper + ilspycmd | `GameApp`, `Client`, Unity IL2CPP — **stubs + RVAs** |
+| **`tools/cpp2il_out/`** | Il2CppDumper raw output | `DummyDll`, `dump.cs`, `script.json` |
+
+Regeneration: [GAME_ASSEMBLIES_AND_TOOLS.md](./GAME_ASSEMBLIES_AND_TOOLS.md#gameassembly-decompilation-il2cpp).
+
+Mono layout: **`<AssemblyRoot>/...`** with nested project folders mirroring original namespaces.
 
 ### 3.1 Top-level index
 
@@ -736,7 +746,7 @@ Bag tab UI
 
 1. Enable master log flags on `HeartopiaComplete` (`MasterLogAura`, `MasterLogAutoFish`, etc.).
 2. Check loader log: Harmony `[OK]` / `[ERR]` on startup.
-3. If type null: verify in ILSpy against **same patch** interop + `ilspy-dumps`.
+3. If type null: verify in ILSpy against **same patch** interop + `ilspy-dumps` / `gameassembly-dumps`.
 4. Enter town — many assemblies load only in world.
 5. Regenerate interop after game update (`BepInEx/interop` or `MelonLoader/Il2CppAssemblies`).
 6. Rebuild: `cd buddy && build-all.bat`.
@@ -751,7 +761,9 @@ Bag tab UI
 | `<Game>/BepInEx/interop/` or `MelonLoader/Il2CppAssemblies/` | Live interop stubs |
 | `%LocalLow%/xd/Heartopia/DotnetAssemblies/` | XDENCODE blobs — research only, not interop |
 | `%LocalLow%/HelperSettings/MonoDump/` | PE Mono dumps — ILSpy offline |
-| `ilspy-dumps/` in repo workspace | Decompiled reference (gitignored) |
+| `ilspy-dumps/` in repo workspace | Mono decompilation reference (gitignored) |
+| `gameassembly-dumps/` in repo workspace | IL2CPP decompilation reference (gitignored) |
+| `tools/cpp2il_out/` | Il2CppDumper artifacts (gitignored) |
 
 ---
 
@@ -766,6 +778,6 @@ When adding a feature:
 
 When the game patches:
 
-1. Refresh `ilspy-dumps/` from MonoDump or new dump.
+1. Refresh `ilspy-dumps/` from MonoDump and `gameassembly-dumps/` from Il2CppDumper + ilspycmd (see [GAME_ASSEMBLIES_AND_TOOLS.md](./GAME_ASSEMBLIES_AND_TOOLS.md)).
 2. Regenerate interop; diff critical types (`ItemNetPair`, `WebRequestUtility`, gather commands).
 3. Run private-town smoke test per farm feature.

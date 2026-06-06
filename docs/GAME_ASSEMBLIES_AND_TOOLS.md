@@ -65,14 +65,16 @@ Replace `<Game>` with your Heartopia install (Steam, TapTap, etc.). Replace `<Us
 | Path | Contents | Role for the mod |
 |------|----------|------------------|
 | `<Game>/GameAssembly.dll` | IL2CPP binary | Source for interop generation; native class layout |
-| `<Game>/Heartopia_Data/il2cpp_data/Metadata/global-metadata.dat` | IL2CPP metadata | Required for Il2CppInterop generator |
+| `<Game>/xdt_Data/il2cpp_data/Metadata/global-metadata.dat` | IL2CPP metadata | Required for Il2CppInterop / Il2CppDumper (Steam build uses `xdt_Data`, not `Heartopia_Data`) |
 | `<Game>/BepInEx/interop/*.dll` | BepInEx-generated interop | Build references (`buddy.csproj`), `Assembly.LoadFrom` preload |
 | `<Game>/MelonLoader/Il2CppAssemblies/*.dll` | MelonLoader interop | Same for MelonLoader builds |
 | `<Game>/BepInEx/plugins/helper.dll` | Mod deploy target | — |
 | `<User>/AppData/LocalLow/HelperSettings/` | Mod config (`Config.xml`) | Not game assemblies |
 | `<User>/AppData/LocalLow/xd/Heartopia/DotnetAssemblies/` | **Game dump** (optional, often XDENCODE) | Research only; see [DotnetAssemblies dumps](#dotnetassemblies-dumps-locallow) |
 | `<User>/AppData/LocalLow/HelperSettings/MonoDump/` | **Mono PE dump** (mod settings tree) | **ILSpy/dnSpy** — best offline copy of game Mono modules; see [MonoDump](#monodump-helpersettings) |
-| Repo `ilspy-dumps/` (if present) | Decompiled C# from past patches | Naming reference for `FindLoadedType` aliases |
+| Repo `ilspy-dumps/` (if present) | Decompiled C# from **embedded Mono** modules | Full method bodies; gameplay / protocol research |
+| Repo `gameassembly-dumps/` (if present) | Decompiled C# from **IL2CPP** (`GameAssembly.dll`) | Type signatures + native RVAs; launcher / bootstrap / `GameApp` research |
+| Repo `tools/cpp2il_out/` (if present) | Il2CppDumper raw output (`DummyDll`, `dump.cs`, `script.json`) | Regenerate `gameassembly-dumps/`; Ghidra/IDA scripts |
 
 **BepInEx logs (example):** `<Game>/BepInEx/LogOutput.log`  
 **MelonLoader logs:** `<Game>/MelonLoader/Latest.log`
@@ -248,6 +250,132 @@ These are **real managed assemblies** from the game’s **embedded Mono** side (
 
 ---
 
+## GameAssembly decompilation (IL2CPP)
+
+The **native IL2CPP layer** lives in `<Game>/GameAssembly.dll` together with
+`<Game>/xdt_Data/il2cpp_data/Metadata/global-metadata.dat`. This is a **different**
+type universe from embedded Mono (`EcsClient`, `XDTLevelAndEntity`, …) and from
+BepInEx/MelonLoader interop stubs.
+
+### What each offline dump gives you
+
+| Output | Source | Method bodies? | Best for |
+|--------|--------|----------------|----------|
+| **`ilspy-dumps/`** | Mono PE (`MonoDump` / mod dumper) | **Yes** — normal C# | Gameplay, ECS commands, UI, protocols |
+| **`gameassembly-dumps/`** | IL2CPP metadata + `GameAssembly.dll` | **No** — stubs with `[Address(RVA=…)]` | Bootstrap, launcher, `GameApp`, native-only APIs |
+| **`tools/cpp2il_out/dump.cs`** | Same IL2CPP input | Signatures only (single file) | Quick grep across all IL2CPP types |
+| **`tools/cpp2il_out/script.json`** | Il2CppDumper | N/A (offsets) | Ghidra / IDA with `ghidra.py` / `ida.py` |
+| **`<Game>/BepInEx/interop/*.dll`** | Il2CppInterop generator | Partial Il2Cpp wrappers | Runtime mod development |
+
+ILSpy on IL2CPP dummy DLLs recovers **names, fields, and RVAs**, not C# implementations.
+To read native code, follow the RVA from `[Address]` or import `script.json` into a
+disassembler.
+
+### Repo layout (after a full dump)
+
+```text
+tools/
+  Il2CppDumper/          # vendored Il2CppDumper CLI (not committed by default)
+  Cpp2IL/bin/            # optional Cpp2IL 2022.0.7 (Windows)
+  cpp2il_out/
+    DummyDll/            # ~151 stub assemblies (Il2CppDumper)
+    dump.cs              # all types in one file
+    script.json          # method / type offsets for disassemblers
+    il2cpp.h
+gameassembly-dumps/      # ilspycmd output (~10k .cs files, .sln)
+  GameApp/               # GameApp, GameAppHelper, launcher glue
+  XDCore/                # native-side DebugCache, framework helpers
+  Client/                # GameLauncher UI, hotfix entry
+  Assembly-CSharp/       # mixed Unity / game IL2CPP
+  …
+```
+
+Both `ilspy-dumps*` and `gameassembly-dumps*` are in `.gitignore` (large, patch-specific).
+
+### Key IL2CPP assemblies (research)
+
+| DummyDll / folder | Typical contents |
+|-------------------|------------------|
+| **GameApp** | `XD.Unity.Game.GameApp`, `GameAppHelper.GetSession()`, `IsNormalMode()` |
+| **XDCore** | `XD.BaseFramework.DebugCache` (session paths — **not** the same class as `XDTGame.Core.DebugCache` in Mono) |
+| **Client** | `Plugins.GameLauncher_Plugins.ScriptsGameLauncher.*`, launcher UI |
+| **Assembly-CSharp** | Unity gameplay compiled to IL2CPP |
+| **Engine**, **UnityEngine.*** | Engine wrappers |
+
+Mono modules such as **EcsClient** and **XDTLevelAndEntity** are **not** duplicated as
+separate folders in `gameassembly-dumps/`; they run in embedded Mono and appear in
+`ilspy-dumps/` instead.
+
+### Launch parameters and CLI (IL2CPP vs Mono)
+
+Research across both dump trees:
+
+| Mechanism | Where | Notes |
+|-----------|-------|-------|
+| **`session` parameter** | `GameAppHelper.GetSession()` (native icall in Mono bridge; IL2CPP stub in **GameApp**) | Drives `DebugCache/<session>/` paths; value comes from **native**, not from parsed `argv` in Mono |
+| **`DebugCache` JSON** | Mono: `XDTGame.Core.DebugCache` under `ilspy-dumps/` | Dev flags (`UIWhiteboxEnabled`, `AutoMatchGame`, …); load/save helpers may be stripped in dump |
+| **`DebugCache` session paths** | IL2CPP: `XD.BaseFramework.DebugCache` in **XDCore** | `Session`, `GetSessionRoot`, `GetSessionUIDir` |
+| **`GameApp.IsNormalMode()`** | **GameApp** (IL2CPP) | Normal game vs tool/editor mode; native only |
+| **`GlobalConfig.IfGameDebug`** | Mono `EngineWrapper` / native icall | Debug build flag |
+| **Command-line / `argv`** | Not found in Mono decompilation | No `Main(string[] args)`, `GetCommandLineArgs`, or `Application.commandLineArgs` usage |
+| **`PleaseUseLauncher`** | String in `GameLauncherTip` | Defined in Mono; no references in Mono dump — check native / **Client** launcher code |
+| **`UNITASK_MAX_POOLSIZE`** | Mono UniTask only | Environment variable; not game-specific |
+
+For launch control, prefer **`gameassembly-dumps/GameApp/`** + **`script.json`** over
+guessing exe flags.
+
+### Regenerating the dump (Windows)
+
+Prerequisites: game installed, [.NET SDK 6+](https://dotnet.microsoft.com/download),
+global [ilspycmd](https://www.nuget.org/packages/ilspycmd) (`dotnet tool install -g ilspycmd`).
+
+Set paths (Steam default):
+
+```powershell
+$Game = "C:\Program Files (x86)\Steam\steamapps\common\Heartopia"
+$Ga   = "$Game\GameAssembly.dll"
+$Meta = "$Game\xdt_Data\il2cpp_data\Metadata\global-metadata.dat"
+$Out  = "tools\cpp2il_out"
+$Repo = "<path-to-Heartopia-Helper>"
+```
+
+**Step 1 — Il2CppDumper** (stub DLLs + offsets):
+
+```powershell
+cd "$Repo\tools\Il2CppDumper"
+# Auto mode: pipe "1" when prompted; ignore "Press any key" crash at the end if dump succeeded
+"1" | .\Il2CppDumper.exe $Ga $Meta "$Repo\$Out"
+```
+
+Verify: `$Out\DummyDll\` contains ~150 `.dll` files and `$Out\script.json` exists.
+
+**Step 2 — ILSpy CLI** (C# tree):
+
+```powershell
+$dlls = Get-ChildItem "$Repo\$Out\DummyDll\*.dll" | ForEach-Object FullName
+ilspycmd -p -o "$Repo\gameassembly-dumps" $dlls
+```
+
+**Optional — Cpp2IL** (`tools/Cpp2IL/bin/Cpp2IL.exe`):
+
+```text
+Cpp2IL.exe --game-path "<Game>" --exe-name xdt --output-root tools/cpp2il_out ^
+  --skip-metadata-txts --disable-registration-prompts
+```
+
+Cpp2IL 2022.0.7 may hit **Windows `MAX_PATH`** when writing long `types/*_metadata.txt`
+names; use `--skip-metadata-txts` or a short output path (for example `C:\ga_out`).
+Il2CppDumper + ilspycmd is the supported path in this repo.
+
+### After a game patch
+
+1. Re-run Il2CppDumper + ilspycmd (same commands).
+2. Diff `GameApp`, `Client`, and any assembly names referenced in mod logs.
+3. Regenerate BepInEx/MelonLoader interop separately ([below](#generating-bepinex--melonloader-interop-correct-method)).
+4. Re-dump Mono modules (`MonoDump` / `ilspy-dumps/`) if Aura or protocol types changed.
+
+---
+
 ## Generating BepInEx / MelonLoader interop (correct method)
 
 Interop is produced from the **game install**, not from `DotnetAssemblies`.
@@ -263,7 +391,7 @@ Interop is produced from the **game install**, not from `DotnetAssemblies`.
 1. Install [BepInEx Unity IL2CPP](https://docs.bepinex.dev/) for the game.
 2. Run the game once; check `<Game>/BepInEx/interop/`.
 3. If game modules are missing (only `Client`, `Assembly-CSharp`, …):
-   - Ensure `global-metadata.dat` exists under `Heartopia_Data`.
+   - Ensure `global-metadata.dat` exists under `xdt_Data/il2cpp_data/Metadata/`.
    - In `BepInEx/config/BepInEx.cfg`, enable/run Il2Cpp interop generation per BepInEx docs for your version (`RunIl2CppInteropGenerator` / chainloader settings).
    - Run the game again or use the Il2CppInterop CLI pointed at `<Game>` (same inputs: `GameAssembly.dll` + metadata).
 4. Confirm **`EcsClient.dll`** (or equivalent) appears in `interop/` when the game ships that assembly in metadata.
@@ -293,11 +421,14 @@ Missing file does **not** block the build.
 |------|---------|--------------------------------|
 | [.NET SDK 6+](https://dotnet.microsoft.com/download) | Build `helper.dll` | Yes (build) |
 | [BepInEx IL2CPP](https://docs.bepinex.dev/) **or** [MelonLoader](https://melonloader.co/download.html) | Load mod + generate interop | Yes |
-| [ILSpy](https://github.com/icsharpcode/ILSpy) or [dnSpy](https://github.com/dnSpyEx/dnSpy) | Decompile **interop** or il2cpp dumps; find type/method names | Strongly recommended for development |
-| [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL) | IL2CPP → intermediate output for Il2CppInterop / analysis | Optional; BepInEx often runs this via Il2CppInterop |
+| [ILSpy](https://github.com/icsharpcode/ILSpy) / [ilspycmd](https://www.nuget.org/packages/ilspycmd) | Decompile interop, Mono dump, or IL2CPP dummy DLLs | Strongly recommended for development |
+| [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) | `GameAssembly.dll` + metadata → DummyDll, `script.json` | Used to build `gameassembly-dumps/` |
+| [Cpp2IL](https://github.com/SamboyCoding/Cpp2IL) | IL2CPP analysis / optional IL recovery | Optional; long paths on Windows; see [GameAssembly decompilation](#gameassembly-decompilation-il2cpp) |
 | [Il2CppInterop](https://github.com/BepInEx/Il2CppInterop) | Comes with BepInEx/MelonLoader — generates `interop/` | Automatic with loader |
+| Ghidra / IDA + `script.json` | Native disassembly at IL2CPP RVAs | Optional; for `GetSession`, launcher logic |
 | In-game / LocalLow dump to `DotnetAssemblies` | Lists loaded module names; **XDENCODE** blobs | Optional research only |
-| Repo `ilspy-dumps/` | Historical decompilation for name aliases | Optional |
+| Repo `ilspy-dumps/` | Mono module decompilation (full bodies) | Optional |
+| Repo `gameassembly-dumps/` | IL2CPP decompilation (signatures + RVAs) | Optional |
 | Harmony (via loader) | Patches | Bundled |
 
 ### What to open in ILSpy
@@ -305,7 +436,9 @@ Missing file does **not** block the build.
 | Source | Good for |
 |--------|----------|
 | `<Game>/BepInEx/interop/Assembly-CSharp.dll`, `Client.dll`, `EcsClient.dll` | Names matching runtime `FindLoadedType` / `Il2Cpp*` types |
-| `ilspy-dumps/` in repo | Stable reference when interop is incomplete |
+| `ilspy-dumps/` in repo | Mono gameplay / protocol logic with method bodies |
+| `gameassembly-dumps/` in repo | IL2CPP bootstrap, `GameApp`, launcher, native API RVAs |
+| `tools/cpp2il_out/dump.cs` | Single-file grep across all IL2CPP types |
 | `DotnetAssemblies/EcsClient.dll` | **Not** directly — XDENCODE; use IL2CPP or MonoDump PE instead |
 | `HelperSettings/MonoDump/EcsClient.dll` | **Yes** — normal PE; same names as AuraMono `EcsClient` image |
 

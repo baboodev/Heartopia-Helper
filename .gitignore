@@ -8,7 +8,11 @@ tools/reports
 tools/ilspy-verify
 tools/InspectIl2Cpp
 tools/PeekDll
+tools/Cpp2IL
+tools/Il2CppDumper
 docs/superpowers
 .cursor
+.claude
 ilspy-dumps*
+gameassembly-dumps*
 scratch

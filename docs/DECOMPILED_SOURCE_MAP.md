@@ -1,6 +1,13 @@
 # Decompiled Source Map and Mod Interaction Reference
 
-Detailed guide to the **`ilspy-dumps/`** folder (ILSpy/dnSpy, Mono PE) and **every game type** that **Heartopia Helper** touches.
+Detailed guide to offline decompilation folders and **every game type** that **Heartopia Helper** touches:
+
+| Folder | Runtime | ILSpy bodies? |
+|--------|---------|---------------|
+| **`ilspy-dumps/`** | Embedded **Mono** (`EcsClient`, `XDT*`, …) | Yes |
+| **`gameassembly-dumps/`** | **IL2CPP** (`GameAssembly.dll`) | No — `[Address(RVA)]` stubs only |
+
+See [GAME_ASSEMBLIES_AND_TOOLS.md](./GAME_ASSEMBLIES_AND_TOOLS.md) § [GameAssembly decompilation](./GAME_ASSEMBLIES_AND_TOOLS.md#gameassembly-decompilation-il2cpp) for regeneration steps.
 
 See also: [ARCHITECTURE.md](./ARCHITECTURE.md), [TYPE_RESOLUTION.md](./TYPE_RESOLUTION.md), [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md).
 
@@ -23,11 +30,41 @@ See also: [ARCHITECTURE.md](./ARCHITECTURE.md), [TYPE_RESOLUTION.md](./TYPE_RESO
 
 ---
 
-## 1. Overview of `ilspy-dumps/`
+## 1. Overview of offline dumps
 
-Folder is in `.gitignore`; local copy of **Mono-side** game assembly decompilation. Do **not** copy into `BepInEx/interop`.
+### 1.0 Which folder to open
 
-### 1.1 Root assemblies
+```mermaid
+flowchart LR
+  subgraph mono [ilspy-dumps — Mono PE]
+    E[EcsClient / XDT*]
+    B[Full C# method bodies]
+  end
+  subgraph il2cpp [gameassembly-dumps — IL2CPP]
+    G[GameApp / Client / XDCore]
+    R[Signatures + native RVAs]
+  end
+  subgraph live [Runtime mod]
+    M[helper.dll — interop / IL2CPP / AuraMono]
+  end
+  E --> M
+  G --> M
+```
+
+| Question | Open |
+|----------|------|
+| `ItemNetPair`, daily quest commands, backpack, birds | **`ilspy-dumps/EcsClient`**, **`XDTGameSystem`**, … |
+| `GameApp`, launcher, hotfix bootstrap, `GetSession()` | **`gameassembly-dumps/GameApp`**, **`Client`**, **`XDCore`** |
+| Type name for `FindLoadedType` at runtime | **`<Game>/BepInEx/interop/`** first, then Mono dump |
+| Native implementation of an IL2CPP method | **`gameassembly-dumps`** RVA + **`tools/cpp2il_out/script.json`** → Ghidra/IDA |
+
+Do **not** copy either dump folder into `BepInEx/interop`.
+
+### 1.1 `ilspy-dumps/` (Mono)
+
+Folder is in `.gitignore`; local copy of **Mono-side** game assembly decompilation.
+
+#### Root assemblies
 
 | Folder | ~`.cs` files | Purpose |
 |--------|-------------|---------|
@@ -40,7 +77,7 @@ Folder is in `.gitignore`; local copy of **Mono-side** game assembly decompilati
 | **XDTBaseService** | — | Texture cache, base services |
 | **EngineWrapper, ScriptBridge, MonoShared, Plugins, DnsClient, MonoUniTask, MsgPackFormatters, XDTViewBase** | small | Infrastructure |
 
-### 1.2 Typical path nesting
+### 1.3 Typical path nesting (`ilspy-dumps/`)
 
 ```
 ilspy-dumps/<AssemblyRoot>/<ProjectName>/.../Namespace/ClassName.cs
@@ -54,7 +91,7 @@ ilspy-dumps/EcsClient/XDT/Scene/Shared/Modules/Backpack/ItemNetPair.cs
 ilspy-dumps/XDTDataAndProtocol/XDTDataAndProtocol/ProtocolService/WebRequestUtility.cs
 ```
 
-### 1.3 Namespace duplication (`ScriptsRefactory`)
+### 1.4 Namespace duplication (`ScriptsRefactory`)
 
 Some types are duplicated under **`ScriptsRefactory.*`** (level/entity refactor). The mod searches **both** variants:
 
@@ -62,6 +99,54 @@ Some types are duplicated under **`ScriptsRefactory.*`** (level/entity refactor)
 - `ScriptsRefactory.LevelAndEntity.BaseSystem.EntitiesManager.Entities`
 
 Same for `BirdScannableComponent`, `LevelObjectManager`, `Entity`.
+
+### 1.5 `gameassembly-dumps/` (IL2CPP)
+
+Generated from `<Game>/GameAssembly.dll` + `xdt_Data/il2cpp_data/Metadata/global-metadata.dat`
+via Il2CppDumper → ilspycmd. Also in `.gitignore`.
+
+| Property | Value (example Steam build) |
+|----------|----------------------------|
+| Unity version | 2020.3.13 |
+| Metadata version | 27.1 |
+| DummyDll count | ~151 |
+| Decompiled `.cs` files | ~10k |
+| Solution | `gameassembly-dumps/gameassembly-dumps.sln` |
+
+**Important:** IL2CPP decompilation is **not** a second copy of `EcsClient` / `XDT*`.
+Those modules live in embedded Mono (`ilspy-dumps/`). IL2CPP holds bootstrap, engine,
+launcher, and Unity-side code compiled to native.
+
+#### Notable IL2CPP paths
+
+| Path under `gameassembly-dumps/` | Types / topic |
+|----------------------------------|---------------|
+| `GameApp/XD.Unity.Game/GameApp.cs` | `IsNormalMode()`, hotfix entry, opening video |
+| `GameApp/XD.BaseFramework/GameAppHelper.cs` | `GetSession()`, `GetGameApp()`, input/plot services |
+| `XDCore/XD.BaseFramework/DebugCache.cs` | `Session`, `GetSessionRoot`, `GetSessionUIDir` (native-side; differs from `XDTGame.Core.DebugCache` in Mono) |
+| `Client/Plugins.GameLauncher_Plugins.ScriptsGameLauncher/` | Launcher hotfix manager, tips |
+| `Client/GameLauncherUILoadingView.cs`, `GameLauncherUIAlertView.cs` | Launcher UI |
+| `Assembly-CSharp/` | Mixed IL2CPP gameplay (when not in Mono modules) |
+
+Methods look like:
+
+```csharp
+[Address(RVA = "0x1944110", Offset = "0x1943310", VA = "0x181944110")]
+public static string GetSession() { return null; }
+```
+
+Use **`tools/cpp2il_out/script.json`** with Il2CppDumper’s Ghidra/IDA scripts to jump to
+the native body.
+
+#### Raw IL2CPP artifacts (`tools/cpp2il_out/`)
+
+| File | Use |
+|------|-----|
+| `DummyDll/*.dll` | Input to ilspycmd; also open directly in ILSpy |
+| `dump.cs` | All IL2CPP types in one file — fast text search |
+| `script.json` | Method/type addresses for disassemblers |
+| `il2cpp.h` | C struct headers |
+| `stringliteral.json` | String literal table |
 
 ---
 
@@ -756,11 +841,15 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 ## 5. Workflow: from dump to mod fix
 
 1. Enable the feature in-game → read the log (`auraLastError`, `[BubbleFeature]`, `[AutoFishing]`).
-2. Find the type in **`ilspy-dumps`** using the namespace from the log or §3.
+2. Find the type:
+   - Gameplay / ECS / protocol → **`ilspy-dumps`** (§3 namespaces).
+   - Bootstrap / launcher / `GameApp` → **`gameassembly-dumps`** (§1.5).
+   - Runtime hook → **`<Game>/BepInEx/interop/`** or live log assembly list.
 3. Verify **method name and arity** against the mod source (`FindAuraMonoMethodOnHierarchy(..., "GetAllItem", 1)`).
 4. Add aliases to `FindLoadedType` if the namespace changed (`Gameplay` vs `GamePlay`, `Il2Cpp` prefix).
 5. Pick the channel: server action → **S**; client read → **R**/**A**; Unity motion → **H**.
-6. Test **in town**, not on the main menu.
+6. For IL2CPP-only APIs with empty bodies, use RVA + `script.json` in a disassembler.
+7. Test **in town**, not on the main menu.
 
 ---
 
@@ -770,6 +859,6 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 |----------|----------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Overall game + mod architecture |
 | [TYPE_RESOLUTION.md](./TYPE_RESOLUTION.md) | FindLoadedType, miss cache, shape checks |
-| [GAME_ASSEMBLIES_AND_TOOLS.md](./GAME_ASSEMBLIES_AND_TOOLS.md) | Interop vs MonoDump vs DotnetAssemblies |
+| [GAME_ASSEMBLIES_AND_TOOLS.md](./GAME_ASSEMBLIES_AND_TOOLS.md) | Interop vs MonoDump vs IL2CPP dumps; regeneration commands |
 | [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md) | Three inventory pipelines |
 | [FEATURES.md](./FEATURES.md) | User-facing menu features |
