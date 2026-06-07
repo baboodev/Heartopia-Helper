@@ -6019,14 +6019,13 @@ namespace HeartopiaMod
                 return cellCount;
             }
 
-            if (mode > 1)
-            {
-                cellCount = this.TryHomelandFarmGetSprinklerCellCount();
-                this.HomelandFarmLog("Fertilizer cast cell count fallback mode=" + mode + " cells=" + cellCount);
-                return Math.Max(1, cellCount);
-            }
-
-            return 1;
+            // TableData unavailable on this build (managed reflection missing) -> the mode-based
+            // lookup fails and we used to return 1 (fertilize one crop at a time). Fall back to the
+            // player's hobby/water cell capacity (same cell pattern as the fertilize cast) so
+            // fertilize batches like water/sow.
+            cellCount = this.TryHomelandFarmGetSprinklerCellCount();
+            this.HomelandFarmLog("Fertilizer cast cell count fallback mode=" + mode + " cells=" + cellCount);
+            return Math.Max(1, cellCount);
         }
 
         private List<uint> BuildHomelandFarmFertilizeTargets(
