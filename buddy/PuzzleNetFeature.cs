@@ -1190,8 +1190,16 @@ namespace HeartopiaMod
                     return false;
                 }
 
-                MethodInfo getLevelObjectMethod = levelObjectManagerType.GetMethod("GetLevelObject", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, new Type[] { typeof(ulong) }, null)
-                    ?? levelObjectManagerType.GetMethod("GetLevelObject", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, new Type[] { typeof(ulong), typeof(int) }, null);
+                MethodInfo getLevelObjectMethod = this.GetMethodQuiet(
+                        levelObjectManagerType,
+                        "GetLevelObject",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                        new Type[] { typeof(ulong) })
+                    ?? this.GetMethodQuiet(
+                        levelObjectManagerType,
+                        "GetLevelObject",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                        new Type[] { typeof(ulong), typeof(int) });
                 if (getLevelObjectMethod == null)
                 {
                     status = "LevelObjectManager.GetLevelObject unavailable.";
@@ -1325,8 +1333,16 @@ namespace HeartopiaMod
                 }
 
                 Type systemType = puzzleSystem.GetType();
-                MethodInfo getBagMethod = systemType.GetMethod("GetAllBagPieceItem", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(uint) }, null);
-                MethodInfo getDraftMethod = systemType.GetMethod("GetAllDraftPieceItem", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(uint) }, null);
+                MethodInfo getBagMethod = this.GetMethodQuiet(
+                    systemType,
+                    "GetAllBagPieceItem",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                    new Type[] { typeof(uint) });
+                MethodInfo getDraftMethod = this.GetMethodQuiet(
+                    systemType,
+                    "GetAllDraftPieceItem",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                    new Type[] { typeof(uint) });
                 if (getBagMethod == null || getDraftMethod == null)
                 {
                     this.puzzleStatus = "Puzzle piece methods unavailable.";
@@ -1748,8 +1764,16 @@ namespace HeartopiaMod
                 IntPtr auraMoveCommand = this.FindAuraMonoClassByFullName("EcsClient.XDT.Scene.Shared.Modules.MiniGame.JigsawPuzzleMovePieceNetworkCommand");
                 IntPtr auraBingoCommand = this.FindAuraMonoClassByFullName("EcsClient.XDT.Scene.Shared.Modules.MiniGame.JigsawPuzzlePieceBingoNetworkCommand");
 
-                bool hasBag = puzzleSystemType != null && puzzleSystemType.GetMethod("GetAllBagPieceItem", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(uint) }, null) != null;
-                bool hasDraft = puzzleSystemType != null && puzzleSystemType.GetMethod("GetAllDraftPieceItem", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(uint) }, null) != null;
+                bool hasBag = puzzleSystemType != null && this.GetMethodQuiet(
+                    puzzleSystemType,
+                    "GetAllBagPieceItem",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                    new Type[] { typeof(uint) }) != null;
+                bool hasDraft = puzzleSystemType != null && this.GetMethodQuiet(
+                    puzzleSystemType,
+                    "GetAllDraftPieceItem",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                    new Type[] { typeof(uint) }) != null;
                 bool hasJoin = protocolType != null && this.FindPuzzleProtocolMethod(protocolType, "JoinJigsawPuzzle", typeof(uint)) != null;
                 bool hasLock = protocolType != null && this.FindPuzzleProtocolMethod(protocolType, "LockJigsawPuzzlePiece", typeof(uint), typeof(Action)) != null;
                 bool hasMove = protocolType != null && this.FindPuzzleProtocolMethod(protocolType, "MoveJigsawPuzzlePiecePos", typeof(uint), typeof(short), typeof(short)) != null;
@@ -2328,36 +2352,16 @@ namespace HeartopiaMod
 
         private MethodInfo FindPuzzleProtocolMethod(Type protocolType, string methodName, params Type[] parameterTypes)
         {
-            foreach (MethodInfo method in protocolType.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
+            if (protocolType == null || string.IsNullOrEmpty(methodName))
             {
-                if (method == null || method.Name != methodName)
-                {
-                    continue;
-                }
-
-                ParameterInfo[] parameters = method.GetParameters();
-                if (parameters.Length != parameterTypes.Length)
-                {
-                    continue;
-                }
-
-                bool matches = true;
-                for (int i = 0; i < parameters.Length; i++)
-                {
-                    if (parameters[i].ParameterType != parameterTypes[i])
-                    {
-                        matches = false;
-                        break;
-                    }
-                }
-
-                if (matches)
-                {
-                    return method;
-                }
+                return null;
             }
 
-            return null;
+            return this.GetMethodQuiet(
+                protocolType,
+                methodName,
+                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+                parameterTypes ?? Type.EmptyTypes);
         }
 
         private bool TryInvokePuzzleJoin()

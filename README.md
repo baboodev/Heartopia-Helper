@@ -39,6 +39,8 @@ Configure your game path: copy `buddy/Directory.Build.props.example` → `buddy/
 
 kaikai2020 and contributors from the [UnknownCheats thread](https://www.unknowncheats.me/forum/other-games/736498-heartopia-buddy-teleport-auto-farm.html).
 
+Rayyy2 for original [Heartopia Helper](https://github.com/Rayyy2/Heartopia-Helper) sourcce code
+
 ## Disclaimer
 
 This project is for educational and research purposes only. You are solely responsible for any account restrictions or penalties resulting from use of this software.

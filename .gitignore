@@ -10,6 +10,8 @@ tools/InspectIl2Cpp
 tools/PeekDll
 tools/Cpp2IL
 tools/Il2CppDumper
+tools/DumpIsTool
+tools/*.py
 docs/superpowers
 .cursor
 .claude

@@ -809,6 +809,12 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 #### `AnimalCareFeature`
 - **Wiring only** — delegates to `WildAnimalFeedFeature` / `WildAnimalGiftFeature`
 
+#### `HomelandFarmFeature`
+- **Sow all:** `CropProtocolManager.CropSeeding` → `GrowCropNetworkCommand`; `CropPlantPoint` must match `SeedBagCommand` / `GenSimpleConfirmOption` — see **[HOMELAND_SOW_ALIGNMENT.md](./HOMELAND_SOW_ALIGNMENT.md)**
+- **Game types:** `SeedBagCommand`, `BuildSingle.GenSimpleConfirmOption`, `CraftMode_Multiple`, `CropComponent.UpdateManureEffect`, `LevelObjectManager.GetLevelObject`, `FieldComponent.buildWorld`
+- **Access:** **A** (Aura mono: fieldSystem, buildWorld matrices, putZone rectMatrix, native `CropSeeding`); partial **R** for managed fallback
+- **Files:** `HomelandFarmFeature.cs`, `tools/parse_grow_packet.py`
+
 ---
 
 ## 4. Matrix: Feature → types → mod file
@@ -829,6 +835,7 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 | Pet play | Meow/PetProtocolManager, TrackingCatPlay, TableDogLearningMotion | PetPlayFeature.cs | A + R |
 | Wild animal feed | WildAnimalSystem, WildAnimalProtocolManager, BackPackSystem | WildAnimalFeedFeature.cs | R + A |
 | Wild animal gifts | WildAnimalProtocolManager.HaveGift, AnimalUtil, AnimalProtocolManager.TakeGift | WildAnimalGiftFeature.cs | A |
+| Homeland sow/fertilize | CropProtocolManager, GrowCropNetworkCommand, SeedBagCommand, BuildSingle, CropComponent | HomelandFarmFeature.cs | A + R |
 | Puzzle | JigsawPuzzleSystem, JigsawPuzzleProtocolManager, DataCenter | PuzzleNetFeature.cs | R + A |
 | NPC teleport | TableData.TableNpcs | HC | A + R + N |
 | Noclip / TP | Unity CharacterController, Transform | *Patch.cs | I + H |
@@ -862,3 +869,4 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 | [GAME_ASSEMBLIES_AND_TOOLS.md](./GAME_ASSEMBLIES_AND_TOOLS.md) | Interop vs MonoDump vs IL2CPP dumps; regeneration commands |
 | [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md) | Three inventory pipelines |
 | [FEATURES.md](./FEATURES.md) | User-facing menu features |
+| [HOMELAND_SOW_ALIGNMENT.md](./HOMELAND_SOW_ALIGNMENT.md) | Homeland sow wire vs UI, manure visual root cause, mod algorithm |

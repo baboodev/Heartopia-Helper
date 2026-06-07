@@ -258,11 +258,30 @@ namespace HeartopiaMod
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoClassBindGenericParametersDelegate(IntPtr klass, int paramType, IntPtr types, int typesLen);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MonoGenericContext
+        {
+            public IntPtr class_inst;
+            public IntPtr method_inst;
+        }
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate IntPtr MonoClassInflateGenericMethodDelegate(IntPtr method, ref MonoGenericContext context);
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoTypeGetObjectDelegate(IntPtr domain, IntPtr type);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoClassGetParentDelegate(IntPtr klass);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate uint MonoClassGetRankDelegate(IntPtr klass);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void MonoGcVoidDelegate();
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate IntPtr MonoClassGetElementClassDelegate(IntPtr klass);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoClassGetNameDelegate(IntPtr klass);
@@ -339,8 +358,13 @@ namespace HeartopiaMod
         private static MonoClassIsValueTypeDelegate auraMonoClassIsValueType;
         private static MonoClassGetTypeDelegate auraMonoClassGetType;
         private static MonoClassBindGenericParametersDelegate auraMonoClassBindGenericParameters;
+        private static MonoClassInflateGenericMethodDelegate auraMonoClassInflateGenericMethod;
         private static MonoTypeGetObjectDelegate auraMonoTypeGetObject;
         private static MonoClassGetParentDelegate auraMonoClassGetParent;
+        private static MonoClassGetRankDelegate auraMonoClassGetRank;
+        private static MonoGcVoidDelegate auraMonoGcDisable;
+        private static MonoGcVoidDelegate auraMonoGcEnable;
+        private static MonoClassGetElementClassDelegate auraMonoClassGetElementClass;
         private static MonoClassGetNameDelegate auraMonoClassGetName;
         private static MonoClassGetNamespaceDelegate auraMonoClassGetNamespace;
         private static MonoClassGetMethodsDelegate auraMonoClassGetMethods;
@@ -449,11 +473,6 @@ namespace HeartopiaMod
             if (!this.auraFarmEnabled)
             {
                 return;
-            }
-
-            if (this.auraFarmMethodsReady && !this.homelandFarmCropManureVisualPatchApplied)
-            {
-                this.EnsureHomelandFarmCropManureVisualPatch();
             }
 
             float now = Time.unscaledTime;
@@ -3824,6 +3843,16 @@ namespace HeartopiaMod
                 return false;
             }
 
+            // CRITICAL: this object must be verified as a true mono array on EVERY call.
+            // auraMonoArrayGetValueMethodPtr (System.Array.GetValue) is shared by all arrays and
+            // cached globally, so an early-return on the cache alone would report "true" for ANY
+            // object. Invoking mono_array_length / Array.GetValue on a non-array then aborts inside
+            // the runtime (ves_icall_System_Array_GetValue g_assert -> icall.c), crashing the game.
+            if (!this.IsAuraMonoArrayObject(arrayObj))
+            {
+                return false;
+            }
+
             if (this.auraMonoArrayGetValueMethodPtr != IntPtr.Zero)
             {
                 return true;
@@ -3837,6 +3866,67 @@ namespace HeartopiaMod
 
             this.auraMonoArrayGetValueMethodPtr = auraMonoClassGetMethodFromName(arrayClass, "GetValue", 1);
             return this.auraMonoArrayGetValueMethodPtr != IntPtr.Zero;
+        }
+
+        // True only when the managed object is an actual mono array (rank > 0). Used to gate the
+        // array fast-path so mono_array_length / Array.GetValue are never invoked on a non-array.
+        private bool IsAuraMonoArrayObject(IntPtr obj)
+        {
+            if (obj == IntPtr.Zero || auraMonoObjectGetClass == null)
+            {
+                return false;
+            }
+
+            IntPtr klass = auraMonoObjectGetClass(obj);
+            if (klass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (auraMonoClassGetRank != null)
+            {
+                try
+                {
+                    return auraMonoClassGetRank(klass) > 0;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            // Fallback when mono_class_get_rank is unavailable: array class names render with a
+            // trailing "[]" (e.g. "Component[]"). Conservative — only accept on a clear match.
+            string className = this.GetAuraMonoClassDisplayName(klass);
+            return !string.IsNullOrEmpty(className) && className.EndsWith("]", StringComparison.Ordinal);
+        }
+
+        // True when arrayClass is an array whose elements are reference types (object pointers),
+        // so each element can be read directly as an IntPtr via mono_array_addr_with_size. Returns
+        // false for value-type arrays (inline structs) where a raw pointer read would be wrong.
+        private bool IsAuraMonoReferenceArray(IntPtr arrayClass)
+        {
+            if (arrayClass == IntPtr.Zero
+                || auraMonoClassGetElementClass == null
+                || auraMonoClassIsValueType == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                IntPtr elementClass = auraMonoClassGetElementClass(arrayClass);
+                if (elementClass == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                return auraMonoClassIsValueType(elementClass) == 0;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private IntPtr GetAuraMonoArrayValue(IntPtr arrayObj, int index)
@@ -4151,8 +4241,13 @@ namespace HeartopiaMod
             auraMonoClassIsValueType = this.GetAuraMonoExport<MonoClassIsValueTypeDelegate>(monoModule, "mono_class_is_valuetype");
             auraMonoClassGetType = this.GetAuraMonoExport<MonoClassGetTypeDelegate>(monoModule, "mono_class_get_type");
             auraMonoClassBindGenericParameters = this.GetAuraMonoExport<MonoClassBindGenericParametersDelegate>(monoModule, "mono_class_bind_generic_parameters");
+            auraMonoClassInflateGenericMethod = this.GetAuraMonoExport<MonoClassInflateGenericMethodDelegate>(monoModule, "mono_class_inflate_generic_method");
             auraMonoTypeGetObject = this.GetAuraMonoExport<MonoTypeGetObjectDelegate>(monoModule, "mono_type_get_object");
             auraMonoClassGetParent = this.GetAuraMonoExport<MonoClassGetParentDelegate>(monoModule, "mono_class_get_parent");
+            auraMonoClassGetRank = this.GetAuraMonoExport<MonoClassGetRankDelegate>(monoModule, "mono_class_get_rank");
+            auraMonoGcDisable = this.GetAuraMonoExport<MonoGcVoidDelegate>(monoModule, "mono_gc_disable");
+            auraMonoGcEnable = this.GetAuraMonoExport<MonoGcVoidDelegate>(monoModule, "mono_gc_enable");
+            auraMonoClassGetElementClass = this.GetAuraMonoExport<MonoClassGetElementClassDelegate>(monoModule, "mono_class_get_element_class");
             auraMonoClassGetName = this.GetAuraMonoExport<MonoClassGetNameDelegate>(monoModule, "mono_class_get_name");
             auraMonoClassGetNamespace = this.GetAuraMonoExport<MonoClassGetNamespaceDelegate>(monoModule, "mono_class_get_namespace");
             auraMonoClassGetMethods = this.GetAuraMonoExport<MonoClassGetMethodsDelegate>(monoModule, "mono_class_get_methods");
@@ -5909,43 +6004,6 @@ namespace HeartopiaMod
                 || name.IndexOf("select", StringComparison.OrdinalIgnoreCase) >= 0
                 || name.IndexOf("focus", StringComparison.OrdinalIgnoreCase) >= 0
                 || name.IndexOf("interact", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        private MethodInfo GetMethodQuiet(Type type, string name, BindingFlags flags, Type[] parameterTypes)
-        {
-            if (type == null || string.IsNullOrEmpty(name))
-            {
-                return null;
-            }
-
-            const BindingFlags flatten = BindingFlags.FlattenHierarchy;
-            return type.GetMethod(name, flags | flatten, null, parameterTypes ?? Type.EmptyTypes, null);
-        }
-
-        private MethodInfo GetMethodByNameAndParamCountQuiet(Type type, string name, int paramCount)
-        {
-            if (type == null || string.IsNullOrEmpty(name))
-            {
-                return null;
-            }
-
-            MethodInfo[] methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
-            for (int i = 0; i < methods.Length; i++)
-            {
-                MethodInfo m = methods[i];
-                if (!string.Equals(m.Name, name, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                ParameterInfo[] ps = m.GetParameters();
-                if (ps != null && ps.Length == paramCount)
-                {
-                    return m;
-                }
-            }
-
-            return null;
         }
 
         private bool FullNameMatches(string candidateFullName, string expectedFullName)

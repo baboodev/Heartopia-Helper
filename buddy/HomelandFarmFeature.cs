@@ -26,6 +26,8 @@ namespace HeartopiaMod
         // mode = HobbyProtocolManager.TryGetHobbySkillParam(HobbySkillEnum.Water)[0].
         // Skill levels: 1 (default), 3, 6, 9. Match to player's current skill.
         private const int HomelandFarmCastBatchDefault = 9;
+        // ToolType.Sprinkler — equipped via HoldToolCommand / ToolSystem.SetHandhold, not backpack AddHolder.
+        private const int HomelandFarmSprinklerToolTypeId = 2;
         private const float HomelandFarmCommandDelaySeconds = 0.35f;
         private const float HomelandFarmWaterCommandDelaySeconds = 0.1f;
         private const float HomelandFarmFertilizeCastWaitSeconds = 1.2f;
@@ -43,11 +45,17 @@ namespace HeartopiaMod
         private const int HomelandFarmMaxAuraFarmEntityInspect = 4096;
         private const int HomelandFarmMaxAuraFarmComponentChecks = 768;
         private const int HomelandFarmMaxAuraFarmSpatialCandidates = 256;
-        private const float HomelandFarmAuraSpatialVerifyBudgetSeconds = 0.2f;
+        private const int HomelandFarmMaxAuraFarmSpatialVerifyCount = 24;
+        private const float HomelandFarmAuraSpatialVerifyBudgetSeconds = 2.5f;
         // Hard wall-clock cap on the synchronous AuraEntities collection pass so a large
         // loaded-entity set (~4096) can never freeze the main thread for seconds.
-        private const float HomelandFarmAuraSpatialCollectBudgetSeconds = 0.35f;
+        private const float HomelandFarmAuraSpatialCollectBudgetSeconds = 0.75f;
+        private const float HomelandFarmAuraProximityComponentScanBudgetSeconds = 8f;
+        private const float HomelandFarmWaterLogProximityBudgetSeconds = 2f;
+        private const int HomelandFarmMaxAuraProximityComponentInspect = 512;
+        private const int HomelandFarmMaxRegisteredFarmTargets = 512;
         private const int HomelandFarmHarvestFramePaceBatch = 4;
+        private const float HomelandFarmAuraComponentClassResolveRetrySeconds = 30f;
 
         private enum HomelandFarmWaterMode
         {
@@ -97,6 +105,18 @@ namespace HeartopiaMod
         private bool homelandFarmWarmupComplete = false;
         private bool homelandFarmSowManagedReflectionAttempted = false;
         private bool homelandFarmComponentRadiusWarned = false;
+        private bool homelandFarmInteropZeroLoadLogged = false;
+
+        private sealed class HomelandFarmRegisteredFarmTarget
+        {
+            public uint NetId;
+            public Vector3 LastPosition;
+            public bool IsCropBox;
+            public float RegisteredAt;
+        }
+
+        private readonly Dictionary<uint, HomelandFarmRegisteredFarmTarget> homelandFarmRegisteredFarmTargets =
+            new Dictionary<uint, HomelandFarmRegisteredFarmTarget>();
         private float homelandFarmBusyUntil = 0f;
 
         private HomelandFarmStorageSource homelandFarmSeedStorage = HomelandFarmStorageSource.Both;
@@ -119,6 +139,12 @@ namespace HeartopiaMod
             new Dictionary<uint, HomelandFarmPlanterSowAnchor>();
         private readonly Dictionary<ulong, Vector3> homelandFarmPutZoneWorldPositionById = new Dictionary<ulong, Vector3>();
         private readonly Dictionary<ulong, Quaternion> homelandFarmPutZoneWorldRotationById = new Dictionary<ulong, Quaternion>();
+        private readonly HashSet<uint> homelandFarmLastScanCropBoxNetIds = new HashSet<uint>();
+        // Negative-only: never cache component handles (stale IntPtr → native AV on reuse).
+        private readonly HashSet<string> homelandFarmAuraComponentMissCache = new HashSet<string>(StringComparer.Ordinal);
+
+        // GenSimpleConfirmOption wire y on homeland crop grid (ReducePrecision).
+        private const float HomelandFarmCropSowFieldLocalY = 0.06f;
 
         private bool homelandFarmReflectionResolved = false;
         private bool homelandFarmManagedReflectionReady = false;
@@ -140,6 +166,9 @@ namespace HeartopiaMod
         private IntPtr homelandFarmAuraCropWeedMethod = IntPtr.Zero;
         private IntPtr homelandFarmAuraCropAddManureMethod = IntPtr.Zero;
         private IntPtr homelandFarmAuraCharacterEquipHandholdMethod = IntPtr.Zero;
+        private IntPtr homelandFarmAuraToolProtocolSetHandHoldMethod = IntPtr.Zero;
+        private IntPtr homelandFarmAuraToolSystemSetHandholdMethod = IntPtr.Zero;
+        private IntPtr homelandFarmAuraToolSystemInstanceGetterMethod = IntPtr.Zero;
         private IntPtr homelandFarmAuraCropSeedingMethod = IntPtr.Zero;
         private IntPtr homelandFarmAuraCropPlantPointClass = IntPtr.Zero;
         private IntPtr homelandFarmAuraCropPlantPointPosField = IntPtr.Zero;
@@ -178,12 +207,50 @@ namespace HeartopiaMod
         private IntPtr homelandFarmAuraPlantComponentClass = IntPtr.Zero;
         private IntPtr homelandFarmAuraCropBoxComponentClass = IntPtr.Zero;
         private IntPtr homelandFarmAuraCropComponentClass = IntPtr.Zero;
-        private IntPtr homelandFarmAuraCropUpdateManureEffectMethod = IntPtr.Zero;
+        // Cooldown so an unresolved farm component class (e.g. CropComponent absent in this build)
+        // is not re-scanned across ALL loaded assemblies/images on every classify call. Without
+        // this, each TryHomelandFarmClassifyFarmNetId re-ran the full image scan (~seconds),
+        // letting a single entity blow the inspection budget (symptom: inspected=1/512).
+        private float homelandFarmAuraFarmComponentClassRetryAt = 0f;
+        // Throttle for the managed component-data reflection probe. When those types are absent in
+        // this build (DotnetAssemblies lack CropItemData/DataCenter/...), the resolution never
+        // succeeds and would otherwise re-run the full interop-load + miss-cache-clear + type scan
+        // on EVERY classify call (~240ms/entity). See HomelandFarmPrefersAuraComponentData.
+        private float homelandFarmComponentDataReflectionRetryAt = 0f;
+        // Throttle for the "upgrade managed reflection after aura is ready" probe in
+        // EnsureHomelandFarmReflectionReady. Without it, every component-data read re-ran the full
+        // managed type scan + miss-cache clear (~managed types absent on this build), so a scan that
+        // builds 58 targets x 3 reads froze for ~10s. See EnsureHomelandFarmReflectionReady.
+        private float homelandFarmManagedUpgradeRetryAt = 0f;
+        // The self player GUID is constant for the session. Reading it tries managed login-info
+        // reflection (re-scans when managed types are absent) — ~150ms — so memoize it; otherwise
+        // every per-target water-state read pays it (58 targets x 150ms = ~9s build loop).
+        private Guid homelandFarmCachedSelfGuid = Guid.Empty;
+        private bool homelandFarmCachedSelfGuidReadOk = false;
+        private bool homelandFarmCachedSelfGuidResolved = false;
+        // Short-TTL cache of the player netId. Resolving it tries managed self-player reflection
+        // first (re-scans missing types ~150ms on this build), and it is read per-target during a
+        // scan. TTL keeps it correct across world changes while making a single scan O(1).
+        private uint homelandFarmCachedPlayerNetId = 0U;
+        private float homelandFarmCachedPlayerNetIdAt = 0f;
+        private const float HomelandFarmPlayerNetIdCacheTtlSeconds = 5f;
+        // Sow-all resolves each empty planter via per-box AuraMono GetLevelObject + matrix reads.
+        // Doing 30 boxes in one synchronous frame overwhelms the mono runtime and crashes (native
+        // AV). The slot scan is a coroutine that yields every N boxes; results land in these fields.
+        private const int HomelandFarmSowSlotsPerFrame = 3;
+        private List<object> homelandFarmSowSlotPoints;
+        private string homelandFarmSowSlotStatus = string.Empty;
+        private bool homelandFarmSowSlotOk = false;
+        private bool homelandFarmSowGcGuardLogged = false;
+        private IntPtr homelandFarmAuraEntitiesGetComponentsMethod = IntPtr.Zero;
+        private readonly Dictionary<IntPtr, IntPtr> homelandFarmAuraComponentListClassByComponentClass = new Dictionary<IntPtr, IntPtr>();
+        private readonly Dictionary<IntPtr, IntPtr> homelandFarmAuraInflatedGetComponentsMethodByComponentClass = new Dictionary<IntPtr, IntPtr>();
+        private readonly HashSet<IntPtr> homelandFarmAuraGetComponentsFailedComponentClasses = new HashSet<IntPtr>();
+        private bool homelandFarmAuraGetComponentsUnavailableLogged = false;
+        private const bool HomelandFarmAllowUnsafeAuraMonoGetComponents = false;
         private IntPtr homelandFarmAuraCropBindEffectEntityMethod = IntPtr.Zero;
         private IntPtr homelandFarmAuraRendererComponentClass = IntPtr.Zero;
         private IntPtr homelandFarmAuraRendererPlayAnimTransformMethod = IntPtr.Zero;
-        private static int homelandFarmManureBindFailLogCount = 0;
-        private static int homelandFarmManureHookSuccessLogCount = 0;
         private IntPtr homelandFarmAuraEntitiesPlayVfxAtMethod = IntPtr.Zero;
         private int homelandFarmAuraEntitiesPlayVfxAtArgCount = 0;
 
@@ -208,6 +275,15 @@ namespace HeartopiaMod
         private Type homelandFarmManuredNetworkCommandType = null;
         private Type homelandFarmAddHolderSystemCommandType = null;
         private Type homelandFarmEHolderSystemType = null;
+        private Type homelandFarmHoldToolCommandType = null;
+        private Type homelandFarmToolProtocolManagerType = null;
+        private MethodInfo homelandFarmToolProtocolSetHandHoldMethod = null;
+        private Type homelandFarmToolSystemType = null;
+        private Type homelandFarmToolDataModuleType = null;
+        private PropertyInfo homelandFarmToolDataModuleInstanceProperty = null;
+        private MethodInfo homelandFarmToolSystemSetHandholdMethod = null;
+        private MethodInfo homelandFarmToolSystemGetToolMethod = null;
+        private bool homelandFarmToolEquipTypesResolved = false;
         private bool homelandFarmNetworkCommandTypesResolved = false;
         private Type homelandFarmWaterPlantNetworkCommandType = null;
         private Type homelandFarmPickPlantCrossedSeedNetworkCommandType = null;
@@ -250,6 +326,7 @@ namespace HeartopiaMod
         private MethodInfo homelandFarmPlayerCastMethod = null;
         private bool homelandFarmFertilizationCastTypesResolved = false;
         private MethodInfo homelandFarmCropAddManureInteropMethod = null;
+        private MethodInfo homelandFarmCropSeedingInteropMethod = null;
 
         private bool homelandFarmScannerTypesResolved = false;
         private bool homelandFarmScannerTypesUnavailable = false;
@@ -272,23 +349,38 @@ namespace HeartopiaMod
         private Type homelandFarmBuildComponentDataType = null;
         private int homelandFarmCropSeedEntityTypeValue = int.MinValue;
         private int homelandFarmCropFertilizerEntityTypeValue = int.MinValue;
+        private int homelandFarmSprinklerEntityTypeValue = int.MinValue;
         private bool homelandFarmBackpackReflectionResolved = false;
         private bool homelandFarmBackpackReflectionUnavailable = false;
         private bool homelandFarmInventoryReflectionResolved = false;
         private bool homelandFarmInventoryReflectionUnavailable = false;
         private bool homelandFarmTableDataReflectionResolved = false;
-        private bool homelandFarmCropManureVisualPatchApplied = false;
-        private float nextHomelandFarmManurePatchAttemptAt = -999f;
-        private float nextHomelandFarmManureHookProbeLogAt = 0f;
-        private const float HomelandFarmManureHookProbeLogIntervalSeconds = 10f;
         private float homelandFarmNextRuntimeResolveAt = 0f;
-        private const float HomelandFarmManurePatchRetryIntervalSeconds = 2f;
         private const float HomelandFarmRuntimeResolveRetryIntervalSeconds = 0.5f;
 
         private bool EnsureHomelandFarmReflectionReady()
         {
             if (this.homelandFarmManagedReflectionReady || this.homelandFarmAuraReflectionReady)
             {
+                // Opportunistically upgrade to managed reflection once aura is already usable, but
+                // THROTTLE it: this runs a full type scan + miss-cache clear and is invoked once per
+                // component-data read. Re-running it every call froze multi-target scans for seconds
+                // when the managed types are absent (the scan never succeeds, so it never stops).
+                float upgradeNow = Time.realtimeSinceStartup;
+                if (!this.homelandFarmManagedReflectionReady
+                    && !this.homelandFarmManagedReflectionUnavailable
+                    && upgradeNow >= this.homelandFarmManagedUpgradeRetryAt)
+                {
+                    this.homelandFarmManagedUpgradeRetryAt = upgradeNow + HomelandFarmAuraComponentClassResolveRetrySeconds;
+                    this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+                    this.ClearHomelandFarmReflectionMissCaches();
+                    if (this.TryEnsureHomelandFarmManagedReflection(out _))
+                    {
+                        this.homelandFarmManagedReflectionReady = true;
+                        this.HomelandFarmLog("Managed reflection ready (upgrade after aura).");
+                    }
+                }
+
                 return true;
             }
 
@@ -301,16 +393,8 @@ namespace HeartopiaMod
             this.TryEnsureHomelandFarmInteropAssembliesLoaded();
             this.ClearHomelandFarmReflectionMissCaches();
 
-            if (this.TryEnsureHomelandFarmAuraReflection(out string auraStatus))
-            {
-                this.homelandFarmAuraReflectionReady = true;
-                this.homelandFarmReflectionResolved = true;
-                this.homelandFarmReflectionUnavailable = false;
-                this.homelandFarmReflectionUnavailableStatus = string.Empty;
-                this.HomelandFarmLog("Aura reflection ready (MelonLoader/native path).");
-                return true;
-            }
-
+            // Prefer managed (DotnetAssemblies/interop) when available: it avoids extra native
+            // AuraMono GetAllComponents calls that can AV after a heavy entity scan.
             if (!this.homelandFarmManagedReflectionUnavailable
                 && this.TryEnsureHomelandFarmManagedReflection(out string managedStatus))
             {
@@ -319,6 +403,16 @@ namespace HeartopiaMod
                 this.homelandFarmReflectionUnavailable = false;
                 this.homelandFarmReflectionUnavailableStatus = string.Empty;
                 this.HomelandFarmLog("Managed reflection ready.");
+                return true;
+            }
+
+            if (this.TryEnsureHomelandFarmAuraReflection(out string auraStatus))
+            {
+                this.homelandFarmAuraReflectionReady = true;
+                this.homelandFarmReflectionResolved = true;
+                this.homelandFarmReflectionUnavailable = false;
+                this.homelandFarmReflectionUnavailableStatus = string.Empty;
+                this.HomelandFarmLog("Aura reflection ready (MelonLoader/native path).");
                 return true;
             }
 
@@ -368,42 +462,45 @@ namespace HeartopiaMod
 #else
                 string interopDir = Path.Combine(gameDir, "MelonLoader", "Il2CppAssemblies");
 #endif
-                if (!Directory.Exists(interopDir))
+                int loaded = 0;
+                if (Directory.Exists(interopDir))
                 {
-                    if (!this.homelandFarmInteropMissingDirLogged)
+                    loaded += this.TryHomelandFarmLoadInteropAssembliesFromDirectory(interopDir);
+                }
+
+                string dotnetAssembliesDir = Path.Combine(dataPath, "StreamingAssets", "DotnetAssemblies");
+                if (Directory.Exists(dotnetAssembliesDir))
+                {
+                    loaded += this.TryHomelandFarmLoadInteropAssembliesFromDirectory(dotnetAssembliesDir, "*.bytes");
+                }
+
+                if (loaded == 0)
+                {
+                    if (!Directory.Exists(interopDir))
                     {
-                        this.homelandFarmInteropMissingDirLogged = true;
-                        this.HomelandFarmLog("Interop directory missing: " + interopDir + " (will retry).");
+                        if (!this.homelandFarmInteropMissingDirLogged)
+                        {
+                            this.homelandFarmInteropMissingDirLogged = true;
+                            this.HomelandFarmLog("Interop directory missing: " + interopDir + " (will retry).");
+                        }
+
+                        return;
+                    }
+
+                    if (!this.homelandFarmInteropZeroLoadLogged)
+                    {
+                        this.homelandFarmInteropZeroLoadLogged = true;
+                        this.HomelandFarmLog("Interop directory present but 0 game assemblies loaded from " + interopDir + " (will retry).");
                     }
 
                     return;
                 }
 
-                int loaded = 0;
-                foreach (string dllPath in Directory.GetFiles(interopDir, "*.dll"))
-                {
-                    string fileName = Path.GetFileNameWithoutExtension(dllPath) ?? string.Empty;
-                    if (fileName.IndexOf("Assembly-CSharp", StringComparison.OrdinalIgnoreCase) < 0
-                        && fileName.IndexOf("Client", StringComparison.OrdinalIgnoreCase) < 0
-                        && fileName.IndexOf("EcsClient", StringComparison.OrdinalIgnoreCase) < 0
-                        && fileName.IndexOf("GameApp", StringComparison.OrdinalIgnoreCase) < 0
-                        && fileName.IndexOf("XDT", StringComparison.OrdinalIgnoreCase) < 0)
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        Assembly.LoadFrom(dllPath);
-                        loaded++;
-                    }
-                    catch
-                    {
-                    }
-                }
-
                 this.homelandFarmInteropAssembliesLoaded = true;
-                this.HomelandFarmLog("Loaded " + loaded + " interop assembly(ies) from " + interopDir + ".");
+                this.homelandFarmManagedReflectionUnavailable = false;
+                this.homelandFarmSowManagedReflectionAttempted = false;
+                this.ClearHomelandFarmReflectionMissCaches();
+                this.HomelandFarmLog("Loaded " + loaded + " interop assembly(ies) from interop/DotnetAssemblies.");
             }
             catch (Exception ex)
             {
@@ -411,24 +508,66 @@ namespace HeartopiaMod
             }
         }
 
+        private int TryHomelandFarmLoadInteropAssembliesFromDirectory(string directory, string searchPattern = "*.dll")
+        {
+            int loaded = 0;
+            if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+            {
+                return loaded;
+            }
+
+            foreach (string dllPath in Directory.GetFiles(directory, searchPattern))
+            {
+                string fileName = Path.GetFileNameWithoutExtension(dllPath) ?? string.Empty;
+#if BEPINEX
+                bool isInteropDirectory = directory.IndexOf("interop", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (isInteropDirectory && string.Equals(searchPattern, "*.dll", StringComparison.Ordinal))
+                {
+                    if (fileName.StartsWith("System", StringComparison.OrdinalIgnoreCase)
+                        || fileName.StartsWith("Unity", StringComparison.OrdinalIgnoreCase)
+                        || fileName.StartsWith("Mono", StringComparison.OrdinalIgnoreCase)
+                        || fileName.StartsWith("netstandard", StringComparison.OrdinalIgnoreCase)
+                        || fileName.StartsWith("Newtonsoft", StringComparison.OrdinalIgnoreCase)
+                        || fileName.IndexOf("Harmony", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        continue;
+                    }
+                }
+                else
+#endif
+                if (fileName.IndexOf("Assembly-CSharp", StringComparison.OrdinalIgnoreCase) < 0
+                    && fileName.IndexOf("Client", StringComparison.OrdinalIgnoreCase) < 0
+                    && fileName.IndexOf("EcsClient", StringComparison.OrdinalIgnoreCase) < 0
+                    && fileName.IndexOf("GameApp", StringComparison.OrdinalIgnoreCase) < 0
+                    && fileName.IndexOf("XDT", StringComparison.OrdinalIgnoreCase) < 0
+                    && fileName.IndexOf("Il2Cpp", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    Assembly.LoadFrom(dllPath);
+                    loaded++;
+                }
+                catch
+                {
+                }
+            }
+
+            return loaded;
+        }
+
         private void ClearHomelandFarmReflectionMissCaches()
         {
-            string[] keys =
-            {
-                "CropProtocolManager",
-                "PlantProtocolManager",
-                "DataCenter",
-                "CropItemData",
-                "NetId",
-                "Entities",
-                "XDTDataAndProtocol.ProtocolService.Plant.CropProtocolManager|CropProtocolManager",
-                "XDTDataAndProtocol.ProtocolService.WebRequestUtility|WebRequestUtility"
-            };
+            this.ClearModReflectionLookupMissCaches();
+            this.homelandFarmAuraComponentMissCache.Clear();
+            this.homelandFarmLastScanCropBoxNetIds.Clear();
+        }
 
-            for (int i = 0; i < keys.Length; i++)
-            {
-                this.loadedTypeMissCacheUntil.Remove(keys[i]);
-            }
+        private static string HomelandFarmAuraComponentCacheKey(uint netId, string dataTypeName)
+        {
+            return netId.ToString() + "|" + (dataTypeName ?? string.Empty);
         }
 
         private Type ResolveHomelandFarmManagedType(string shortName, params string[] fullNames)
@@ -452,7 +591,47 @@ namespace HeartopiaMod
                 }
             }
 
+            Type auraLoaderType = this.TryResolveHomelandFarmManagedTypeViaAuraLoader(shortName, fullNames);
+            if (auraLoaderType != null)
+            {
+                return auraLoaderType;
+            }
+
             return this.FindHomelandFarmRuntimeType(shortName);
+        }
+
+        private Type TryResolveHomelandFarmManagedTypeViaAuraLoader(string shortName, string[] fullNames)
+        {
+            if (fullNames != null)
+            {
+                for (int i = 0; i < fullNames.Length; i++)
+                {
+                    string fullName = fullNames[i];
+                    if (string.IsNullOrEmpty(fullName))
+                    {
+                        continue;
+                    }
+
+                    int lastDot = fullName.LastIndexOf('.');
+                    string namespaceName = lastDot > 0 ? fullName.Substring(0, lastDot) : string.Empty;
+                    Type resolved = this.FindTypeByName(fullName, namespaceName, shortName);
+                    if (resolved != null)
+                    {
+                        return resolved;
+                    }
+
+                    if (!fullName.StartsWith("Il2Cpp", StringComparison.Ordinal))
+                    {
+                        resolved = this.FindTypeByName("Il2Cpp" + fullName, namespaceName, shortName);
+                        if (resolved != null)
+                        {
+                            return resolved;
+                        }
+                    }
+                }
+            }
+
+            return null;
         }
 
         internal Type ResolveHomelandFarmCropComponentRuntimeType()
@@ -652,20 +831,28 @@ namespace HeartopiaMod
 
         private IntPtr FindHomelandFarmAuraCropComponentClassByScanningAllImages()
         {
-            if (!this.EnsureAuraMonoApiReady() || auraMonoClassFromName == null)
+            return this.FindHomelandFarmAuraClassByScanningAllImages(
+                "CropComponent",
+                HomelandFarmAuraCropComponentNamespaces,
+                this.HomelandFarmLooksLikeAuraCropComponentClass);
+        }
+
+        // Universal fallback: walk every loaded mono image and try mono_class_from_name for the
+        // given short name under each candidate namespace, validating each hit. Used when the
+        // targeted full-name / loaded-assembly lookups miss (e.g. unexpected namespace in a build).
+        private IntPtr FindHomelandFarmAuraClassByScanningAllImages(
+            string shortName,
+            string[] namespaceCandidates,
+            Func<IntPtr, bool> validator)
+        {
+            if (string.IsNullOrEmpty(shortName)
+                || namespaceCandidates == null
+                || namespaceCandidates.Length == 0
+                || !this.EnsureAuraMonoApiReady()
+                || auraMonoClassFromName == null)
             {
                 return IntPtr.Zero;
             }
-
-            string[] namespaceCandidates =
-            {
-                "XDTLevelAndEntity.Gameplay.Component.Homeland",
-                "XDTLevelAndEntity.Gameplay.Component.Farm",
-                "XDTLevelAndEntity.GamePlay.Component.Homeland",
-                "XDTLevelAndEntity.GamePlay.Component.Farm",
-                "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Farm",
-                "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Homeland",
-            };
 
             try
             {
@@ -726,8 +913,8 @@ namespace HeartopiaMod
 
                     for (int i = 0; i < namespaceCandidates.Length; i++)
                     {
-                        IntPtr candidate = auraMonoClassFromName(imageHandle, namespaceCandidates[i], "CropComponent");
-                        if (candidate != IntPtr.Zero && this.HomelandFarmLooksLikeAuraCropComponentClass(candidate))
+                        IntPtr candidate = auraMonoClassFromName(imageHandle, namespaceCandidates[i], shortName);
+                        if (candidate != IntPtr.Zero && (validator == null || validator(candidate)))
                         {
                             return candidate;
                         }
@@ -753,7 +940,6 @@ namespace HeartopiaMod
         private void OnAuraFarmRuntimeResolverReady()
         {
             this.EnsureHomelandFarmWarmupStarted();
-            this.nextHomelandFarmManurePatchAttemptAt = -999f;
         }
 
         internal void UpdateHomelandFarmBackground()
@@ -768,157 +954,6 @@ namespace HeartopiaMod
 
                 this.homelandFarmNextRuntimeResolveAt = now + HomelandFarmRuntimeResolveRetryIntervalSeconds;
                 this.ResolveAuraFarmRuntimeMethods();
-                return;
-            }
-
-            if (!this.homelandFarmCropManureVisualPatchApplied)
-            {
-                this.EnsureHomelandFarmCropManureVisualPatch();
-            }
-        }
-
-        // CropComponent is not in BepInEx interop assemblies; hook UpdateManureEffect via mono native thunk (BubbleFeature pattern).
-        private void EnsureHomelandFarmCropManureVisualPatch()
-        {
-            if (this.homelandFarmCropManureVisualPatchApplied || !this.auraFarmMethodsReady)
-            {
-                return;
-            }
-
-            if (Time.unscaledTime < this.nextHomelandFarmManurePatchAttemptAt)
-            {
-                return;
-            }
-
-            this.nextHomelandFarmManurePatchAttemptAt = Time.unscaledTime + HomelandFarmManurePatchRetryIntervalSeconds;
-
-            try
-            {
-                if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
-                {
-                    return;
-                }
-
-                if (this.homelandFarmAuraCropUpdateManureEffectMethod == IntPtr.Zero)
-                {
-                    if (!this.TryResolveHomelandFarmAuraCropComponentClass(out IntPtr cropComponentClass)
-                        || cropComponentClass == IntPtr.Zero)
-                    {
-                        if (Time.unscaledTime >= this.nextHomelandFarmManureHookProbeLogAt)
-                        {
-                            this.nextHomelandFarmManureHookProbeLogAt = Time.unscaledTime + HomelandFarmManureHookProbeLogIntervalSeconds;
-                            this.TryResolveAuraMonoFarmComponentClasses(out IntPtr plantClass, out IntPtr cropBoxClass, out _);
-                            ModLogger.Msg("[HomelandFarm] Manure hook probe: cropClass="
-                                + this.DescribeHomelandFarmAuraClass(this.homelandFarmAuraCropComponentClass)
-                                + " plantClass=" + this.DescribeHomelandFarmAuraClass(plantClass)
-                                + " cropBoxClass=" + this.DescribeHomelandFarmAuraClass(cropBoxClass)
-                                + " monoReady=" + this.EnsureAuraMonoApiReady()
-                                + " auraFarmReady=" + this.auraFarmMethodsReady + ".");
-                        }
-
-                        return;
-                    }
-
-                    this.homelandFarmAuraCropUpdateManureEffectMethod = this.FindAuraMonoMethodOnHierarchy(
-                        cropComponentClass,
-                        "UpdateManureEffect",
-                        0);
-                    if (this.homelandFarmAuraCropUpdateManureEffectMethod == IntPtr.Zero)
-                    {
-                        ModLogger.Msg("[HomelandFarm] Crop manure visual hook waiting: UpdateManureEffect missing on "
-                            + this.GetAuraMonoClassDisplayName(cropComponentClass) + ".");
-                        return;
-                    }
-                }
-
-                IntPtr nativePtr = this.TryGetAuraMonoMethodNativePointer(this.homelandFarmAuraCropUpdateManureEffectMethod);
-                if (nativePtr == IntPtr.Zero)
-                {
-                    ModLogger.Msg("[HomelandFarm] Crop manure visual hook waiting: UpdateManureEffect native pointer unavailable.");
-                    return;
-                }
-
-                if (HomelandFarmCropManureNativeHooks.TryInstallUpdateManureEffectHook(nativePtr))
-                {
-                    this.homelandFarmCropManureVisualPatchApplied = true;
-                    ModLogger.Msg("[OK] Mono hook CropComponent.UpdateManureEffect (manure visual bind).");
-                }
-                else
-                {
-                    ModLogger.Msg("[HomelandFarm] Crop manure visual hook install failed.");
-                }
-            }
-            catch (Exception ex)
-            {
-                ModLogger.Msg("[HomelandFarm] Crop manure visual hook failed: " + ex.Message);
-            }
-        }
-
-        private static class HomelandFarmCropManureNativeHooks
-        {
-            [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-            private delegate void UpdateManureEffectNativeDelegate(IntPtr thisPtr);
-
-            private static UpdateManureEffectNativeDelegate updateManureEffectOriginal;
-            private static UpdateManureEffectNativeDelegate updateManureEffectHookDelegate;
-
-            public static bool TryInstallUpdateManureEffectHook(IntPtr nativeMethod)
-            {
-                if (nativeMethod == IntPtr.Zero)
-                {
-                    return updateManureEffectOriginal != null;
-                }
-
-                if (updateManureEffectOriginal != null)
-                {
-                    return true;
-                }
-
-                updateManureEffectHookDelegate = UpdateManureEffectNativeHook;
-                IntPtr hookPtr = Marshal.GetFunctionPointerForDelegate(updateManureEffectHookDelegate);
-                if (!BubbleMonoNativeHook.TryInstall(nativeMethod, hookPtr, out IntPtr trampoline) || trampoline == IntPtr.Zero)
-                {
-                    return false;
-                }
-
-                updateManureEffectOriginal = Marshal.GetDelegateForFunctionPointer<UpdateManureEffectNativeDelegate>(trampoline);
-                return true;
-            }
-
-            private static void UpdateManureEffectNativeHook(IntPtr thisPtr)
-            {
-                try
-                {
-                    updateManureEffectOriginal?.Invoke(thisPtr);
-                    HeartopiaComplete instance = HeartopiaComplete.Instance;
-                    if (instance == null)
-                    {
-                        return;
-                    }
-
-                    if (instance.TryHomelandFarmRefreshCropManureVisualFromCropComponentMono(thisPtr, out string status))
-                    {
-                        if (homelandFarmManureHookSuccessLogCount++ < 3)
-                        {
-                            ModLogger.Msg("[HomelandFarm] Manure visual refresh after UpdateManureEffect: " + status);
-                        }
-
-                        return;
-                    }
-
-                    if (instance.TryHomelandFarmBindCropManureEffectFromMono(thisPtr, out status)
-                        || homelandFarmManureBindFailLogCount >= 5)
-                    {
-                        return;
-                    }
-
-                    homelandFarmManureBindFailLogCount++;
-                    ModLogger.Msg("[HomelandFarm] Manure visual fix failed: " + status);
-                }
-                catch (Exception ex)
-                {
-                    ModLogger.Msg("[HomelandFarm] UpdateManureEffect hook: " + ex.Message);
-                }
             }
         }
 
@@ -1234,6 +1269,23 @@ namespace HeartopiaMod
 
         private Type FindHomelandFarmRuntimeTypeByShape(string shortName)
         {
+            if (string.IsNullOrEmpty(shortName))
+            {
+                return null;
+            }
+
+            string cacheKey = "shape:" + shortName;
+            if (this.loadedTypeLookupCache.TryGetValue(cacheKey, out Type cachedType) && cachedType != null)
+            {
+                return cachedType;
+            }
+
+            if (this.loadedTypeMissCacheUntil.TryGetValue(cacheKey, out float missCacheUntil)
+                && Time.unscaledTime < missCacheUntil)
+            {
+                return null;
+            }
+
             try
             {
                 foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
@@ -1276,6 +1328,8 @@ namespace HeartopiaMod
 
                         if (this.HomelandFarmTypeShapeMatches(shortName, candidate))
                         {
+                            this.loadedTypeLookupCache[cacheKey] = candidate;
+                            this.loadedTypeMissCacheUntil.Remove(cacheKey);
                             return candidate;
                         }
                     }
@@ -1285,6 +1339,7 @@ namespace HeartopiaMod
             {
             }
 
+            this.loadedTypeMissCacheUntil[cacheKey] = Time.unscaledTime + LoadedTypeMissCacheSeconds;
             return null;
         }
 
@@ -1723,8 +1778,90 @@ namespace HeartopiaMod
 
         private bool HomelandFarmPrefersAuraComponentData()
         {
+            if (this.TryEnsureHomelandFarmComponentDataManagedReflection())
+            {
+                return false;
+            }
+
             return this.homelandFarmAuraReflectionReady
                 || (this.homelandFarmManagedReflectionUnavailable && this.TryResolveHomelandFarmAuraProtocol(out _));
+        }
+
+        // Resolve only DataCenter + component data types (no protocol methods). Used to avoid
+        // native AuraMono GetAllComponents after heavy entity scans when DotnetAssemblies are loaded.
+        private bool TryEnsureHomelandFarmComponentDataManagedReflection()
+        {
+            if (this.homelandFarmDataCenterTryGetComponentDataMethodDef != null
+                && this.homelandFarmCropBoxItemDataType != null
+                && this.homelandFarmCropItemDataType != null)
+            {
+                return true;
+            }
+
+            // Not (fully) resolved. The resolution below reloads interop, clears reflection miss
+            // caches and runs several full type scans — far too costly to repeat per classify when
+            // the types simply do not exist in this build. Throttle re-attempts so the common
+            // "managed component data unavailable" case stays cheap (callers fall back to AuraMono).
+            float nowResolve = Time.realtimeSinceStartup;
+            if (nowResolve < this.homelandFarmComponentDataReflectionRetryAt)
+            {
+                return false;
+            }
+
+            this.homelandFarmComponentDataReflectionRetryAt = nowResolve + HomelandFarmAuraComponentClassResolveRetrySeconds;
+
+            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+            this.ClearHomelandFarmReflectionMissCaches();
+
+            if (this.homelandFarmDataCenterType == null)
+            {
+                this.homelandFarmDataCenterType = this.ResolveHomelandFarmManagedType(
+                    "DataCenter",
+                    "XDTDataAndProtocol.ComponentsData.DataCenter",
+                    "ScriptsRefactory.DataAndProtocol.ComponentsData.DataCenter");
+            }
+
+            if (this.homelandFarmCropItemDataType == null)
+            {
+                this.homelandFarmCropItemDataType = this.ResolveHomelandFarmManagedType(
+                    "CropItemData",
+                    "XDTDataAndProtocol.ComponentsData.CropItemData",
+                    "ScriptsRefactory.DataAndProtocol.ComponentsData.CropItemData");
+            }
+
+            if (this.homelandFarmCropBoxItemDataType == null)
+            {
+                this.homelandFarmCropBoxItemDataType = this.ResolveHomelandFarmManagedType(
+                    "CropBoxItemData",
+                    "XDTDataAndProtocol.ComponentsData.CropBoxItemData",
+                    "ScriptsRefactory.DataAndProtocol.ComponentsData.CropBoxItemData");
+            }
+
+            if (this.homelandFarmPlantItemDataType == null)
+            {
+                this.homelandFarmPlantItemDataType = this.ResolveHomelandFarmManagedType(
+                    "PlantItemData",
+                    "XDTDataAndProtocol.ComponentsData.PlantItemData",
+                    "ScriptsRefactory.DataAndProtocol.ComponentsData.PlantItemData");
+            }
+
+            if (this.homelandFarmNetIdType == null)
+            {
+                this.homelandFarmNetIdType = this.ResolveHomelandFarmManagedType(
+                    "NetId",
+                    "EcsClient.XDT.Scene.Shared.Data.SharedData.NetId",
+                    "XDT.Scene.Shared.Data.SharedData.NetId");
+            }
+
+            if (this.homelandFarmDataCenterTryGetComponentDataMethodDef == null && this.homelandFarmDataCenterType != null)
+            {
+                this.homelandFarmDataCenterTryGetComponentDataMethodDef = this.ResolveHomelandFarmTryGetComponentDataMethodDef();
+            }
+
+            return this.homelandFarmDataCenterTryGetComponentDataMethodDef != null
+                && this.homelandFarmCropBoxItemDataType != null
+                && this.homelandFarmCropItemDataType != null
+                && this.homelandFarmNetIdType != null;
         }
 
         private MethodInfo ResolveHomelandFarmTryGetComponentDataMethodDef()
@@ -2006,6 +2143,12 @@ namespace HeartopiaMod
                 return false;
             }
 
+            string cacheKey = HomelandFarmAuraComponentCacheKey(netId, dataTypeName);
+            if (this.homelandFarmAuraComponentMissCache.Contains(cacheKey))
+            {
+                return false;
+            }
+
             if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoObjectGetClass == null)
             {
                 return false;
@@ -2013,17 +2156,26 @@ namespace HeartopiaMod
 
             if (!this.TryGetAuraMonoEntityObjectByNetId(netId, out IntPtr entityObj) || entityObj == IntPtr.Zero)
             {
+                this.homelandFarmAuraComponentMissCache.Add(cacheKey);
+                return false;
+            }
+
+            if (!this.TryHomelandFarmTryGuardAuraEntityBeforeHeavyAccess(entityObj))
+            {
+                this.homelandFarmAuraComponentMissCache.Add(cacheKey);
                 return false;
             }
 
             if (!this.TryInvokeAuraMonoZeroArg(entityObj, out IntPtr componentsObj, "GetAllComponents") || componentsObj == IntPtr.Zero)
             {
+                this.homelandFarmAuraComponentMissCache.Add(cacheKey);
                 return false;
             }
 
             List<IntPtr> components = new List<IntPtr>();
             if (!this.TryEnumerateAuraMonoCollectionItems(componentsObj, components))
             {
+                this.homelandFarmAuraComponentMissCache.Add(cacheKey);
                 return false;
             }
 
@@ -2067,7 +2219,132 @@ namespace HeartopiaMod
                 return true;
             }
 
+            this.homelandFarmAuraComponentMissCache.Add(cacheKey);
             return false;
+        }
+
+        private bool TryHomelandFarmAuraExtractFarmDataHandles(
+            IntPtr entityObj,
+            out IntPtr cropItemDataHandle,
+            out IntPtr cropBoxItemDataHandle,
+            out IntPtr plantItemDataHandle)
+        {
+            cropItemDataHandle = IntPtr.Zero;
+            cropBoxItemDataHandle = IntPtr.Zero;
+            plantItemDataHandle = IntPtr.Zero;
+            if (entityObj == IntPtr.Zero
+                || !this.EnsureAuraMonoApiReady()
+                || !this.AttachAuraMonoThread()
+                || auraMonoObjectGetClass == null)
+            {
+                return false;
+            }
+
+            if (!this.TryHomelandFarmTryGuardAuraEntityBeforeHeavyAccess(entityObj))
+            {
+                return false;
+            }
+
+            if (!this.TryInvokeAuraMonoZeroArg(entityObj, out IntPtr componentsObj, "GetAllComponents") || componentsObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            List<IntPtr> components = new List<IntPtr>();
+            if (!this.TryEnumerateAuraMonoCollectionItems(componentsObj, components))
+            {
+                return false;
+            }
+
+            bool hasComponentClasses = this.TryResolveAuraMonoFarmComponentClasses(
+                out IntPtr plantComponentClass,
+                out IntPtr cropBoxComponentClass,
+                out IntPtr cropComponentClass);
+
+            for (int i = 0; i < components.Count; i++)
+            {
+                IntPtr componentObj = components[i];
+                if (componentObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr componentClass = auraMonoObjectGetClass(componentObj);
+                if (componentClass == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                IntPtr dataHandle = this.TryHomelandFarmResolveAuraComponentDataHandle(componentObj);
+                if (dataHandle == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                if (hasComponentClasses)
+                {
+                    if (cropBoxItemDataHandle == IntPtr.Zero
+                        && cropBoxComponentClass != IntPtr.Zero
+                        && this.IsAuraMonoClassAssignableTo(componentClass, cropBoxComponentClass))
+                    {
+                        cropBoxItemDataHandle = dataHandle;
+                    }
+
+                    if (plantItemDataHandle == IntPtr.Zero
+                        && plantComponentClass != IntPtr.Zero
+                        && this.IsAuraMonoClassAssignableTo(componentClass, plantComponentClass))
+                    {
+                        plantItemDataHandle = dataHandle;
+                    }
+
+                    if (cropItemDataHandle == IntPtr.Zero
+                        && cropComponentClass != IntPtr.Zero
+                        && this.IsAuraMonoClassAssignableTo(componentClass, cropComponentClass))
+                    {
+                        cropItemDataHandle = dataHandle;
+                    }
+                }
+
+                string className = this.GetAuraMonoClassDisplayName(componentClass);
+                if (string.IsNullOrEmpty(className))
+                {
+                    continue;
+                }
+
+                if (cropBoxItemDataHandle == IntPtr.Zero
+                    && (className.IndexOf("CropBoxComponent", StringComparison.OrdinalIgnoreCase) >= 0
+                        || className.IndexOf("CropBoxItemData", StringComparison.OrdinalIgnoreCase) >= 0
+                        || (className.IndexOf("CropBox", StringComparison.OrdinalIgnoreCase) >= 0
+                            && className.IndexOf("CropComponent", StringComparison.OrdinalIgnoreCase) < 0)))
+                {
+                    cropBoxItemDataHandle = dataHandle;
+                }
+
+                if (plantItemDataHandle == IntPtr.Zero
+                    && (className.IndexOf("PlantComponent", StringComparison.OrdinalIgnoreCase) >= 0
+                        || className.IndexOf("PlantItemData", StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    plantItemDataHandle = dataHandle;
+                }
+
+                if (cropItemDataHandle == IntPtr.Zero
+                    && className.IndexOf("CropBoxComponent", StringComparison.OrdinalIgnoreCase) < 0
+                    && className.IndexOf("CropBox", StringComparison.OrdinalIgnoreCase) < 0
+                    && (className.IndexOf("CropComponent", StringComparison.OrdinalIgnoreCase) >= 0
+                        || className.IndexOf("CropItemData", StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    cropItemDataHandle = dataHandle;
+                }
+            }
+
+            return cropItemDataHandle != IntPtr.Zero
+                || cropBoxItemDataHandle != IntPtr.Zero
+                || plantItemDataHandle != IntPtr.Zero;
+        }
+
+        private static object HomelandFarmAuraData(IntPtr handle)
+        {
+            return new HomelandFarmAuraComponentData { Handle = handle };
         }
 
         private string[] GetHomelandFarmComponentHints(string dataTypeName)
@@ -2249,6 +2526,17 @@ namespace HeartopiaMod
         {
             netId = 0U;
             status = "Player netId unavailable.";
+
+            // Short-TTL memoization: the managed-first resolution below is ~150ms when managed
+            // types are absent, and this is called once per target during a scan.
+            if (this.homelandFarmCachedPlayerNetId != 0U
+                && Time.realtimeSinceStartup - this.homelandFarmCachedPlayerNetIdAt < HomelandFarmPlayerNetIdCacheTtlSeconds)
+            {
+                netId = this.homelandFarmCachedPlayerNetId;
+                status = "Player netId (cached).";
+                return true;
+            }
+
             try
             {
                 if (this.TryGetManagedSelfPlayerEntityObject(out object entityObj, out string source) && entityObj != null)
@@ -2256,6 +2544,7 @@ namespace HeartopiaMod
                     if (this.TryHomelandFarmTryReadEntityNetId(entityObj, out netId) && netId != 0U)
                     {
                         status = "Player netId via " + source + ".";
+                        this.HomelandFarmCachePlayerNetId(netId);
                         return true;
                     }
                 }
@@ -2267,6 +2556,7 @@ namespace HeartopiaMod
                     if (selfEntity != null && this.TryHomelandFarmTryReadEntityNetId(selfEntity, out netId) && netId != 0U)
                     {
                         status = "Player netId via EntityUtil.GetSelfPlayerEntity().";
+                        this.HomelandFarmCachePlayerNetId(netId);
                         return true;
                     }
                 }
@@ -2274,6 +2564,7 @@ namespace HeartopiaMod
                 if (this.TryHomelandFarmTryReadPlayerNetIdAura(out netId, out string auraSource) && netId != 0U)
                 {
                     status = "Player netId via " + auraSource + ".";
+                    this.HomelandFarmCachePlayerNetId(netId);
                     return true;
                 }
 
@@ -2285,6 +2576,17 @@ namespace HeartopiaMod
                 status = "Player netId exception: " + ex.Message;
                 return false;
             }
+        }
+
+        private void HomelandFarmCachePlayerNetId(uint netId)
+        {
+            if (netId == 0U)
+            {
+                return;
+            }
+
+            this.homelandFarmCachedPlayerNetId = netId;
+            this.homelandFarmCachedPlayerNetIdAt = Time.realtimeSinceStartup;
         }
 
         private bool TryGetHomelandFarmFriendNetIds(HashSet<uint> output, out string status)
@@ -3189,6 +3491,109 @@ namespace HeartopiaMod
             }
 
             return HomelandFarmCastBatchDefault;
+        }
+
+        private bool TryHomelandFarmTryIsHandHoldSprinklerEquipped()
+        {
+            try
+            {
+                if (this.TryGetManagedSelfPlayerObject(out object playerObj, out _) && playerObj != null)
+                {
+                    Type sprinklerType = this.FindLoadedType(
+                        "HandHoldSprinkler",
+                        "Il2CppXDTLevelAndEntity.Gameplay.Component.Equip.HandHoldSprinkler",
+                        "XDTLevelAndEntity.Gameplay.Component.Equip.HandHoldSprinkler");
+                    if (sprinklerType != null
+                        && this.TryInvokeMethodByName(playerObj, "GetComponent", out object sprinkler, new object[] { sprinklerType })
+                        && sprinkler != null)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            if (this.TryHomelandFarmTryGetEquippedHandholdBagNetId(out uint equippedNetId, out int equippedStaticId)
+                && equippedNetId != 0U
+                && equippedStaticId > 0
+                && this.TryHomelandFarmItemMatchesSprinkler(equippedStaticId, 0))
+            {
+                return true;
+            }
+
+            if (this.EnsureAuraMonoApiReady()
+                && this.AttachAuraMonoThread()
+                && this.TryHomelandFarmTryGetAuraLocalPlayerObject(out IntPtr auraPlayerObj, out _)
+                && auraPlayerObj != IntPtr.Zero
+                && this.TryGetMonoObjectMember(auraPlayerObj, "equipComponent", out IntPtr equipObj)
+                && equipObj != IntPtr.Zero
+                && this.TryGetMonoObjectMember(equipObj, "handhold", out IntPtr handholdObj)
+                && handholdObj != IntPtr.Zero
+                && (this.TryGetMonoInt32Member(handholdObj, "staticId", out int auraStaticId)
+                    || this.TryGetMonoInt32Member(handholdObj, "StaticId", out auraStaticId))
+                && auraStaticId > 0
+                && this.TryHomelandFarmItemMatchesSprinkler(auraStaticId, 0))
+            {
+                return true;
+            }
+
+            // Tools equipped via ToolSystem.SetHandhold (toolId, not a backpack staticId) are not
+            // visible through equipComponent.handhold.staticId above, and the managed GetComponent
+            // path fails on builds where HandHoldSprinkler's managed type is absent. Detect the
+            // HandHoldSprinkler ECS component directly on the player entity via AuraMono — same
+            // GetAllComponents path used to classify crop boxes.
+            if (this.TryHomelandFarmAuraPlayerHasSprinklerComponent())
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        // Mirrors TryGetFishingRodToolStatus: the equipped handhold tool (sprinkler, rod, net, ...)
+        // is reachable via InteractSystem.player.equipComponent.handhold, and the held tool's class
+        // name identifies it. This is the reliable cross-build path (HandHoldSprinkler has no managed
+        // type and is not an ECS component on the player entity on some builds).
+        private bool TryHomelandFarmAuraPlayerHasSprinklerComponent()
+        {
+            if (!this.EnsureAuraMonoApiReady()
+                || !this.AttachAuraMonoThread()
+                || auraMonoObjectGetClass == null
+                || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr interactObj = this.GetAuraMonoInteractSystemInstance();
+            if (interactObj == IntPtr.Zero || this.auraMonoInteractGetPlayerMethodPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr playerObj = auraMonoRuntimeInvoke(this.auraMonoInteractGetPlayerMethodPtr, interactObj, IntPtr.Zero, ref exc);
+            if (exc != IntPtr.Zero || playerObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.TryInvokeAuraMonoZeroArg(playerObj, out IntPtr equipObj, "get_equipComponent", "GetEquipComponent")
+                || equipObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.TryInvokeAuraMonoZeroArg(equipObj, out IntPtr handholdObj, "get_handhold", "GetHandhold")
+                || handholdObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            string handholdClassName = this.GetAuraMonoClassDisplayName(auraMonoObjectGetClass(handholdObj));
+            return !string.IsNullOrEmpty(handholdClassName)
+                && handholdClassName.IndexOf("Sprinkler", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private bool TryHomelandFarmWaterBatch(
@@ -6138,6 +6543,78 @@ namespace HeartopiaMod
             }
         }
 
+        private bool TryHomelandFarmInvokeCropSeedingInterop(uint seedNetId, List<object> plantPoints, out string status)
+        {
+            status = "CropSeeding interop unavailable.";
+            if (seedNetId == 0U || plantPoints == null || plantPoints.Count == 0)
+            {
+                status = seedNetId == 0U ? "Seed netId missing." : "Plant point list empty.";
+                return false;
+            }
+
+            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+            if (!this.EnsureHomelandFarmSowManagedReflection())
+            {
+                return false;
+            }
+
+            if (this.homelandFarmCropSeedingInteropMethod == null)
+            {
+                Type cropProtocolType = this.homelandFarmCropProtocolManagerType
+                    ?? this.ResolveHomelandFarmManagedType(
+                        "CropProtocolManager",
+                        "XDTDataAndProtocol.ProtocolService.Plant.CropProtocolManager");
+                if (cropProtocolType != null)
+                {
+                    this.homelandFarmCropSeedingInteropMethod = this.ResolveHomelandFarmCropSeedingMethod()
+                        ?? this.GetMethodByNameAndParamCountQuiet(cropProtocolType, "CropSeeding", 2);
+                }
+
+                if (this.homelandFarmCropSeedingInteropMethod == null)
+                {
+                    status = "CropSeeding interop method missing (CropProtocolManager="
+                        + (cropProtocolType != null) + ").";
+                    return false;
+                }
+            }
+
+            try
+            {
+                ParameterInfo[] parameters = this.homelandFarmCropSeedingInteropMethod.GetParameters();
+                Type listType = parameters[1].ParameterType;
+                object pointsList = Activator.CreateInstance(listType);
+                MethodInfo addMethod = listType.GetMethod("Add", BindingFlags.Instance | BindingFlags.Public);
+                if (addMethod == null)
+                {
+                    status = "CropSeeding interop list Add missing.";
+                    return false;
+                }
+
+                for (int i = 0; i < plantPoints.Count; i++)
+                {
+                    object point = this.TryHomelandFarmMaterializeCropPlantPoint(plantPoints[i]);
+                    if (point == null)
+                    {
+                        status = "CropSeeding interop point missing at index " + i + ".";
+                        return false;
+                    }
+
+                    addMethod.Invoke(pointsList, new object[] { point });
+                }
+
+                this.homelandFarmCropSeedingInteropMethod.Invoke(null, new object[] { seedNetId, pointsList });
+                status = "CropSeeding interop ok count=" + plantPoints.Count + ".";
+                this.HomelandFarmLog(status);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                status = "CropSeeding interop exception: " + (ex.InnerException ?? ex).Message;
+                this.HomelandFarmLog(status);
+                return false;
+            }
+        }
+
         private bool TryHomelandFarmInvokeCropAddManureInterop(List<uint> cropNetIds, out string status)
         {
             status = "AddManure interop unavailable.";
@@ -6351,6 +6828,425 @@ namespace HeartopiaMod
             this.HomelandFarmLog("Handhold equip wait timed out expectedNetId=" + expectedNetId + " staticId=" + expectedStaticId);
         }
 
+        private bool TryHomelandFarmEnsureToolEquipAuraMethods()
+        {
+            if (this.homelandFarmAuraToolProtocolSetHandHoldMethod != IntPtr.Zero
+                || this.homelandFarmAuraToolSystemSetHandholdMethod != IntPtr.Zero)
+            {
+                return true;
+            }
+
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr toolProtocolClass = this.FindAuraMonoClassByFullName("ToolProtocolManager");
+            if (toolProtocolClass == IntPtr.Zero)
+            {
+                toolProtocolClass = this.FindHomelandFarmAuraClass(
+                    "ToolProtocolManager",
+                    "XDTDataAndProtocol",
+                    "ToolProtocolManager");
+            }
+
+            if (toolProtocolClass != IntPtr.Zero && this.homelandFarmAuraToolProtocolSetHandHoldMethod == IntPtr.Zero)
+            {
+                this.homelandFarmAuraToolProtocolSetHandHoldMethod = this.FindAuraMonoMethodOnHierarchy(
+                    toolProtocolClass,
+                    "SetHandHold",
+                    2);
+            }
+
+            IntPtr toolSystemClass = this.FindAuraMonoClassByFullName("XDTGameSystem.GameplaySystem.Tool.ToolSystem");
+            if (toolSystemClass == IntPtr.Zero)
+            {
+                toolSystemClass = this.FindHomelandFarmAuraClass(
+                    "XDTGameSystem.GameplaySystem.Tool.ToolSystem",
+                    "XDTGameSystem.GameplaySystem.Tool",
+                    "ToolSystem");
+            }
+
+            if (toolSystemClass != IntPtr.Zero)
+            {
+                if (this.homelandFarmAuraToolSystemInstanceGetterMethod == IntPtr.Zero)
+                {
+                    this.homelandFarmAuraToolSystemInstanceGetterMethod = this.FindAuraMonoMethodOnHierarchy(
+                        toolSystemClass,
+                        "get_Instance",
+                        0);
+                }
+
+                if (this.homelandFarmAuraToolSystemSetHandholdMethod == IntPtr.Zero)
+                {
+                    this.homelandFarmAuraToolSystemSetHandholdMethod = this.FindAuraMonoMethodOnHierarchy(
+                        toolSystemClass,
+                        "SetHandhold",
+                        1);
+                }
+            }
+
+            return this.homelandFarmAuraToolProtocolSetHandHoldMethod != IntPtr.Zero
+                || this.homelandFarmAuraToolSystemSetHandholdMethod != IntPtr.Zero;
+        }
+
+        private bool TryHomelandFarmEnsureToolEquipTypes()
+        {
+            if (this.homelandFarmToolEquipTypesResolved)
+            {
+                return this.HomelandFarmHasToolEquipPathAvailable();
+            }
+
+            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+
+            this.homelandFarmHoldToolCommandType = this.ResolveHomelandFarmManagedType(
+                "HoldToolCommand",
+                "EcsClient.XDT.Scene.Shared.Modules.Tools.HoldToolCommand",
+                "XDT.Scene.Shared.Modules.Tools.HoldToolCommand",
+                "Il2CppEcsClient.XDT.Scene.Shared.Modules.Tools.HoldToolCommand");
+
+            this.homelandFarmToolProtocolManagerType = this.ResolveHomelandFarmManagedType(
+                "ToolProtocolManager",
+                "ToolProtocolManager",
+                "XDTDataAndProtocol.ToolProtocolManager");
+
+            if (this.homelandFarmToolProtocolManagerType != null)
+            {
+                this.homelandFarmToolProtocolSetHandHoldMethod = this.homelandFarmToolProtocolManagerType.GetMethod(
+                    "SetHandHold",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    new[] { typeof(int), typeof(int) },
+                    null);
+            }
+
+            this.homelandFarmToolSystemType = this.ResolveHomelandFarmManagedType(
+                "ToolSystem",
+                "XDTGameSystem.GameplaySystem.Tool.ToolSystem",
+                "Il2CppXDTGameSystem.GameplaySystem.Tool.ToolSystem");
+
+            if (this.homelandFarmToolSystemType != null)
+            {
+                this.homelandFarmToolSystemSetHandholdMethod = this.homelandFarmToolSystemType.GetMethod(
+                    "SetHandhold",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    null,
+                    new[] { typeof(int) },
+                    null);
+                this.homelandFarmToolSystemGetToolMethod = this.homelandFarmToolSystemType.GetMethod(
+                    "GetTool",
+                    BindingFlags.Public | BindingFlags.Instance,
+                    null,
+                    new[] { typeof(int) },
+                    null);
+
+                Type dataModuleGenericType = null;
+                foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        dataModuleGenericType = assembly.GetType("XDTGame.Core.DataModule`1", false)
+                            ?? assembly.GetType("XDFramework.Core.DataModule`1", false);
+                        if (dataModuleGenericType != null)
+                        {
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                if (dataModuleGenericType != null)
+                {
+                    this.homelandFarmToolDataModuleType = dataModuleGenericType.MakeGenericType(this.homelandFarmToolSystemType);
+                    this.homelandFarmToolDataModuleInstanceProperty = this.homelandFarmToolDataModuleType.GetProperty(
+                        "Instance",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                }
+            }
+
+            this.EnsureHomelandFarmSendCommandResolver();
+            this.TryHomelandFarmEnsureToolEquipAuraMethods();
+
+            bool available = this.HomelandFarmHasToolEquipPathAvailable();
+            if (available)
+            {
+                this.homelandFarmToolEquipTypesResolved = true;
+            }
+            else
+            {
+                this.HomelandFarmLog(
+                    "Tool equip paths unresolved holdTool=" + (this.homelandFarmHoldToolCommandType != null)
+                    + " setHandHold=" + (this.homelandFarmToolProtocolSetHandHoldMethod != null)
+                    + " toolSystem=" + (this.homelandFarmToolSystemSetHandholdMethod != null)
+                    + " sendCommand=" + (this.homelandFarmSendCommandMethodDef != null)
+                    + " auraSetHandHold=0x" + this.homelandFarmAuraToolProtocolSetHandHoldMethod.ToInt64().ToString("X")
+                    + " auraToolSystem=0x" + this.homelandFarmAuraToolSystemSetHandholdMethod.ToInt64().ToString("X"));
+            }
+
+            return available;
+        }
+
+        private bool HomelandFarmHasToolEquipPathAvailable()
+        {
+            return this.homelandFarmHoldToolCommandType != null
+                || this.homelandFarmToolProtocolSetHandHoldMethod != null
+                || this.homelandFarmToolSystemSetHandholdMethod != null
+                || this.homelandFarmAuraToolProtocolSetHandHoldMethod != IntPtr.Zero
+                || this.homelandFarmAuraToolSystemSetHandholdMethod != IntPtr.Zero;
+        }
+
+        private bool TryHomelandFarmTryGetToolSystemInstance(out object toolSystemInstance)
+        {
+            toolSystemInstance = null;
+            if (!this.TryHomelandFarmEnsureToolEquipTypes())
+            {
+                return false;
+            }
+
+            try
+            {
+                if (this.homelandFarmToolDataModuleInstanceProperty != null)
+                {
+                    toolSystemInstance = this.homelandFarmToolDataModuleInstanceProperty.GetValue(null, null);
+                    if (toolSystemInstance != null)
+                    {
+                        return true;
+                    }
+                }
+
+                PropertyInfo directInstance = this.homelandFarmToolSystemType?.GetProperty(
+                    "Instance",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+                if (directInstance != null)
+                {
+                    toolSystemInstance = directInstance.GetValue(null, null);
+                }
+            }
+            catch
+            {
+            }
+
+            return toolSystemInstance != null;
+        }
+
+        private bool TryHomelandFarmTryResolveSprinklerToolSkinId(out int skinId)
+        {
+            skinId = 0;
+            if (!this.TryHomelandFarmTryGetToolSystemInstance(out object toolSystemInstance)
+                || toolSystemInstance == null
+                || this.homelandFarmToolSystemGetToolMethod == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                object tool = this.homelandFarmToolSystemGetToolMethod.Invoke(toolSystemInstance, new object[] { HomelandFarmSprinklerToolTypeId });
+                if (tool == null)
+                {
+                    return false;
+                }
+
+                if (this.TryGetManagedInt32Member(tool, "skinId", out skinId) && skinId > 0)
+                {
+                    return true;
+                }
+
+                return this.TryGetManagedInt32Member(tool, "SkinId", out skinId) && skinId > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryHomelandFarmSendHoldToolCommand(int toolId, int skinId, out string status)
+        {
+            status = "HoldTool SendCommand unavailable.";
+            if (toolId <= 0)
+            {
+                status = "Tool id missing.";
+                return false;
+            }
+
+            if (this.homelandFarmToolProtocolSetHandHoldMethod != null)
+            {
+                try
+                {
+                    this.homelandFarmToolProtocolSetHandHoldMethod.Invoke(null, new object[] { toolId, skinId });
+                    status = "ToolProtocolManager.SetHandHold ok toolId=" + toolId + " skinId=" + skinId + ".";
+                    this.HomelandFarmLog(status);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    status = "ToolProtocolManager.SetHandHold exception: " + (ex.InnerException ?? ex).Message;
+                }
+            }
+
+            if (this.homelandFarmHoldToolCommandType == null)
+            {
+                this.TryHomelandFarmEnsureToolEquipTypes();
+            }
+
+            if (this.homelandFarmHoldToolCommandType == null)
+            {
+                return false;
+            }
+
+            bool sent = this.TryHomelandFarmSendCommand(
+                this.homelandFarmHoldToolCommandType,
+                command =>
+                {
+                    object cmd = command;
+                    bool ok = this.TrySetFieldValue(this.homelandFarmHoldToolCommandType, ref cmd, "ToolId", toolId);
+                    ok = this.TrySetFieldValue(this.homelandFarmHoldToolCommandType, ref cmd, "ToolSkinId", skinId) || ok;
+                    return ok;
+                },
+                out status);
+            if (sent)
+            {
+                status = "HoldTool SendCommand ok toolId=" + toolId + " skinId=" + skinId + ".";
+                this.HomelandFarmLog(status);
+            }
+
+            return sent;
+        }
+
+        private unsafe bool TryHomelandFarmInvokeAuraToolSystemSetHandhold(int toolId, out string status)
+        {
+            status = "Aura ToolSystem.SetHandhold unavailable.";
+            if (toolId <= 0)
+            {
+                status = "Tool id missing.";
+                return false;
+            }
+
+            if (!this.TryHomelandFarmEnsureToolEquipAuraMethods()
+                || this.homelandFarmAuraToolSystemSetHandholdMethod == IntPtr.Zero
+                || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr toolSystemObj = IntPtr.Zero;
+            if (this.homelandFarmAuraToolSystemInstanceGetterMethod != IntPtr.Zero)
+            {
+                IntPtr exc = IntPtr.Zero;
+                toolSystemObj = auraMonoRuntimeInvoke(
+                    this.homelandFarmAuraToolSystemInstanceGetterMethod,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    ref exc);
+                if (exc != IntPtr.Zero)
+                {
+                    status = "Aura ToolSystem.Instance failed exc=0x" + exc.ToInt64().ToString("X") + ".";
+                    return false;
+                }
+            }
+
+            if (toolSystemObj == IntPtr.Zero)
+            {
+                status = "Aura ToolSystem.Instance unavailable.";
+                return false;
+            }
+
+            IntPtr invokeExc = IntPtr.Zero;
+            IntPtr* args = stackalloc IntPtr[1];
+            args[0] = (IntPtr)(&toolId);
+            auraMonoRuntimeInvoke(
+                this.homelandFarmAuraToolSystemSetHandholdMethod,
+                toolSystemObj,
+                (IntPtr)args,
+                ref invokeExc);
+            if (invokeExc != IntPtr.Zero)
+            {
+                status = "Aura ToolSystem.SetHandhold failed exc=0x" + invokeExc.ToInt64().ToString("X") + ".";
+                return false;
+            }
+
+            status = "Aura ToolSystem.SetHandhold ok toolId=" + toolId + ".";
+            this.HomelandFarmLog(status);
+            return true;
+        }
+
+        private unsafe bool TryHomelandFarmInvokeAuraToolProtocolSetHandHold(int toolId, int skinId, out string status)
+        {
+            status = "Aura ToolProtocolManager.SetHandHold unavailable.";
+            if (toolId <= 0)
+            {
+                status = "Tool id missing.";
+                return false;
+            }
+
+            if (!this.TryHomelandFarmEnsureToolEquipAuraMethods()
+                || this.homelandFarmAuraToolProtocolSetHandHoldMethod == IntPtr.Zero
+                || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr* args = stackalloc IntPtr[2];
+            args[0] = (IntPtr)(&toolId);
+            args[1] = (IntPtr)(&skinId);
+            auraMonoRuntimeInvoke(this.homelandFarmAuraToolProtocolSetHandHoldMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+            if (exc != IntPtr.Zero)
+            {
+                status = "Aura ToolProtocolManager.SetHandHold failed exc=0x" + exc.ToInt64().ToString("X") + ".";
+                return false;
+            }
+
+            status = "Aura ToolProtocolManager.SetHandHold ok toolId=" + toolId + " skinId=" + skinId + ".";
+            this.HomelandFarmLog(status);
+            return true;
+        }
+
+        private bool TryHomelandFarmEquipSprinklerTool(out string status)
+        {
+            status = "Sprinkler tool equip unavailable.";
+            if (!this.TryHomelandFarmEnsureToolEquipTypes())
+            {
+                return false;
+            }
+
+            int toolId = HomelandFarmSprinklerToolTypeId;
+            this.TryHomelandFarmTryResolveSprinklerToolSkinId(out int skinId);
+
+            if (this.TryHomelandFarmInvokeAuraToolSystemSetHandhold(toolId, out string auraToolSystemStatus))
+            {
+                status = auraToolSystemStatus;
+                return true;
+            }
+
+            if (this.TryHomelandFarmTryGetToolSystemInstance(out object toolSystemInstance)
+                && toolSystemInstance != null
+                && this.homelandFarmToolSystemSetHandholdMethod != null)
+            {
+                try
+                {
+                    this.homelandFarmToolSystemSetHandholdMethod.Invoke(toolSystemInstance, new object[] { toolId });
+                    status = "ToolSystem.SetHandhold ok toolId=" + toolId + ".";
+                    this.HomelandFarmLog(status);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    status = "ToolSystem.SetHandhold exception: " + (ex.InnerException ?? ex).Message;
+                }
+            }
+
+            if (this.TryHomelandFarmInvokeAuraToolProtocolSetHandHold(toolId, skinId, out string auraProtocolStatus))
+            {
+                status = auraProtocolStatus;
+                return true;
+            }
+
+            return this.TryHomelandFarmSendHoldToolCommand(toolId, skinId, out status);
+        }
+
         private bool TryHomelandFarmEquipHandhold(uint itemNetId, out string status)
         {
             status = "EquipHandhold unavailable.";
@@ -6445,6 +7341,12 @@ namespace HeartopiaMod
                 return false;
             }
 
+            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+            if (this.TryHomelandFarmInvokeCropSeedingInterop(seedNetId, plantPoints, out status))
+            {
+                return true;
+            }
+
             // Native-only build: managed CropPlantPoint type is unavailable, so points are data carriers.
             if (plantPoints[0] is HomelandFarmCropPlantPointData)
             {
@@ -6472,7 +7374,14 @@ namespace HeartopiaMod
 
                 for (int i = 0; i < plantPoints.Count; i++)
                 {
-                    addMethod.Invoke(pointsList, new object[] { plantPoints[i] });
+                    object point = this.TryHomelandFarmMaterializeCropPlantPoint(plantPoints[i]);
+                    if (point == null)
+                    {
+                        status = "CropPlantPoint materialize failed at index " + i + ".";
+                        return false;
+                    }
+
+                    addMethod.Invoke(pointsList, new object[] { point });
                 }
 
                 this.homelandFarmCropSeedingMethod.Invoke(null, new object[] { seedNetId, pointsList });
@@ -6690,6 +7599,10 @@ namespace HeartopiaMod
                 }
 
                 IntPtr exc = IntPtr.Zero;
+                // CropPlantPoint is a value type: List<T>.Add(T) via mono_runtime_invoke expects a
+                // pointer to the UNBOXED struct value, not the boxed object. Passing the boxed
+                // MonoObject* makes Add copy the object header as struct data -> garbage
+                // pos/angle/levelObjectNetId on the wire -> server InvalidPlantBox.
                 if (pointIsValueType && auraMonoObjectUnbox != null)
                 {
                     IntPtr raw = auraMonoObjectUnbox(pointObj);
@@ -7068,7 +7981,7 @@ namespace HeartopiaMod
                 && fieldOwnerNetId == playerNetId;
         }
 
-        private bool TryHomelandFarmTryQuickAcceptFarmNetId(uint netId, HashSet<uint> output)
+        private bool TryHomelandFarmTryQuickAcceptFarmNetId(uint netId, HashSet<uint> output, bool includeLinkedCrops = true)
         {
             if (netId == 0U || output == null)
             {
@@ -7078,16 +7991,19 @@ namespace HeartopiaMod
             int before = output.Count;
             try
             {
-                // Fast component-data checks are cheaper than Aura GetAllComponents-based
-                // classification and avoid long frame stalls on large radius scans.
-                if (this.TryHomelandFarmGetComponentData(this.homelandFarmCropBoxItemDataType, netId, out _, out _, "CropBoxItemData")
-                    || this.TryHomelandFarmGetComponentData(this.homelandFarmPlantItemDataType, netId, out _, out _, "PlantItemData")
-                    || this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, netId, out _, out _, "CropItemData"))
+                if (this.TryHomelandFarmClassifyFarmNetId(netId, out bool isCropBox))
                 {
                     output.Add(netId);
-                }
+                    if (isCropBox)
+                    {
+                        this.homelandFarmLastScanCropBoxNetIds.Add(netId);
+                    }
 
-                this.TryHomelandFarmCollectCropNetIdsForEntity(netId, output);
+                    if (includeLinkedCrops)
+                    {
+                        this.TryHomelandFarmCollectCropNetIdsForEntity(netId, output);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -7155,39 +8071,171 @@ namespace HeartopiaMod
                     || cropComponentClass != IntPtr.Zero;
             }
 
-            if (plantComponentClass == IntPtr.Zero)
+            // At least one class is still unresolved here. Resolving it scans every loaded
+            // assembly/image (expensive), so throttle the attempt — otherwise classify pays the
+            // full scan on every entity when a class simply does not exist in this build.
+            float nowResolve = Time.realtimeSinceStartup;
+            if (nowResolve < this.homelandFarmAuraFarmComponentClassRetryAt)
             {
-                plantComponentClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTLevelAndEntity.Gameplay.Component.Plant", "PlantComponent");
-                if (plantComponentClass == IntPtr.Zero)
-                {
-                    plantComponentClass = this.FindAuraMonoClassAcrossLoadedAssemblies("ScriptsRefactory.LevelAndEntity.Gameplay.Component.Plant", "PlantComponent");
-                }
-
-                this.homelandFarmAuraPlantComponentClass = plantComponentClass;
+                return plantComponentClass != IntPtr.Zero
+                    || cropBoxComponentClass != IntPtr.Zero
+                    || cropComponentClass != IntPtr.Zero;
             }
 
-            if (cropBoxComponentClass == IntPtr.Zero)
-            {
-                cropBoxComponentClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTLevelAndEntity.Gameplay.Component.Homeland", "CropBoxComponent");
-                if (cropBoxComponentClass == IntPtr.Zero)
-                {
-                    cropBoxComponentClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTLevelAndEntity.Gameplay.Component.Farm", "CropBoxComponent");
-                }
+            this.homelandFarmAuraFarmComponentClassRetryAt = nowResolve + HomelandFarmAuraComponentClassResolveRetrySeconds;
 
-                if (cropBoxComponentClass == IntPtr.Zero)
-                {
-                    cropBoxComponentClass = this.FindAuraMonoClassAcrossLoadedAssemblies("ScriptsRefactory.LevelAndEntity.Gameplay.Component.Farm", "CropBoxComponent");
-                }
+            // Run the full multi-strategy resolution (and log which classes were found / missing).
+            this.HomelandFarmResolveFarmComponentClassesInternal(logResults: true);
 
-                this.homelandFarmAuraCropBoxComponentClass = cropBoxComponentClass;
-            }
-
-            if (cropComponentClass == IntPtr.Zero)
-            {
-                this.TryResolveHomelandFarmAuraCropComponentClass(out cropComponentClass);
-            }
-
+            plantComponentClass = this.homelandFarmAuraPlantComponentClass;
+            cropBoxComponentClass = this.homelandFarmAuraCropBoxComponentClass;
+            cropComponentClass = this.homelandFarmAuraCropComponentClass;
             return plantComponentClass != IntPtr.Zero || cropBoxComponentClass != IntPtr.Zero || cropComponentClass != IntPtr.Zero;
+        }
+
+        // Full namespace / full-name candidate lists for each farm component class. Cover both
+        // "Gameplay"/"GamePlay" spellings and XDTLevelAndEntity / ScriptsRefactory variants so the
+        // class resolves regardless of which build is loaded.
+        private static readonly string[] HomelandFarmAuraPlantComponentNamespaces =
+        {
+            "XDTLevelAndEntity.Gameplay.Component.Plant",
+            "XDTLevelAndEntity.GamePlay.Component.Plant",
+            "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Plant",
+            "ScriptsRefactory.LevelAndEntity.GamePlay.Component.Plant",
+        };
+
+        private static readonly string[] HomelandFarmAuraPlantComponentFullNames =
+        {
+            "XDTLevelAndEntity.Gameplay.Component.Plant.PlantComponent",
+            "XDTLevelAndEntity.GamePlay.Component.Plant.PlantComponent",
+            "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Plant.PlantComponent",
+        };
+
+        private static readonly string[] HomelandFarmAuraCropBoxComponentNamespaces =
+        {
+            "XDTLevelAndEntity.Gameplay.Component.Homeland",
+            "XDTLevelAndEntity.Gameplay.Component.Farm",
+            "XDTLevelAndEntity.GamePlay.Component.Homeland",
+            "XDTLevelAndEntity.GamePlay.Component.Farm",
+            "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Farm",
+            "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Homeland",
+        };
+
+        private static readonly string[] HomelandFarmAuraCropBoxComponentFullNames =
+        {
+            "XDTLevelAndEntity.Gameplay.Component.Homeland.CropBoxComponent",
+            "XDTLevelAndEntity.Gameplay.Component.Farm.CropBoxComponent",
+            "XDTLevelAndEntity.GamePlay.Component.Homeland.CropBoxComponent",
+            "XDTLevelAndEntity.GamePlay.Component.Farm.CropBoxComponent",
+            "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Farm.CropBoxComponent",
+        };
+
+        private static readonly string[] HomelandFarmAuraCropComponentNamespaces =
+        {
+            "XDTLevelAndEntity.Gameplay.Component.Homeland",
+            "XDTLevelAndEntity.Gameplay.Component.Farm",
+            "XDTLevelAndEntity.GamePlay.Component.Homeland",
+            "XDTLevelAndEntity.GamePlay.Component.Farm",
+            "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Farm",
+            "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Homeland",
+        };
+
+        // Resolve all three farm component classes using every available strategy, then log which
+        // were found (with their resolved class name) and which are still missing. Each class is
+        // resolved independently and only when still unknown, so warmup converges as assemblies load.
+        internal void HomelandFarmResolveFarmComponentClassesInternal(bool logResults)
+        {
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                if (logResults)
+                {
+                    this.HomelandFarmLog("Farm component class warmup skipped: AuraMono API/thread not ready.");
+                }
+
+                return;
+            }
+
+            if (this.homelandFarmAuraPlantComponentClass == IntPtr.Zero)
+            {
+                this.homelandFarmAuraPlantComponentClass = this.HomelandFarmResolveAuraComponentClassRobust(
+                    HomelandFarmAuraPlantComponentFullNames,
+                    "PlantComponent",
+                    HomelandFarmAuraPlantComponentNamespaces,
+                    candidate => this.HomelandFarmAuraClassDisplayNameContains(candidate, "PlantComponent"));
+            }
+
+            if (this.homelandFarmAuraCropBoxComponentClass == IntPtr.Zero)
+            {
+                this.homelandFarmAuraCropBoxComponentClass = this.HomelandFarmResolveAuraComponentClassRobust(
+                    HomelandFarmAuraCropBoxComponentFullNames,
+                    "CropBoxComponent",
+                    HomelandFarmAuraCropBoxComponentNamespaces,
+                    candidate => this.HomelandFarmAuraClassDisplayNameContains(candidate, "CropBoxComponent"));
+            }
+
+            if (this.homelandFarmAuraCropComponentClass == IntPtr.Zero)
+            {
+                // CropComponent has its own validator (must exclude CropBoxComponent); reuse the
+                // existing resolver, which already tries full names, candidates and an all-image scan.
+                this.TryResolveHomelandFarmAuraCropComponentClass(out _);
+            }
+
+            if (logResults)
+            {
+                this.HomelandFarmLog(
+                    "Farm component class warmup: "
+                    + "PlantComponent=" + this.DescribeHomelandFarmAuraClass(this.homelandFarmAuraPlantComponentClass)
+                    + " | CropBoxComponent=" + this.DescribeHomelandFarmAuraClass(this.homelandFarmAuraCropBoxComponentClass)
+                    + " | CropComponent=" + this.DescribeHomelandFarmAuraClass(this.homelandFarmAuraCropComponentClass));
+            }
+        }
+
+        // Strategy order per class: (1) exact full names via likely images + loaded assemblies,
+        // (2) namespace + short name across loaded assemblies, (3) all-images mono_class_from_name
+        // scan. Each candidate is validated by name so we never bind the wrong short-name collision.
+        private IntPtr HomelandFarmResolveAuraComponentClassRobust(
+            string[] fullNames,
+            string shortName,
+            string[] namespaceCandidates,
+            Func<IntPtr, bool> validator)
+        {
+            if (fullNames != null)
+            {
+                for (int i = 0; i < fullNames.Length; i++)
+                {
+                    IntPtr candidate = this.FindAuraMonoClassByFullName(fullNames[i]);
+                    if (candidate != IntPtr.Zero && (validator == null || validator(candidate)))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+
+            if (namespaceCandidates != null && !string.IsNullOrEmpty(shortName))
+            {
+                for (int i = 0; i < namespaceCandidates.Length; i++)
+                {
+                    IntPtr candidate = this.FindAuraMonoClassAcrossLoadedAssemblies(namespaceCandidates[i], shortName);
+                    if (candidate != IntPtr.Zero && (validator == null || validator(candidate)))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+
+            return this.FindHomelandFarmAuraClassByScanningAllImages(shortName, namespaceCandidates, validator);
+        }
+
+        private bool HomelandFarmAuraClassDisplayNameContains(IntPtr classPtr, string token)
+        {
+            if (classPtr == IntPtr.Zero || string.IsNullOrEmpty(token))
+            {
+                return false;
+            }
+
+            string displayName = this.GetAuraMonoClassDisplayName(classPtr);
+            return !string.IsNullOrEmpty(displayName)
+                && displayName.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private bool LooksLikeAuraMonoFarmComponentClass(
@@ -7496,30 +8544,36 @@ namespace HeartopiaMod
             }
 
             candidates.Sort((a, b) => a.Distance.CompareTo(b.Distance));
-            int verifyLimit = Mathf.Min(candidates.Count, HomelandFarmMaxAuraFarmComponentChecks);
+            if (spatialScan && candidates.Count > HomelandFarmMaxAuraFarmSpatialCandidates)
+            {
+                candidates.RemoveRange(
+                    HomelandFarmMaxAuraFarmSpatialCandidates,
+                    candidates.Count - HomelandFarmMaxAuraFarmSpatialCandidates);
+            }
+
+            int verifyLimit = spatialScan
+                ? Mathf.Min(candidates.Count, HomelandFarmMaxAuraFarmSpatialVerifyCount)
+                : Mathf.Min(candidates.Count, HomelandFarmMaxAuraFarmComponentChecks);
             float verifyStartedAt = Time.realtimeSinceStartup;
             for (int i = 0; i < verifyLimit; i++)
             {
+                if (spatialScan
+                    && Time.realtimeSinceStartup - verifyStartedAt >= HomelandFarmAuraSpatialVerifyBudgetSeconds)
+                {
+                    break;
+                }
+
                 HomelandFarmAuraEntityCandidate candidate = candidates[i];
                 inspected++;
                 try
                 {
-                    // TryQuickAccept already runs the farm-component check internally,
-                    // so don't pre-check here (that doubled the native AuraMono calls).
                     int before = output.Count;
-                    this.TryHomelandFarmTryQuickAcceptFarmNetId(candidate.NetId, output);
+                    this.TryHomelandFarmTryQuickAcceptFarmNetId(candidate.NetId, output, includeLinkedCrops: false);
                     added += output.Count - before;
                 }
                 catch (Exception ex)
                 {
                     this.HomelandFarmLog("Aura entity farm scan failed netId=" + candidate.NetId + ": " + ex.Message);
-                }
-
-                if (spatialScan
-                    && (i & 7) == 7
-                    && Time.realtimeSinceStartup - verifyStartedAt >= HomelandFarmAuraSpatialVerifyBudgetSeconds)
-                {
-                    break;
                 }
             }
 
@@ -7534,6 +8588,56 @@ namespace HeartopiaMod
         {
             public uint NetId;
             public float Distance;
+        }
+
+        // Loaded-entity enumeration can return stale pointers; never call GetAllComponents on them.
+        // Always resolve through Entities.GetEntity(netId) first (see AuraEntities funnel comment).
+        private bool TryHomelandFarmTryGuardAuraEntityBeforeHeavyAccess(IntPtr entityObj)
+        {
+            if (entityObj == IntPtr.Zero || auraMonoObjectGetClass == null || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr entityClass = auraMonoObjectGetClass(entityObj);
+            if (entityClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr getAlivedMethod = this.FindAuraMonoMethodOnHierarchy(entityClass, "get_alived", 0);
+            if (getAlivedMethod != IntPtr.Zero)
+            {
+                IntPtr excAlive = IntPtr.Zero;
+                IntPtr alivedResult = auraMonoRuntimeInvoke(getAlivedMethod, entityObj, IntPtr.Zero, ref excAlive);
+                if (excAlive != IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                if (alivedResult != IntPtr.Zero && this.TryUnboxMonoBoolean(alivedResult, out bool isAlive) && !isAlive)
+                {
+                    return false;
+                }
+            }
+
+            IntPtr getSpawnedMethod = this.FindAuraMonoMethodOnHierarchy(entityClass, "get_spawned", 0);
+            if (getSpawnedMethod != IntPtr.Zero)
+            {
+                IntPtr excSpawned = IntPtr.Zero;
+                IntPtr spawnedResult = auraMonoRuntimeInvoke(getSpawnedMethod, entityObj, IntPtr.Zero, ref excSpawned);
+                if (excSpawned != IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                if (spawnedResult != IntPtr.Zero && this.TryUnboxMonoBoolean(spawnedResult, out bool isSpawned) && !isSpawned)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private bool TryHomelandFarmTryGetLevelObjectScanNetId(object levelObject, object dictionaryEntry, out uint scanNetId)
@@ -8028,9 +9132,23 @@ namespace HeartopiaMod
         private bool EnsureHomelandFarmScannerTypes()
         {
             this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+            this.ResolveAuraFarmRuntimeMethods();
             if (this.homelandFarmEntitiesType == null)
             {
                 this.homelandFarmEntitiesType = this.FindEntitiesRuntimeType();
+            }
+
+            if (this.homelandFarmEntitiesType == null && this.auraEntitiesType != null)
+            {
+                this.homelandFarmEntitiesType = this.auraEntitiesType;
+            }
+
+            if (this.homelandFarmEntitiesType == null)
+            {
+                this.homelandFarmEntitiesType = this.FindTypeByName(
+                    "XDTLevelAndEntity.BaseSystem.EntitiesManager.Entities",
+                    "XDTLevelAndEntity.BaseSystem.EntitiesManager",
+                    "Entities");
             }
 
             if (this.homelandFarmEntityType == null)
@@ -8052,7 +9170,15 @@ namespace HeartopiaMod
 
             if (this.homelandFarmCropBoxComponentType == null)
             {
-                this.homelandFarmCropBoxComponentType = this.ResolveHomelandFarmCropBoxComponentRuntimeType();
+                this.homelandFarmCropBoxComponentType = this.ResolveHomelandFarmCropBoxComponentRuntimeType()
+                    ?? this.FindTypeByName(
+                        "XDTLevelAndEntity.Gameplay.Component.Homeland.CropBoxComponent",
+                        "XDTLevelAndEntity.Gameplay.Component.Homeland",
+                        "CropBoxComponent")
+                    ?? this.FindTypeByName(
+                        "XDTLevelAndEntity.Gameplay.Component.Farm.CropBoxComponent",
+                        "XDTLevelAndEntity.Gameplay.Component.Farm",
+                        "CropBoxComponent");
             }
 
             if (this.homelandFarmPlantComponentType == null)
@@ -8156,6 +9282,25 @@ namespace HeartopiaMod
 
         private bool TryHomelandFarmCollectFarmEntityNetIds(HashSet<uint> output, out string source, Vector3 scanCenter, float scanRadius)
         {
+            return this.TryHomelandFarmCollectFarmEntityNetIds(
+                output,
+                out source,
+                scanCenter,
+                scanRadius,
+                allowUnsafeAuraMonoGetComponents: false,
+                proximityBudgetSeconds: HomelandFarmAuraProximityComponentScanBudgetSeconds,
+                allowAuraEntityFunnel: true);
+        }
+
+        private bool TryHomelandFarmCollectFarmEntityNetIds(
+            HashSet<uint> output,
+            out string source,
+            Vector3 scanCenter,
+            float scanRadius,
+            bool allowUnsafeAuraMonoGetComponents,
+            float proximityBudgetSeconds = HomelandFarmAuraProximityComponentScanBudgetSeconds,
+            bool allowAuraEntityFunnel = true)
+        {
             source = string.Empty;
             if (output == null)
             {
@@ -8163,13 +9308,42 @@ namespace HeartopiaMod
             }
 
             output.Clear();
+            this.homelandFarmLastScanCropBoxNetIds.Clear();
             this.TryEnsureHomelandFarmInteropAssembliesLoaded();
             this.EnsureHomelandFarmScannerTypes();
             this.ResolveAuraFarmRuntimeMethods();
             List<string> sources = new List<string>(8);
             bool spatialScan = scanRadius > 0f && scanCenter != Vector3.zero;
 
+            if (spatialScan
+                && this.TryHomelandFarmCollectFarmNetIdsFromRegisteredCache(scanCenter, scanRadius, output, out int registeredAdded)
+                && registeredAdded > 0)
+            {
+                sources.Add("RegisteredCache(" + registeredAdded + ")");
+            }
+
+            if (spatialScan
+                && this.TryHomelandFarmCollectFarmNetIdsFromInteractSeeds(scanCenter, scanRadius, output, out int interactAdded)
+                && interactAdded > 0)
+            {
+                sources.Add("InteractSeeds(" + interactAdded + ")");
+            }
+
             int before = output.Count;
+            if (spatialScan
+                && (allowUnsafeAuraMonoGetComponents || this.homelandFarmEntitiesGetComponentsMethod != null)
+                && this.TryHomelandFarmCollectFarmNetIdsByComponentRadius(
+                    scanCenter,
+                    scanRadius,
+                    output,
+                    out int componentRadiusAdded,
+                    allowUnsafeAuraMonoGetComponents)
+                && componentRadiusAdded > 0)
+            {
+                sources.Add("ComponentRadius(" + componentRadiusAdded + ")");
+            }
+
+            before = output.Count;
             // For radius scans, try cheap spatial queries first; they usually return nearby
             // farm entities immediately and avoid a full Aura loaded-entity pass.
             if (spatialScan
@@ -8199,35 +9373,44 @@ namespace HeartopiaMod
                 sources.Add("LevelObjectCache(" + levelCacheAdded + ")");
             }
 
-            // Crop boxes are live entities, not level objects, so neither SphereQuery nor the
-            // level-object cache surfaces them. Query them directly by component type — this is a
-            // targeted lookup over only farm entities (no 4096-entity funnel) and is what makes the
-            // common water case both correct (crop boxes found) and fast. Always run for spatial
-            // scans so crop boxes are merged in even when plants/crops were already collected.
+            // Crop boxes are live entities — ComponentRadius (GetComponents) and proximity scan
+            // above are the fast paths. Skip duplicate ComponentRadius call here.
             before = output.Count;
             if (spatialScan
-                && this.TryHomelandFarmCollectFarmNetIdsByComponentRadius(scanCenter, scanRadius, output, out int componentRadiusAdded)
-                && componentRadiusAdded > 0)
-            {
-                sources.Add("ComponentRadius(" + componentRadiusAdded + ")");
-            }
-
-            // Aura loaded-entity funnel is the most expensive path, but it is the ONLY source that
-            // surfaces crop boxes (SphereQuery/Cylinder are entity queries that miss them, the level
-            // object cache only holds plants, and ComponentRadius is unavailable in this build). It
-            // MUST run on every spatial scan and merge its results — otherwise a cheaper source that
-            // returns only plants (e.g. LevelObjectCache at a large radius) short-circuits it and the
-            // crop boxes silently disappear, so the scan returns wildly different sets per radius.
-            before = output.Count;
-            if (this.TryHomelandFarmCollectFarmNetIdsFromAuraLoadedEntities(
+                && this.homelandFarmLastScanCropBoxNetIds.Count == 0
+                && this.TryHomelandFarmCollectFarmNetIdsFromAuraProximityComponentScan(
                     scanCenter,
                     scanRadius,
                     output,
-                    out int auraEntityAdded,
-                    out int auraEntityInspected)
-                && auraEntityAdded > 0)
+                    out int proximityAdded,
+                    out int proximityInspected,
+                    proximityBudgetSeconds)
+                && proximityAdded > 0)
             {
-                sources.Add("AuraEntities(" + auraEntityAdded + "/" + auraEntityInspected + ")");
+                sources.Add("AuraProximity(" + proximityAdded + "/" + proximityInspected + ")");
+            }
+
+            // Aura funnel: skip when any spatial source already found farm entities (especially crop boxes).
+            before = output.Count;
+            bool skipAuraEntityFunnel = !allowAuraEntityFunnel
+                || (spatialScan
+                && (this.homelandFarmLastScanCropBoxNetIds.Count > 0 || output.Count > 0));
+            if (!skipAuraEntityFunnel)
+            {
+                if (this.TryHomelandFarmCollectFarmNetIdsFromAuraLoadedEntities(
+                        scanCenter,
+                        scanRadius,
+                        output,
+                        out int auraEntityAdded,
+                        out int auraEntityInspected)
+                    && auraEntityAdded > 0)
+                {
+                    sources.Add("AuraEntities(" + auraEntityAdded + "/" + auraEntityInspected + ")");
+                }
+            }
+            else if (spatialScan)
+            {
+                sources.Add("AuraEntities(skipped,output=" + output.Count + ",cropBoxes=" + this.homelandFarmLastScanCropBoxNetIds.Count + ")");
             }
 
             // Radius actions already have fast spatial sources (Aura entities/cylinder/sphere).
@@ -8832,7 +10015,12 @@ namespace HeartopiaMod
         // the only correct fast source is a component-type query, which returns ONLY farm entities
         // directly instead of enumerating all ~4096 loaded entities. We then resolve positions for
         // just that small farm set and radius-filter, mirroring how AuraFarm queries by intent.
-        private bool TryHomelandFarmCollectFarmNetIdsByComponentRadius(Vector3 center, float radius, HashSet<uint> output, out int added)
+        private bool TryHomelandFarmCollectFarmNetIdsByComponentRadius(
+            Vector3 center,
+            float radius,
+            HashSet<uint> output,
+            out int added,
+            bool allowUnsafeAuraMonoGetComponents)
         {
             added = 0;
             if (output == null || radius <= 0f || center == Vector3.zero)
@@ -8843,21 +10031,61 @@ namespace HeartopiaMod
             this.EnsureHomelandFarmScannerTypes();
             if (this.homelandFarmEntitiesGetComponentsMethod == null)
             {
-                if (!this.homelandFarmComponentRadiusWarned)
+                if (!allowUnsafeAuraMonoGetComponents)
                 {
-                    this.homelandFarmComponentRadiusWarned = true;
-                    this.HomelandFarmLog("ComponentRadius unavailable: GetComponents method not resolved"
-                        + " (entitiesType=" + (this.homelandFarmEntitiesType != null)
-                        + " cropBoxType=" + (this.homelandFarmCropBoxComponentType != null) + "). Suppressing further notices.");
+                    if (!this.homelandFarmComponentRadiusWarned)
+                    {
+                        this.homelandFarmComponentRadiusWarned = true;
+                        this.HomelandFarmLog("ComponentRadius unavailable: managed Entities.GetComponents unavailable. Suppressing further notices.");
+                    }
+
+                    return false;
                 }
 
+                if (!this.TryEnsureHomelandFarmEntitiesGetComponentsReady(out string resolveStatus))
+                {
+                    if (!this.homelandFarmComponentRadiusWarned)
+                    {
+                        this.homelandFarmComponentRadiusWarned = true;
+                        this.HomelandFarmLog("ComponentRadius unavailable: " + resolveStatus + " Suppressing further notices.");
+                    }
+
+                    return false;
+                }
+            }
+            else if (!this.TryEnsureHomelandFarmEntitiesGetComponentsReady(out _))
+            {
                 return false;
             }
 
+            HashSet<uint> cropBoxComponentNetIds = new HashSet<uint>();
             HashSet<uint> componentNetIds = new HashSet<uint>();
-            this.TryHomelandFarmCollectComponentsNetIds(this.homelandFarmCropBoxComponentType, componentNetIds, "CropBoxComponent(radius)");
-            this.TryHomelandFarmCollectComponentsNetIds(this.homelandFarmCropComponentType, componentNetIds, "CropComponent(radius)");
-            this.TryHomelandFarmCollectComponentsNetIds(this.homelandFarmPlantComponentType, componentNetIds, "PlantComponent(radius)");
+            if (this.homelandFarmEntitiesGetComponentsMethod != null)
+            {
+                this.TryHomelandFarmCollectComponentsNetIds(this.homelandFarmCropBoxComponentType, cropBoxComponentNetIds, "CropBoxComponent(radius)");
+                foreach (uint cropBoxNetId in cropBoxComponentNetIds)
+                {
+                    componentNetIds.Add(cropBoxNetId);
+                }
+
+                this.TryHomelandFarmCollectComponentsNetIds(this.homelandFarmCropComponentType, componentNetIds, "CropComponent(radius)");
+                this.TryHomelandFarmCollectComponentsNetIds(this.homelandFarmPlantComponentType, componentNetIds, "PlantComponent(radius)");
+            }
+            else if (allowUnsafeAuraMonoGetComponents && this.TryHomelandFarmIsAuraMonoGetComponentsReady(out _))
+            {
+                this.TryResolveAuraMonoFarmComponentClasses(
+                    out IntPtr plantComponentClass,
+                    out IntPtr cropBoxComponentClass,
+                    out IntPtr cropComponentClass);
+                this.TryHomelandFarmCollectComponentsNetIdsViaAuraMono(cropBoxComponentClass, cropBoxComponentNetIds, "CropBoxComponent(radius)", isCropBox: true);
+                foreach (uint cropBoxNetId in cropBoxComponentNetIds)
+                {
+                    componentNetIds.Add(cropBoxNetId);
+                }
+
+                this.TryHomelandFarmCollectComponentsNetIdsViaAuraMono(cropComponentClass, componentNetIds, "CropComponent(radius)", isCropBox: false);
+                this.TryHomelandFarmCollectComponentsNetIdsViaAuraMono(plantComponentClass, componentNetIds, "PlantComponent(radius)", isCropBox: false);
+            }
 
             if (componentNetIds.Count == 0)
             {
@@ -8888,6 +10116,13 @@ namespace HeartopiaMod
                 if (output.Add(netId))
                 {
                     added++;
+                    bool isCropBox = cropBoxComponentNetIds.Contains(netId);
+                    if (isCropBox)
+                    {
+                        this.homelandFarmLastScanCropBoxNetIds.Add(netId);
+                    }
+
+                    this.TryHomelandFarmRegisterDiscoveredFarmTarget(netId, isCropBox);
                 }
             }
 
@@ -8896,49 +10131,455 @@ namespace HeartopiaMod
 
         private bool TryHomelandFarmCollectComponentsNetIds(Type componentType, HashSet<uint> output, string label)
         {
-            if (componentType == null || output == null || this.homelandFarmEntitiesGetComponentsMethod == null)
+            if (output == null)
             {
                 return false;
             }
 
-            try
+            if (componentType != null
+                && this.TryEnsureHomelandFarmEntitiesGetComponentsReady(out _)
+                && this.homelandFarmEntitiesGetComponentsMethod != null)
             {
-                Type listType = typeof(List<>).MakeGenericType(componentType);
-                object componentList = Activator.CreateInstance(listType);
-                object[] args = new object[] { componentList };
-                this.homelandFarmEntitiesGetComponentsMethod.MakeGenericMethod(componentType).Invoke(null, args);
-                object results = args[0] ?? componentList;
-                if (!(results is IEnumerable enumerable))
+                try
                 {
+                    Type listType = typeof(List<>).MakeGenericType(componentType);
+                    object componentList = Activator.CreateInstance(listType);
+                    object[] args = new object[] { componentList };
+                    this.homelandFarmEntitiesGetComponentsMethod.MakeGenericMethod(componentType).Invoke(null, args);
+                    object results = args[0] ?? componentList;
+                    if (!(results is IEnumerable enumerable))
+                    {
+                        return false;
+                    }
+
+                    int added = 0;
+                    foreach (object component in enumerable)
+                    {
+                        if (component == null)
+                        {
+                            continue;
+                        }
+
+                        if (!this.TryHomelandFarmTryReadComponentNetId(component, out uint netId) || netId == 0U)
+                        {
+                            continue;
+                        }
+
+                        if (output.Add(netId))
+                        {
+                            added++;
+                            if (componentType == this.homelandFarmCropBoxComponentType)
+                            {
+                                this.homelandFarmLastScanCropBoxNetIds.Add(netId);
+                            }
+
+                            this.TryHomelandFarmRegisterDiscoveredFarmTarget(
+                                netId,
+                                componentType == this.homelandFarmCropBoxComponentType);
+                        }
+                    }
+
+                    if (added > 0)
+                    {
+                        this.HomelandFarmLog(label + " scan added " + added + " netId(s).");
+                    }
+
+                    return added > 0;
+                }
+                catch (Exception ex)
+                {
+                    this.HomelandFarmLog(label + " scan failed: " + ex.Message);
                     return false;
                 }
-
-                int added = 0;
-                foreach (object component in enumerable)
-                {
-                    if (component == null)
-                    {
-                        continue;
-                    }
-
-                    if (this.TryHomelandFarmTryReadComponentNetId(component, out uint netId) && netId != 0U && output.Add(netId))
-                    {
-                        added++;
-                    }
-                }
-
-                if (added > 0)
-                {
-                    this.HomelandFarmLog(label + " scan added " + added + " netId(s).");
-                }
-
-                return added > 0;
             }
-            catch (Exception ex)
+
+            if (!HomelandFarmAllowUnsafeAuraMonoGetComponents)
             {
-                this.HomelandFarmLog(label + " scan failed: " + ex.Message);
                 return false;
             }
+
+            if (!this.TryHomelandFarmIsAuraMonoGetComponentsReady(out _))
+            {
+                return false;
+            }
+
+            if (!this.TryResolveHomelandFarmAuraMonoComponentClassForManagedType(componentType, label, out IntPtr componentClass)
+                || componentClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            bool isCropBox = componentType == this.homelandFarmCropBoxComponentType
+                || (!string.IsNullOrEmpty(label) && label.IndexOf("CropBox", StringComparison.OrdinalIgnoreCase) >= 0);
+            return this.TryHomelandFarmCollectComponentsNetIdsViaAuraMono(componentClass, output, label, isCropBox);
+        }
+
+        private bool TryHomelandFarmIsAuraMonoGetComponentsReady(out string status)
+        {
+            status = string.Empty;
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                status = "AuraMono API unavailable.";
+                return false;
+            }
+
+            if (!this.TryResolveHomelandFarmAuraScanClasses(out status) || this.homelandFarmAuraEntitiesClass == IntPtr.Zero)
+            {
+                status = string.IsNullOrEmpty(status) ? "Aura Entities class unavailable." : status;
+                return false;
+            }
+
+            if (this.homelandFarmAuraEntitiesGetComponentsMethod == IntPtr.Zero)
+            {
+                this.homelandFarmAuraEntitiesGetComponentsMethod = this.FindAuraMonoMethodOnHierarchy(
+                    this.homelandFarmAuraEntitiesClass,
+                    "GetComponents",
+                    1);
+            }
+
+            if (this.homelandFarmAuraEntitiesGetComponentsMethod == IntPtr.Zero)
+            {
+                status = "AuraMono Entities.GetComponents unavailable.";
+                return false;
+            }
+
+            if (auraMonoClassInflateGenericMethod == null || auraMonoClassGetType == null)
+            {
+                status = "AuraMono generic method inflate unavailable.";
+                return false;
+            }
+
+            if (!this.TryResolveAuraMonoFarmComponentClasses(out IntPtr plantClass, out IntPtr cropBoxClass, out IntPtr cropClass)
+                || (plantClass == IntPtr.Zero && cropBoxClass == IntPtr.Zero && cropClass == IntPtr.Zero))
+            {
+                status = "AuraMono farm component classes unavailable.";
+                return false;
+            }
+
+            if (!HomelandFarmAllowUnsafeAuraMonoGetComponents)
+            {
+                status = "AuraMono GetComponents disabled (unsafe on embedded mono).";
+                return false;
+            }
+
+            status = "AuraMono Entities.GetComponents ready.";
+            return true;
+        }
+
+        private bool TryResolveHomelandFarmAuraMonoComponentClassForManagedType(Type componentType, string label, out IntPtr componentClass)
+        {
+            componentClass = IntPtr.Zero;
+            if (!this.TryResolveAuraMonoFarmComponentClasses(out IntPtr plantClass, out IntPtr cropBoxClass, out IntPtr cropClass))
+            {
+                return false;
+            }
+
+            if (componentType == this.homelandFarmCropBoxComponentType)
+            {
+                componentClass = cropBoxClass;
+            }
+            else if (componentType == this.homelandFarmPlantComponentType)
+            {
+                componentClass = plantClass;
+            }
+            else if (componentType == this.homelandFarmCropComponentType)
+            {
+                componentClass = cropClass;
+            }
+            else if (!string.IsNullOrEmpty(label))
+            {
+                if (label.IndexOf("CropBox", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    componentClass = cropBoxClass;
+                }
+                else if (label.IndexOf("Plant", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    componentClass = plantClass;
+                }
+                else if (label.IndexOf("Crop", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    componentClass = cropClass;
+                }
+            }
+
+            return componentClass != IntPtr.Zero;
+        }
+
+        private string[] BuildHomelandFarmAuraMonoListTypeCandidates(IntPtr componentClass)
+        {
+            if (componentClass == IntPtr.Zero)
+            {
+                return Array.Empty<string>();
+            }
+
+            string displayName = this.GetAuraMonoClassDisplayName(componentClass);
+            if (string.IsNullOrEmpty(displayName))
+            {
+                return Array.Empty<string>();
+            }
+
+            return new string[]
+            {
+                "System.Collections.Generic.List`1[[" + displayName + ", XDTLevelAndEntity]]",
+                "System.Collections.Generic.List`1[[" + displayName + ", ScriptsRefactory.LevelAndEntity]]",
+                "System.Collections.Generic.List`1[[" + displayName + ", Client]]",
+                "System.Collections.Generic.List`1[[" + displayName + ", EcsClient]]",
+                "System.Collections.Generic.List`1[[" + displayName + ", Assembly-CSharp]]"
+            };
+        }
+
+        private unsafe bool TryHomelandFarmCreateAuraMonoComponentList(IntPtr componentClass, out IntPtr listObj, out string status)
+        {
+            listObj = IntPtr.Zero;
+            status = string.Empty;
+            if (componentClass == IntPtr.Zero)
+            {
+                status = "component class missing";
+                return false;
+            }
+
+            if (this.homelandFarmAuraComponentListClassByComponentClass.TryGetValue(componentClass, out IntPtr cachedListClass)
+                && cachedListClass != IntPtr.Zero
+                && auraMonoObjectNew != null)
+            {
+                listObj = auraMonoObjectNew(this.auraMonoRootDomain, cachedListClass);
+                if (listObj != IntPtr.Zero)
+                {
+                    if (auraMonoRuntimeObjectInit != null)
+                    {
+                        auraMonoRuntimeObjectInit(listObj);
+                    }
+
+                    return true;
+                }
+            }
+
+            if (auraMonoStringNew == null
+                || auraMonoRuntimeInvoke == null
+                || this.auraMonoTypeGetTypeMethodPtr == IntPtr.Zero
+                || this.auraMonoActivatorCreateInstanceMethodPtr == IntPtr.Zero
+                || auraMonoObjectGetClass == null)
+            {
+                status = "AuraMono list prerequisites unavailable";
+                return false;
+            }
+
+            string[] candidates = this.BuildHomelandFarmAuraMonoListTypeCandidates(componentClass);
+            IntPtr* typeArgs = stackalloc IntPtr[1];
+            IntPtr* createArgs = stackalloc IntPtr[1];
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                IntPtr typeNameObj = auraMonoStringNew(this.auraMonoRootDomain, candidates[i]);
+                if (typeNameObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                typeArgs[0] = typeNameObj;
+                IntPtr exc = IntPtr.Zero;
+                IntPtr typeObj = auraMonoRuntimeInvoke(this.auraMonoTypeGetTypeMethodPtr, IntPtr.Zero, (IntPtr)typeArgs, ref exc);
+                if (exc != IntPtr.Zero || typeObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                createArgs[0] = typeObj;
+                exc = IntPtr.Zero;
+                listObj = auraMonoRuntimeInvoke(this.auraMonoActivatorCreateInstanceMethodPtr, IntPtr.Zero, (IntPtr)createArgs, ref exc);
+                if (exc != IntPtr.Zero || listObj == IntPtr.Zero)
+                {
+                    listObj = IntPtr.Zero;
+                    continue;
+                }
+
+                IntPtr listClass = auraMonoObjectGetClass(listObj);
+                if (listClass != IntPtr.Zero)
+                {
+                    this.homelandFarmAuraComponentListClassByComponentClass[componentClass] = listClass;
+                }
+
+                return true;
+            }
+
+            status = "AuraMono List<T> create failed";
+            return false;
+        }
+
+        private unsafe bool TryHomelandFarmTryResolveInflatedAuraEntitiesGetComponentsMethod(
+            IntPtr componentClass,
+            out IntPtr inflatedMethod)
+        {
+            inflatedMethod = IntPtr.Zero;
+            if (componentClass == IntPtr.Zero
+                || this.homelandFarmAuraEntitiesGetComponentsMethod == IntPtr.Zero
+                || auraMonoClassInflateGenericMethod == null
+                || auraMonoClassGetType == null)
+            {
+                return false;
+            }
+
+            if (this.homelandFarmAuraInflatedGetComponentsMethodByComponentClass.TryGetValue(componentClass, out inflatedMethod)
+                && inflatedMethod != IntPtr.Zero)
+            {
+                return true;
+            }
+
+            IntPtr componentType = auraMonoClassGetType(componentClass);
+            if (componentType == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr* typeArgs = stackalloc IntPtr[1];
+            typeArgs[0] = componentType;
+            MonoGenericContext context = new MonoGenericContext
+            {
+                class_inst = IntPtr.Zero,
+                method_inst = (IntPtr)typeArgs
+            };
+
+            inflatedMethod = auraMonoClassInflateGenericMethod(this.homelandFarmAuraEntitiesGetComponentsMethod, ref context);
+            if (inflatedMethod == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (auraMonoCompileMethod != null)
+            {
+                try
+                {
+                    auraMonoCompileMethod(inflatedMethod);
+                }
+                catch
+                {
+                }
+            }
+
+            this.homelandFarmAuraInflatedGetComponentsMethodByComponentClass[componentClass] = inflatedMethod;
+            return true;
+        }
+
+        private unsafe bool TryHomelandFarmCollectComponentsNetIdsViaAuraMono(
+            IntPtr componentClass,
+            HashSet<uint> output,
+            string label,
+            bool isCropBox)
+        {
+            if (componentClass == IntPtr.Zero || output == null || !HomelandFarmAllowUnsafeAuraMonoGetComponents)
+            {
+                return false;
+            }
+
+            if (this.homelandFarmAuraGetComponentsFailedComponentClasses.Contains(componentClass))
+            {
+                return false;
+            }
+
+            if (!this.TryHomelandFarmIsAuraMonoGetComponentsReady(out string readyStatus))
+            {
+                if (!this.homelandFarmAuraGetComponentsUnavailableLogged)
+                {
+                    this.homelandFarmAuraGetComponentsUnavailableLogged = true;
+                    this.HomelandFarmLog("AuraMono GetComponents unavailable: " + readyStatus);
+                }
+
+                return false;
+            }
+
+            if (!this.TryHomelandFarmCreateAuraMonoComponentList(componentClass, out IntPtr listObj, out string listStatus)
+                || listObj == IntPtr.Zero)
+            {
+                this.homelandFarmAuraGetComponentsFailedComponentClasses.Add(componentClass);
+                this.HomelandFarmLog(label + " AuraMono list create failed: " + listStatus);
+                return false;
+            }
+
+            if (!this.TryHomelandFarmTryResolveInflatedAuraEntitiesGetComponentsMethod(componentClass, out IntPtr inflatedGetComponentsMethod)
+                || inflatedGetComponentsMethod == IntPtr.Zero)
+            {
+                this.homelandFarmAuraGetComponentsFailedComponentClasses.Add(componentClass);
+                if (!this.homelandFarmAuraGetComponentsUnavailableLogged)
+                {
+                    this.homelandFarmAuraGetComponentsUnavailableLogged = true;
+                    this.HomelandFarmLog("AuraMono GetComponents inflate failed.");
+                }
+
+                return false;
+            }
+
+            IntPtr* invokeArgs = stackalloc IntPtr[1];
+            invokeArgs[0] = listObj;
+            IntPtr exc = IntPtr.Zero;
+            auraMonoRuntimeInvoke(inflatedGetComponentsMethod, IntPtr.Zero, (IntPtr)invokeArgs, ref exc);
+            if (exc != IntPtr.Zero)
+            {
+                this.homelandFarmAuraGetComponentsFailedComponentClasses.Add(componentClass);
+                this.HomelandFarmLog(label + " AuraMono GetComponents invoke failed exc=0x" + exc.ToInt64().ToString("X") + ".");
+                return false;
+            }
+
+            List<IntPtr> components = new List<IntPtr>();
+            if (!this.TryEnumerateAuraMonoCollectionItems(listObj, components) || components.Count == 0)
+            {
+                return false;
+            }
+
+            int added = 0;
+            for (int i = 0; i < components.Count; i++)
+            {
+                IntPtr componentObj = components[i];
+                if (componentObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                if (!this.TryHomelandFarmTryReadAuraMonoComponentNetId(componentObj, out uint netId) || netId == 0U)
+                {
+                    continue;
+                }
+
+                if (output.Add(netId))
+                {
+                    added++;
+                    if (isCropBox)
+                    {
+                        this.homelandFarmLastScanCropBoxNetIds.Add(netId);
+                    }
+
+                    this.TryHomelandFarmRegisterDiscoveredFarmTarget(netId, isCropBox);
+                }
+            }
+
+            if (added > 0)
+            {
+                this.HomelandFarmLog(label + " AuraMono scan added " + added + " netId(s).");
+            }
+
+            return added > 0;
+        }
+
+        private bool TryHomelandFarmTryReadAuraMonoComponentNetId(IntPtr componentObj, out uint netId)
+        {
+            netId = 0U;
+            if (componentObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (this.TryGetMonoObjectMember(componentObj, "entity", out IntPtr entityObj) && entityObj != IntPtr.Zero
+                && this.TryGetAuraMonoEntityNetId(entityObj, out netId) && netId != 0U)
+            {
+                return true;
+            }
+
+            if (this.TryGetMonoObjectMember(componentObj, "Entity", out entityObj) && entityObj != IntPtr.Zero
+                && this.TryGetAuraMonoEntityNetId(entityObj, out netId) && netId != 0U)
+            {
+                return true;
+            }
+
+            return (this.TryGetMonoUInt32Member(componentObj, "netId", out netId) || this.TryGetMonoUInt32Member(componentObj, "NetId", out netId))
+                && netId != 0U;
         }
 
         private unsafe bool TryHomelandFarmCollectLevelObjectNetIdsAuraNearby(HashSet<uint> output, Vector3 center, float radius, out string source)
@@ -9247,19 +10888,499 @@ namespace HeartopiaMod
             }
         }
 
-        private bool TryHomelandFarmHasFarmComponentData(uint netId)
+        private bool TryHomelandFarmClassifyFarmNetId(uint netId, out bool isCropBox)
         {
-            if (this.HomelandFarmPrefersAuraComponentData())
+            isCropBox = false;
+            if (netId == 0U)
             {
-                // Single pass over the entity's components (one GetAllComponents call) instead
-                // of three separate resolves — each resolve re-fetched and re-enumerated the
-                // whole component list, which made scanning dozens of candidates take seconds.
-                return this.TryHomelandFarmAuraEntityHasAnyFarmComponent(netId);
+                return false;
             }
 
-            return this.TryHomelandFarmGetComponentData(this.homelandFarmCropBoxItemDataType, netId, out _, out _, "CropBoxItemData")
-                || this.TryHomelandFarmGetComponentData(this.homelandFarmPlantItemDataType, netId, out _, out _, "PlantItemData")
-                || this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, netId, out _, out _, "CropItemData");
+            bool accepted;
+            if (this.HomelandFarmPrefersAuraComponentData())
+            {
+                accepted = this.TryHomelandFarmAuraEntityClassifyFarm(netId, out isCropBox, out bool isPlant, out bool isCrop)
+                    && (isCropBox || isPlant || isCrop);
+            }
+            else if (this.TryHomelandFarmGetComponentData(this.homelandFarmCropBoxItemDataType, netId, out _, out _, "CropBoxItemData"))
+            {
+                isCropBox = true;
+                accepted = true;
+            }
+            else
+            {
+                accepted = this.TryHomelandFarmGetComponentData(this.homelandFarmPlantItemDataType, netId, out _, out _, "PlantItemData")
+                    || this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, netId, out _, out _, "CropItemData");
+            }
+
+            if (accepted)
+            {
+                this.TryHomelandFarmRegisterDiscoveredFarmTarget(netId, isCropBox);
+            }
+
+            return accepted;
+        }
+
+        private void TryHomelandFarmRegisterDiscoveredFarmTarget(uint netId, bool isCropBox)
+        {
+            if (netId == 0U || netId >= 0x80000000U)
+            {
+                return;
+            }
+
+            Vector3 position = Vector3.zero;
+            this.TryHomelandFarmResolveFarmEntityPosition(netId, out position);
+            this.homelandFarmRegisteredFarmTargets[netId] = new HomelandFarmRegisteredFarmTarget
+            {
+                NetId = netId,
+                LastPosition = position,
+                IsCropBox = isCropBox,
+                RegisteredAt = Time.realtimeSinceStartup
+            };
+
+            if (this.homelandFarmRegisteredFarmTargets.Count <= HomelandFarmMaxRegisteredFarmTargets)
+            {
+                return;
+            }
+
+            uint oldestNetId = 0U;
+            float oldestAt = float.MaxValue;
+            foreach (KeyValuePair<uint, HomelandFarmRegisteredFarmTarget> entry in this.homelandFarmRegisteredFarmTargets)
+            {
+                if (entry.Value.RegisteredAt >= oldestAt)
+                {
+                    continue;
+                }
+
+                oldestAt = entry.Value.RegisteredAt;
+                oldestNetId = entry.Key;
+            }
+
+            if (oldestNetId != 0U)
+            {
+                this.homelandFarmRegisteredFarmTargets.Remove(oldestNetId);
+            }
+        }
+
+        private bool TryHomelandFarmCollectFarmNetIdsFromRegisteredCache(
+            Vector3 scanCenter,
+            float scanRadius,
+            HashSet<uint> output,
+            out int added)
+        {
+            added = 0;
+            if (output == null || this.homelandFarmRegisteredFarmTargets.Count <= 0)
+            {
+                return false;
+            }
+
+            bool spatialScan = scanRadius > 0f && scanCenter != Vector3.zero;
+            float radiusSq = spatialScan ? scanRadius * scanRadius : 0f;
+            foreach (KeyValuePair<uint, HomelandFarmRegisteredFarmTarget> entry in this.homelandFarmRegisteredFarmTargets)
+            {
+                uint netId = entry.Key;
+                if (netId == 0U || netId >= 0x80000000U)
+                {
+                    continue;
+                }
+
+                HomelandFarmRegisteredFarmTarget registered = entry.Value;
+                if (spatialScan && registered.LastPosition != Vector3.zero)
+                {
+                    if ((registered.LastPosition - scanCenter).sqrMagnitude > radiusSq)
+                    {
+                        continue;
+                    }
+                }
+
+                if (output.Add(netId))
+                {
+                    added++;
+                    if (registered.IsCropBox)
+                    {
+                        this.homelandFarmLastScanCropBoxNetIds.Add(netId);
+                    }
+                }
+            }
+
+            return added > 0;
+        }
+
+        private bool TryHomelandFarmCollectFarmNetIdsFromInteractSeeds(
+            Vector3 scanCenter,
+            float scanRadius,
+            HashSet<uint> output,
+            out int added)
+        {
+            added = 0;
+            if (output == null)
+            {
+                return false;
+            }
+
+            HashSet<uint> seedNetIds = new HashSet<uint>();
+            if (this.TryGetCurrentFocusedLevelObjectNetId(out ulong focusedLevelObjectNetId, out _)
+                && focusedLevelObjectNetId != 0UL
+                && focusedLevelObjectNetId <= uint.MaxValue)
+            {
+                seedNetIds.Add((uint)focusedLevelObjectNetId);
+            }
+
+            List<ulong> interactLevelObjects = new List<ulong>(8);
+            if (this.TryGetCurrentInteractTargetLevelObjects(interactLevelObjects, out _, null))
+            {
+                for (int i = 0; i < interactLevelObjects.Count; i++)
+                {
+                    ulong levelObjectNetId = interactLevelObjects[i];
+                    if (levelObjectNetId != 0UL && levelObjectNetId <= uint.MaxValue)
+                    {
+                        seedNetIds.Add((uint)levelObjectNetId);
+                    }
+                }
+            }
+
+            List<ulong> auraInteractLevelObjects = new List<ulong>(8);
+            if (this.TryGetCurrentInteractTargetLevelObjectsViaAuraMono(auraInteractLevelObjects, out _, null))
+            {
+                for (int i = 0; i < auraInteractLevelObjects.Count; i++)
+                {
+                    ulong levelObjectNetId = auraInteractLevelObjects[i];
+                    if (levelObjectNetId != 0UL && levelObjectNetId <= uint.MaxValue)
+                    {
+                        seedNetIds.Add((uint)levelObjectNetId);
+                    }
+                }
+            }
+
+            if (seedNetIds.Count <= 0)
+            {
+                return false;
+            }
+
+            float radiusSq = scanRadius > 0f && scanCenter != Vector3.zero ? scanRadius * scanRadius : 0f;
+            foreach (uint seedNetId in seedNetIds)
+            {
+                if (radiusSq > 0f
+                    && this.TryHomelandFarmResolveFarmEntityPosition(seedNetId, out Vector3 seedPos)
+                    && seedPos != Vector3.zero
+                    && (seedPos - scanCenter).sqrMagnitude > radiusSq)
+                {
+                    continue;
+                }
+
+                int before = output.Count;
+                this.TryHomelandFarmTryQuickAcceptFarmNetId(seedNetId, output, includeLinkedCrops: false);
+                added += output.Count - before;
+            }
+
+            return added > 0;
+        }
+
+        private Type ResolveHomelandFarmScannerComponentType(string shortName, params string[] fullNames)
+        {
+            Type resolved = null;
+            switch (shortName)
+            {
+                case "CropBoxComponent":
+                    resolved = this.homelandFarmCropBoxComponentType ?? this.ResolveHomelandFarmCropBoxComponentRuntimeType();
+                    break;
+                case "CropComponent":
+                    resolved = this.homelandFarmCropComponentType ?? this.ResolveHomelandFarmCropComponentRuntimeType();
+                    break;
+                case "PlantComponent":
+                    resolved = this.homelandFarmPlantComponentType;
+                    break;
+            }
+
+            if (resolved != null)
+            {
+                return resolved;
+            }
+
+            if (fullNames != null)
+            {
+                for (int i = 0; i < fullNames.Length; i++)
+                {
+                    string fullName = fullNames[i];
+                    if (string.IsNullOrEmpty(fullName))
+                    {
+                        continue;
+                    }
+
+                    resolved = this.FindLoadedType(fullName, shortName);
+                    if (resolved != null)
+                    {
+                        return resolved;
+                    }
+
+                    int lastDot = fullName.LastIndexOf('.');
+                    string namespaceName = lastDot > 0 ? fullName.Substring(0, lastDot) : string.Empty;
+                    resolved = this.FindTypeByName(fullName, namespaceName, shortName);
+                    if (resolved != null)
+                    {
+                        return resolved;
+                    }
+                }
+            }
+
+            resolved = this.FindLoadedType(shortName);
+            if (resolved != null)
+            {
+                return resolved;
+            }
+
+            return this.FindTypeBySignature(shortName, "XDTLevelAndEntity", false, false)
+                ?? this.FindTypeBySignature(shortName, null, false, false);
+        }
+
+        private void TryHomelandFarmRefreshLastScanCropBoxNetIdsFromRegistry(HashSet<uint> output)
+        {
+            if (output == null || output.Count == 0)
+            {
+                return;
+            }
+
+            foreach (uint netId in output)
+            {
+                if (netId == 0U || netId >= 0x80000000U)
+                {
+                    continue;
+                }
+
+                if (this.homelandFarmRegisteredFarmTargets.TryGetValue(netId, out HomelandFarmRegisteredFarmTarget registered)
+                    && registered.IsCropBox)
+                {
+                    this.homelandFarmLastScanCropBoxNetIds.Add(netId);
+                }
+            }
+        }
+
+        private bool TryEnsureHomelandFarmEntitiesGetComponentsReady(out string status)
+        {
+            status = string.Empty;
+            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+            this.ClearModReflectionLookupMissCaches();
+            this.ResolveAuraFarmRuntimeMethods();
+            this.EnsureHomelandFarmScannerTypes();
+
+            if (this.homelandFarmEntitiesType == null)
+            {
+                this.homelandFarmEntitiesType = this.auraEntitiesType;
+            }
+
+            if (this.homelandFarmEntitiesType == null)
+            {
+                this.homelandFarmEntitiesType = this.FindEntitiesRuntimeType();
+            }
+
+            if (this.homelandFarmEntitiesType == null)
+            {
+                this.homelandFarmEntitiesType = this.FindLoadedType(
+                    "XDTLevelAndEntity.BaseSystem.EntitiesManager.Entities",
+                    "ScriptsRefactory.LevelAndEntity.BaseSystem.EntitiesManager.Entities",
+                    "Il2Cpp.XDTLevelAndEntity.BaseSystem.EntitiesManager.Entities",
+                    "Entities");
+            }
+
+            if (this.homelandFarmEntitiesType == null)
+            {
+                this.homelandFarmEntitiesType = this.FindTypeByName(
+                    "XDTLevelAndEntity.BaseSystem.EntitiesManager.Entities",
+                    "XDTLevelAndEntity.BaseSystem.EntitiesManager",
+                    "Entities")
+                    ?? this.FindTypeBySignature("Entities", "XDTLevelAndEntity", false, false)
+                    ?? this.FindTypeBySignature("Entities", null, false, false);
+            }
+
+            if (this.homelandFarmEntitiesGetComponentsMethod == null && this.homelandFarmEntitiesType != null)
+            {
+                this.homelandFarmEntitiesGetComponentsMethod = this.homelandFarmEntitiesType
+                    .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "GetComponents" && m.IsGenericMethodDefinition && m.GetParameters().Length == 1);
+            }
+
+            if (this.homelandFarmCropBoxComponentType == null)
+            {
+                this.homelandFarmCropBoxComponentType = this.ResolveHomelandFarmScannerComponentType(
+                    "CropBoxComponent",
+                    "XDTLevelAndEntity.Gameplay.Component.Homeland.CropBoxComponent",
+                    "XDTLevelAndEntity.Gameplay.Component.Farm.CropBoxComponent",
+                    "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Farm.CropBoxComponent");
+            }
+
+            if (this.homelandFarmCropComponentType == null)
+            {
+                this.homelandFarmCropComponentType = this.ResolveHomelandFarmScannerComponentType(
+                    "CropComponent",
+                    "XDTLevelAndEntity.Gameplay.Component.Homeland.CropComponent",
+                    "XDTLevelAndEntity.Gameplay.Component.Farm.CropComponent",
+                    "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Farm.CropComponent");
+            }
+
+            if (this.homelandFarmPlantComponentType == null)
+            {
+                this.homelandFarmPlantComponentType = this.ResolveHomelandFarmScannerComponentType(
+                    "PlantComponent",
+                    "XDTLevelAndEntity.Gameplay.Component.Plant.PlantComponent",
+                    "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Plant.PlantComponent");
+            }
+
+            if (this.homelandFarmEntitiesGetComponentsMethod == null || this.homelandFarmEntitiesType == null)
+            {
+                status = "Entities.GetComponents unavailable (entitiesType="
+                    + (this.homelandFarmEntitiesType != null)
+                    + " auraEntitiesType=" + (this.auraEntitiesType != null) + ").";
+                return false;
+            }
+
+            if (this.homelandFarmCropBoxComponentType == null
+                && this.homelandFarmCropComponentType == null
+                && this.homelandFarmPlantComponentType == null)
+            {
+                status = "Farm component runtime types unavailable.";
+                return false;
+            }
+
+            status = "Entities.GetComponents ready.";
+            return true;
+        }
+
+        // Mass-cook-style scan: radius-filter entity positions first, then one GetAllComponents per
+        // nearby entity (closest first) until budget/target count — avoids the AuraEntities funnel
+        // collecting thousands of in-radius netIds and verifying only two under a short budget.
+        private bool TryHomelandFarmCollectFarmNetIdsFromAuraProximityComponentScan(
+            Vector3 scanCenter,
+            float scanRadius,
+            HashSet<uint> output,
+            out int added,
+            out int inspected,
+            float budgetSeconds = HomelandFarmAuraProximityComponentScanBudgetSeconds)
+        {
+            added = 0;
+            inspected = 0;
+            if (output == null || scanRadius <= 0f || scanCenter == Vector3.zero)
+            {
+                return false;
+            }
+
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                return false;
+            }
+
+            List<IntPtr> entityObjects;
+            if (!this.TryEnumerateAuraMonoLoadedEntityObjects(out entityObjects, out _)
+                || entityObjects == null
+                || entityObjects.Count == 0)
+            {
+                return false;
+            }
+
+            float radiusSq = scanRadius * scanRadius;
+            float collectStartedAt = Time.realtimeSinceStartup;
+            List<HomelandFarmAuraEntityCandidate> nearby = new List<HomelandFarmAuraEntityCandidate>(256);
+            for (int i = 0; i < entityObjects.Count; i++)
+            {
+                IntPtr entityObj = entityObjects[i];
+                if (entityObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                if (!this.TryGetAuraMonoEntityNetId(entityObj, out uint candidateNetId) || candidateNetId == 0U || candidateNetId >= 0x80000000U)
+                {
+                    continue;
+                }
+
+                if (!this.TryHomelandFarmResolveFarmEntityPosition(candidateNetId, out Vector3 candidatePosition)
+                    || candidatePosition == Vector3.zero)
+                {
+                    continue;
+                }
+
+                float distanceSq = (candidatePosition - scanCenter).sqrMagnitude;
+                if (distanceSq > radiusSq)
+                {
+                    continue;
+                }
+
+                nearby.Add(new HomelandFarmAuraEntityCandidate
+                {
+                    NetId = candidateNetId,
+                    Distance = Mathf.Sqrt(distanceSq)
+                });
+            }
+
+            if (nearby.Count == 0)
+            {
+                return false;
+            }
+
+            float collectMs = (Time.realtimeSinceStartup - collectStartedAt) * 1000f;
+
+            nearby.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+            int inspectLimit = Mathf.Min(nearby.Count, HomelandFarmMaxAuraProximityComponentInspect);
+
+            // Warm the farm component class cache once BEFORE timing the inspection. The first
+            // resolution scans every loaded image and can take seconds; doing it inside the
+            // budgeted loop would let entity #0 consume the whole budget (inspected=1/512).
+            if (this.HomelandFarmPrefersAuraComponentData())
+            {
+                this.TryResolveAuraMonoFarmComponentClasses(out _, out _, out _);
+            }
+
+            // The radius-filter pass above intentionally scans the whole loaded set (no time cap)
+            // so that nearby crop boxes appearing late in list order survive the distance sort.
+            // The budget bounds only this verification pass, so give it its own time origin —
+            // otherwise the (potentially multi-second) collect pass would consume the entire
+            // budget and starve inspection (symptom: nearby=NNNN but inspected=1).
+            float inspectStartedAt = Time.realtimeSinceStartup;
+            for (int i = 0; i < inspectLimit; i++)
+            {
+                if (Time.realtimeSinceStartup - inspectStartedAt >= budgetSeconds)
+                {
+                    break;
+                }
+
+                inspected++;
+                HomelandFarmAuraEntityCandidate candidate = nearby[i];
+                int before = output.Count;
+                try
+                {
+                    if (this.TryHomelandFarmClassifyFarmNetId(candidate.NetId, out bool isCropBox))
+                    {
+                        output.Add(candidate.NetId);
+                        if (isCropBox)
+                        {
+                            this.homelandFarmLastScanCropBoxNetIds.Add(candidate.NetId);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.HomelandFarmLog("Proximity farm scan failed netId=" + candidate.NetId + ": " + ex.Message);
+                }
+
+                added += output.Count - before;
+            }
+
+            if (added > 0)
+            {
+                this.HomelandFarmLog(
+                    "AuraProximity scan: nearby=" + nearby.Count
+                    + " inspected=" + inspected
+                    + "/" + inspectLimit
+                    + " added=" + added
+                    + " collectMs=" + collectMs.ToString("F0")
+                    + " inspectMs=" + ((Time.realtimeSinceStartup - inspectStartedAt) * 1000f).ToString("F0"));
+            }
+
+            return added > 0;
+        }
+
+        private bool TryHomelandFarmHasFarmComponentData(uint netId)
+        {
+            return this.TryHomelandFarmClassifyFarmNetId(netId, out _);
         }
 
         private static readonly string[] HomelandFarmAnyFarmComponentHints =
@@ -9269,8 +11390,15 @@ namespace HeartopiaMod
             "CropComponent", "CropItemData"
         };
 
-        private bool TryHomelandFarmAuraEntityHasAnyFarmComponent(uint netId)
+        private bool TryHomelandFarmAuraEntityClassifyFarm(
+            uint netId,
+            out bool isCropBox,
+            out bool isPlant,
+            out bool isCrop)
         {
+            isCropBox = false;
+            isPlant = false;
+            isCrop = false;
             if (netId == 0U
                 || !this.EnsureAuraMonoApiReady()
                 || !this.AttachAuraMonoThread()
@@ -9280,6 +11408,11 @@ namespace HeartopiaMod
             }
 
             if (!this.TryGetAuraMonoEntityObjectByNetId(netId, out IntPtr entityObj) || entityObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.TryHomelandFarmTryGuardAuraEntityBeforeHeavyAccess(entityObj))
             {
                 return false;
             }
@@ -9295,6 +11428,11 @@ namespace HeartopiaMod
                 return false;
             }
 
+            bool hasComponentClasses = this.TryResolveAuraMonoFarmComponentClasses(
+                out IntPtr plantComponentClass,
+                out IntPtr cropBoxComponentClass,
+                out IntPtr cropComponentClass);
+
             for (int i = 0; i < components.Count; i++)
             {
                 if (components[i] == IntPtr.Zero)
@@ -9302,22 +11440,74 @@ namespace HeartopiaMod
                     continue;
                 }
 
-                string className = this.GetAuraMonoClassDisplayName(auraMonoObjectGetClass(components[i]));
+                IntPtr componentClass = auraMonoObjectGetClass(components[i]);
+                if (componentClass == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                if (hasComponentClasses)
+                {
+                    if (!isCropBox
+                        && cropBoxComponentClass != IntPtr.Zero
+                        && this.IsAuraMonoClassAssignableTo(componentClass, cropBoxComponentClass))
+                    {
+                        isCropBox = true;
+                    }
+
+                    if (!isPlant
+                        && plantComponentClass != IntPtr.Zero
+                        && this.IsAuraMonoClassAssignableTo(componentClass, plantComponentClass))
+                    {
+                        isPlant = true;
+                    }
+
+                    if (!isCrop
+                        && cropComponentClass != IntPtr.Zero
+                        && this.IsAuraMonoClassAssignableTo(componentClass, cropComponentClass))
+                    {
+                        isCrop = true;
+                    }
+                }
+
+                string className = this.GetAuraMonoClassDisplayName(componentClass);
                 if (string.IsNullOrEmpty(className))
                 {
                     continue;
                 }
 
-                for (int h = 0; h < HomelandFarmAnyFarmComponentHints.Length; h++)
+                if (!isCropBox
+                    && (className.IndexOf("CropBoxComponent", StringComparison.OrdinalIgnoreCase) >= 0
+                        || className.IndexOf("CropBoxItemData", StringComparison.OrdinalIgnoreCase) >= 0
+                        || (className.IndexOf("CropBox", StringComparison.OrdinalIgnoreCase) >= 0
+                            && className.IndexOf("CropComponent", StringComparison.OrdinalIgnoreCase) < 0)))
                 {
-                    if (className.IndexOf(HomelandFarmAnyFarmComponentHints[h], StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        return true;
-                    }
+                    isCropBox = true;
+                }
+
+                if (!isPlant
+                    && (className.IndexOf("PlantComponent", StringComparison.OrdinalIgnoreCase) >= 0
+                        || className.IndexOf("PlantItemData", StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    isPlant = true;
+                }
+
+                if (!isCrop
+                    && className.IndexOf("CropBoxComponent", StringComparison.OrdinalIgnoreCase) < 0
+                    && className.IndexOf("CropBox", StringComparison.OrdinalIgnoreCase) < 0
+                    && (className.IndexOf("CropComponent", StringComparison.OrdinalIgnoreCase) >= 0
+                        || className.IndexOf("CropItemData", StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    isCrop = true;
                 }
             }
 
-            return false;
+            return isCropBox || isPlant || isCrop;
+        }
+
+        private bool TryHomelandFarmAuraEntityHasAnyFarmComponent(uint netId)
+        {
+            return this.TryHomelandFarmAuraEntityClassifyFarm(netId, out _, out _, out _);
         }
 
         private IntPtr TryHomelandFarmResolveAuraComponentDataHandle(IntPtr componentHandle)
@@ -9559,6 +11749,29 @@ namespace HeartopiaMod
         }
 
         private bool TryHomelandFarmTryReadSelfPlayerGuid(out Guid playerGuid, out bool readOk)
+        {
+            // Memoized: the GUID never changes within a session, and each resolution attempt can run
+            // expensive managed login-info reflection. Only the successful result is cached so a
+            // not-yet-available GUID keeps retrying.
+            if (this.homelandFarmCachedSelfGuidResolved)
+            {
+                playerGuid = this.homelandFarmCachedSelfGuid;
+                readOk = this.homelandFarmCachedSelfGuidReadOk;
+                return readOk;
+            }
+
+            bool resolved = this.TryHomelandFarmTryReadSelfPlayerGuidUncached(out playerGuid, out readOk);
+            if (resolved && readOk && playerGuid != Guid.Empty)
+            {
+                this.homelandFarmCachedSelfGuid = playerGuid;
+                this.homelandFarmCachedSelfGuidReadOk = true;
+                this.homelandFarmCachedSelfGuidResolved = true;
+            }
+
+            return resolved;
+        }
+
+        private bool TryHomelandFarmTryReadSelfPlayerGuidUncached(out Guid playerGuid, out bool readOk)
         {
             playerGuid = Guid.Empty;
             readOk = false;
@@ -10189,7 +12402,14 @@ namespace HeartopiaMod
 
             float radius = this.homelandFarmWaterRadius;
             HashSet<uint> netIds = new HashSet<uint>();
-            if (!this.TryHomelandFarmCollectFarmEntityNetIds(netIds, out string scanSource, playerPos, radius))
+            if (!this.TryHomelandFarmCollectFarmEntityNetIds(
+                    netIds,
+                    out string scanSource,
+                    playerPos,
+                    radius,
+                    allowUnsafeAuraMonoGetComponents: HomelandFarmAllowUnsafeAuraMonoGetComponents,
+                    proximityBudgetSeconds: HomelandFarmWaterLogProximityBudgetSeconds,
+                    allowAuraEntityFunnel: false))
             {
                 this.HomelandFarmLog("Water diagnostics: no farm entities found.");
                 return;
@@ -10211,6 +12431,11 @@ namespace HeartopiaMod
                 + " playerNetId=" + playerNetId
                 + " selfGuid=" + (selfPlayerGuidReadOk ? selfPlayerGuid.ToString() : "?")
                 + " scanned=" + netIds.Count + " source=" + scanSource + " ===");
+
+            List<string> diagnosticLines = new List<string>(netIds.Count);
+            bool useAuraBatchRead = this.HomelandFarmPrefersAuraComponentData()
+                && this.EnsureAuraMonoApiReady()
+                && this.AttachAuraMonoThread();
 
             foreach (uint netId in netIds)
             {
@@ -10234,18 +12459,146 @@ namespace HeartopiaMod
                     continue;
                 }
 
+                if (useAuraBatchRead
+                    && this.TryGetAuraMonoEntityObjectByNetId(netId, out IntPtr entityObj)
+                    && entityObj != IntPtr.Zero
+                    && this.TryHomelandFarmTryGuardAuraEntityBeforeHeavyAccess(entityObj)
+                    && this.TryHomelandFarmAuraExtractFarmDataHandles(
+                        entityObj,
+                        out IntPtr cropItemDataHandle,
+                        out IntPtr cropBoxItemDataHandle,
+                        out IntPtr plantItemDataHandle))
+                {
+                    if (cropItemDataHandle != IntPtr.Zero)
+                    {
+                        cropPlantCount++;
+                        object cropPlantData = HomelandFarmAuraData(cropItemDataHandle);
+                        this.TryHomelandFarmTryReadOwnerId(netId, out uint cropOwnerId);
+                        bool cropStageReadOk = this.TryHomelandFarmReadComponentInt(cropPlantData, out int cropStage, "stage", "_stage", "Stage");
+                        bool hasWeedReadOk = this.TryHomelandFarmReadComponentBool(cropPlantData, out bool hasWeed, "hasWeed", "_hasWeed", "HasWeed");
+                        bool cropMasterWaterReadOk = this.TryHomelandFarmReadComponentBool(cropPlantData, out bool cropMasterWater, "masterWater", "_masterWater", "MasterWater");
+                        bool cropWeatherWaterReadOk = this.TryHomelandFarmReadComponentBool(cropPlantData, out bool cropWeatherWater, "weatherWater", "_weatherWater", "WeatherWater");
+                        bool cropManureReadOk = this.TryHomelandFarmReadComponentInt(cropPlantData, out int cropManureId, "manureId", "_manureId", "ManureId");
+                        diagnosticLines.Add(
+                            "[Diag] cropPlant netId=" + netId
+                            + " owner=" + cropOwnerId
+                            + " dist=" + distance.ToString("F1") + "m"
+                            + " stage=" + HomelandFarmFormatDiagnosticValue(cropStageReadOk, cropStage)
+                            + " weedable=" + HomelandFarmFormatDiagnosticValue(hasWeedReadOk, hasWeed)
+                            + " ownerWatered=" + HomelandFarmFormatDiagnosticValue(cropMasterWaterReadOk, cropMasterWater)
+                            + " weatherWater=" + HomelandFarmFormatDiagnosticValue(cropWeatherWaterReadOk, cropWeatherWater)
+                            + " manure=" + HomelandFarmFormatDiagnosticValue(cropManureReadOk, cropManureId));
+                        continue;
+                    }
+
+                    uint waterNetId = netId;
+                    if (cropBoxItemDataHandle == IntPtr.Zero
+                        && plantItemDataHandle == IntPtr.Zero
+                        && !this.TryHomelandFarmTryNormalizeWaterNetId(netId, netIds, out waterNetId))
+                    {
+                        skippedNoFarmData++;
+                        continue;
+                    }
+
+                    this.TryHomelandFarmTryReadOwnerId(waterNetId, out uint ownerId);
+                    if (ownerId == 0U && this.TryHomelandFarmGetSelfPlayInFieldOwnerNetId(out uint fieldOwnerNetId) && fieldOwnerNetId != 0U)
+                    {
+                        ownerId = fieldOwnerNetId;
+                    }
+
+                    if (cropBoxItemDataHandle != IntPtr.Zero)
+                    {
+                        cropCount++;
+                        object cropBoxData = HomelandFarmAuraData(cropBoxItemDataHandle);
+                        this.TryHomelandFarmTryReadCropBoxWaterState(
+                            cropBoxData,
+                            out bool ownerWatered,
+                            out bool ownerWateredReadOk,
+                            out int friendWaterCount,
+                            out bool friendWaterCountReadOk);
+                        int totalWaterLevel = HomelandFarmComputeCropTotalWaterLevel(ownerWateredReadOk && ownerWatered, friendWaterCountReadOk ? friendWaterCount : 0);
+                        this.TryHomelandFarmTryResolveVisitorWaterState(
+                            cropBoxData,
+                            ownerId,
+                            playerNetId,
+                            isCropBox: true,
+                            selfPlayerGuid,
+                            selfPlayerGuidReadOk,
+                            out bool selfWatered,
+                            out bool selfWateredReadOk,
+                            out bool canAddVisitorWater);
+                        diagnosticLines.Add(
+                            "[Diag] cropBox netId=" + waterNetId
+                            + " owner=" + ownerId
+                            + " dist=" + distance.ToString("F1") + "m"
+                            + " ownerWatered=" + HomelandFarmFormatDiagnosticValue(ownerWateredReadOk, ownerWatered)
+                            + " friendWaterCount=" + HomelandFarmFormatDiagnosticValue(friendWaterCountReadOk, friendWaterCount)
+                            + " totalWaterLevel=" + totalWaterLevel
+                            + " atMaxWater=" + HomelandFarmFormatAtMaxWater(ownerWateredReadOk || friendWaterCountReadOk, totalWaterLevel)
+                            + " selfWatered=" + HomelandFarmFormatDiagnosticSelfWater(onOwnField, ownerWateredReadOk, ownerWatered, selfWateredReadOk, selfWatered)
+                            + " canAddVisitorWater=" + HomelandFarmFormatDiagnosticCanAddVisitorWater(onOwnField, selfWateredReadOk, canAddVisitorWater));
+                        continue;
+                    }
+
+                    if (plantItemDataHandle != IntPtr.Zero)
+                    {
+                        plantCount++;
+                        object plantData = HomelandFarmAuraData(plantItemDataHandle);
+                        this.TryHomelandFarmTryReadPlantWaterState(
+                            plantData,
+                            out bool masterWater,
+                            out bool masterWaterReadOk,
+                            out bool weatherWater,
+                            out bool weatherWaterReadOk,
+                            out int friendWaterCount,
+                            out bool friendWaterCountReadOk,
+                            out int waterLevel,
+                            out bool waterLevelReadOk,
+                            out int stage,
+                            out bool stageReadOk);
+                        bool plantOwnerWatered = (masterWaterReadOk && masterWater) || (weatherWaterReadOk && weatherWater);
+                        bool plantOwnerWateredReadOk = masterWaterReadOk || weatherWaterReadOk;
+                        this.TryHomelandFarmTryResolveVisitorWaterState(
+                            plantData,
+                            ownerId,
+                            playerNetId,
+                            isCropBox: false,
+                            selfPlayerGuid,
+                            selfPlayerGuidReadOk,
+                            out bool selfWatered,
+                            out bool selfWateredReadOk,
+                            out bool canAddVisitorWater);
+                        diagnosticLines.Add(
+                            "[Diag] plant netId=" + waterNetId
+                            + " owner=" + ownerId
+                            + " dist=" + distance.ToString("F1") + "m"
+                            + " stage=" + HomelandFarmFormatDiagnosticValue(stageReadOk, stage)
+                            + " ownerWatered=" + HomelandFarmFormatDiagnosticValue(masterWaterReadOk, masterWater)
+                            + " weatherWater=" + HomelandFarmFormatDiagnosticValue(weatherWaterReadOk, weatherWater)
+                            + " friendWaterCount=" + HomelandFarmFormatDiagnosticValue(friendWaterCountReadOk, friendWaterCount)
+                            + " totalWaterLevel=" + HomelandFarmFormatDiagnosticValue(waterLevelReadOk, waterLevel)
+                            + " atMaxWater=" + HomelandFarmFormatAtMaxWater(waterLevelReadOk, waterLevel)
+                            + " selfWatered=" + HomelandFarmFormatDiagnosticSelfWater(onOwnField, plantOwnerWateredReadOk, plantOwnerWatered, selfWateredReadOk, selfWatered)
+                            + " canAddVisitorWater=" + HomelandFarmFormatDiagnosticCanAddVisitorWater(onOwnField, selfWateredReadOk, canAddVisitorWater));
+                        continue;
+                    }
+
+                    skippedNoFarmData++;
+                    continue;
+                }
+
                 // Crop entities (CropItemData) are a separate entity from the crop box (CropBoxItemData).
                 // hasWeed lives here, and weed/harvest commands target this entity's own netId.
-                if (this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, netId, out object cropPlantData, out _, "CropItemData"))
+                if (this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, netId, out object legacyCropPlantData, out _, "CropItemData"))
                 {
                     cropPlantCount++;
                     this.TryHomelandFarmTryReadOwnerId(netId, out uint cropOwnerId);
-                    bool cropStageReadOk = this.TryHomelandFarmReadComponentInt(cropPlantData, out int cropStage, "stage", "_stage", "Stage");
-                    bool hasWeedReadOk = this.TryHomelandFarmReadComponentBool(cropPlantData, out bool hasWeed, "hasWeed", "_hasWeed", "HasWeed");
-                    bool cropMasterWaterReadOk = this.TryHomelandFarmReadComponentBool(cropPlantData, out bool cropMasterWater, "masterWater", "_masterWater", "MasterWater");
-                    bool cropWeatherWaterReadOk = this.TryHomelandFarmReadComponentBool(cropPlantData, out bool cropWeatherWater, "weatherWater", "_weatherWater", "WeatherWater");
-                    bool cropManureReadOk = this.TryHomelandFarmReadComponentInt(cropPlantData, out int cropManureId, "manureId", "_manureId", "ManureId");
-                    this.HomelandFarmLog(
+                    bool cropStageReadOk = this.TryHomelandFarmReadComponentInt(legacyCropPlantData, out int cropStage, "stage", "_stage", "Stage");
+                    bool hasWeedReadOk = this.TryHomelandFarmReadComponentBool(legacyCropPlantData, out bool hasWeed, "hasWeed", "_hasWeed", "HasWeed");
+                    bool cropMasterWaterReadOk = this.TryHomelandFarmReadComponentBool(legacyCropPlantData, out bool cropMasterWater, "masterWater", "_masterWater", "MasterWater");
+                    bool cropWeatherWaterReadOk = this.TryHomelandFarmReadComponentBool(legacyCropPlantData, out bool cropWeatherWater, "weatherWater", "_weatherWater", "WeatherWater");
+                    bool cropManureReadOk = this.TryHomelandFarmReadComponentInt(legacyCropPlantData, out int cropManureId, "manureId", "_manureId", "ManureId");
+                    diagnosticLines.Add(
                         "[Diag] cropPlant netId=" + netId
                         + " owner=" + cropOwnerId
                         + " dist=" + distance.ToString("F1") + "m"
@@ -10257,37 +12610,37 @@ namespace HeartopiaMod
                     if (cropManureReadOk && cropManureId > 0
                         && this.TryHomelandFarmRefreshCropManureVisual(netId, cropManureId, out string manureVisualStatus))
                     {
-                        this.HomelandFarmLog("[Diag] cropPlant manure visual sync: " + manureVisualStatus);
+                        diagnosticLines.Add("[Diag] cropPlant manure visual sync: " + manureVisualStatus);
                     }
 
                     continue;
                 }
 
-                if (!this.TryHomelandFarmTryNormalizeWaterNetId(netId, netIds, out uint waterNetId))
+                if (!this.TryHomelandFarmTryNormalizeWaterNetId(netId, netIds, out uint legacyWaterNetId))
                 {
                     skippedNoFarmData++;
                     continue;
                 }
 
-                this.TryHomelandFarmTryReadOwnerId(waterNetId, out uint ownerId);
-                if (ownerId == 0U && this.TryHomelandFarmGetSelfPlayInFieldOwnerNetId(out uint fieldOwnerNetId) && fieldOwnerNetId != 0U)
+                this.TryHomelandFarmTryReadOwnerId(legacyWaterNetId, out uint legacyOwnerId);
+                if (legacyOwnerId == 0U && this.TryHomelandFarmGetSelfPlayInFieldOwnerNetId(out uint legacyFieldOwnerNetId) && legacyFieldOwnerNetId != 0U)
                 {
-                    ownerId = fieldOwnerNetId;
+                    legacyOwnerId = legacyFieldOwnerNetId;
                 }
 
-                if (this.TryHomelandFarmGetComponentData(this.homelandFarmCropBoxItemDataType, waterNetId, out object cropBoxData, out _, "CropBoxItemData"))
+                if (this.TryHomelandFarmGetComponentData(this.homelandFarmCropBoxItemDataType, legacyWaterNetId, out object legacyCropBoxData, out _, "CropBoxItemData"))
                 {
                     cropCount++;
                     this.TryHomelandFarmTryReadCropBoxWaterState(
-                        cropBoxData,
+                        legacyCropBoxData,
                         out bool ownerWatered,
                         out bool ownerWateredReadOk,
                         out int friendWaterCount,
                         out bool friendWaterCountReadOk);
                     int totalWaterLevel = HomelandFarmComputeCropTotalWaterLevel(ownerWateredReadOk && ownerWatered, friendWaterCountReadOk ? friendWaterCount : 0);
                     this.TryHomelandFarmTryResolveVisitorWaterState(
-                        cropBoxData,
-                        ownerId,
+                        legacyCropBoxData,
+                        legacyOwnerId,
                         playerNetId,
                         isCropBox: true,
                         selfPlayerGuid,
@@ -10295,9 +12648,9 @@ namespace HeartopiaMod
                         out bool selfWatered,
                         out bool selfWateredReadOk,
                         out bool canAddVisitorWater);
-                    this.HomelandFarmLog(
-                        "[Diag] cropBox netId=" + waterNetId
-                        + " owner=" + ownerId
+                    diagnosticLines.Add(
+                        "[Diag] cropBox netId=" + legacyWaterNetId
+                        + " owner=" + legacyOwnerId
                         + " dist=" + distance.ToString("F1") + "m"
                         + " ownerWatered=" + HomelandFarmFormatDiagnosticValue(ownerWateredReadOk, ownerWatered)
                         + " friendWaterCount=" + HomelandFarmFormatDiagnosticValue(friendWaterCountReadOk, friendWaterCount)
@@ -10308,11 +12661,11 @@ namespace HeartopiaMod
                     continue;
                 }
 
-                if (this.TryHomelandFarmGetComponentData(this.homelandFarmPlantItemDataType, waterNetId, out object plantData, out _, "PlantItemData"))
+                if (this.TryHomelandFarmGetComponentData(this.homelandFarmPlantItemDataType, legacyWaterNetId, out object legacyPlantData, out _, "PlantItemData"))
                 {
                     plantCount++;
                     this.TryHomelandFarmTryReadPlantWaterState(
-                        plantData,
+                        legacyPlantData,
                         out bool masterWater,
                         out bool masterWaterReadOk,
                         out bool weatherWater,
@@ -10326,8 +12679,8 @@ namespace HeartopiaMod
                     bool plantOwnerWatered = (masterWaterReadOk && masterWater) || (weatherWaterReadOk && weatherWater);
                     bool plantOwnerWateredReadOk = masterWaterReadOk || weatherWaterReadOk;
                     this.TryHomelandFarmTryResolveVisitorWaterState(
-                        plantData,
-                        ownerId,
+                        legacyPlantData,
+                        legacyOwnerId,
                         playerNetId,
                         isCropBox: false,
                         selfPlayerGuid,
@@ -10335,9 +12688,9 @@ namespace HeartopiaMod
                         out bool selfWatered,
                         out bool selfWateredReadOk,
                         out bool canAddVisitorWater);
-                    this.HomelandFarmLog(
-                        "[Diag] plant netId=" + waterNetId
-                        + " owner=" + ownerId
+                    diagnosticLines.Add(
+                        "[Diag] plant netId=" + legacyWaterNetId
+                        + " owner=" + legacyOwnerId
                         + " dist=" + distance.ToString("F1") + "m"
                         + " stage=" + HomelandFarmFormatDiagnosticValue(stageReadOk, stage)
                         + " ownerWatered=" + HomelandFarmFormatDiagnosticValue(masterWaterReadOk, masterWater)
@@ -10351,6 +12704,11 @@ namespace HeartopiaMod
                 }
 
                 skippedNoFarmData++;
+            }
+
+            for (int i = 0; i < diagnosticLines.Count; i++)
+            {
+                this.HomelandFarmLog(diagnosticLines[i]);
             }
 
             this.HomelandFarmLog(
@@ -11514,6 +13872,27 @@ namespace HeartopiaMod
 
             try
             {
+                if (mode == HomelandFarmWaterMode.InRadius && !this.TryHomelandFarmTryIsHandHoldSprinklerEquipped())
+                {
+                    if (!this.TryHomelandFarmEquipSprinklerTool(out string equipStatus))
+                    {
+                        this.homelandFarmLastStatus = "Equip sprinkler failed: " + equipStatus;
+                        this.HomelandFarmLog(this.homelandFarmLastStatus);
+                        if (!silent)
+                        {
+                            this.AddMenuNotification(this.homelandFarmLastStatus, new Color(1f, 0.55f, 0.45f));
+                        }
+
+                        yield break;
+                    }
+
+                    // The equip action returned success (SetHandhold ok). The equipped-state check is
+                    // unreliable on builds where HandHoldSprinkler has no managed type and is not an
+                    // ECS component on the player entity, so don't poll/wait for it — proceed after a
+                    // single frame to let the command apply. The server rejects water if truly unarmed.
+                    yield return null;
+                }
+
                 bool allowVisitingFarmArea = mode == HomelandFarmWaterMode.Unwatered
                     || mode == HomelandFarmWaterMode.Friends
                     || mode == HomelandFarmWaterMode.InRadius;
@@ -12261,6 +14640,13 @@ namespace HeartopiaMod
                 && this.homelandFarmCropFertilizerEntityTypeValue != int.MinValue;
         }
 
+        private bool TryResolveHomelandFarmSprinklerEntityType(out int entityType)
+        {
+            entityType = this.homelandFarmSprinklerEntityTypeValue;
+            return this.TryResolveHomelandFarmEntityTypeValue("sprinkler", ref this.homelandFarmSprinklerEntityTypeValue)
+                && this.homelandFarmSprinklerEntityTypeValue != int.MinValue;
+        }
+
         private bool TryHomelandFarmGetEntityTypeForStaticId(int staticId, out int entityType)
         {
             entityType = 0;
@@ -12328,6 +14714,16 @@ namespace HeartopiaMod
             }
 
             return this.TryHomelandFarmItemMatchesEntityType(staticId, itemEntityType, fertilizerType);
+        }
+
+        private bool TryHomelandFarmItemMatchesSprinkler(int staticId, int itemEntityType)
+        {
+            if (!this.TryResolveHomelandFarmSprinklerEntityType(out int sprinklerType))
+            {
+                sprinklerType = int.MinValue;
+            }
+
+            return this.TryHomelandFarmItemMatchesEntityType(staticId, itemEntityType, sprinklerType);
         }
 
         private string TryHomelandFarmGetItemLabel(int staticId)
@@ -12755,6 +15151,22 @@ namespace HeartopiaMod
             return results;
         }
 
+        private List<HomelandFarmInventoryItem> ScanHomelandFarmSprinklers(HomelandFarmStorageSource source)
+        {
+            List<HomelandFarmInventoryItem> results = new List<HomelandFarmInventoryItem>();
+            HashSet<uint> seenNetIds = new HashSet<uint>();
+            bool accept(int staticId, int itemEntityType) => this.TryHomelandFarmItemMatchesSprinkler(staticId, itemEntityType);
+
+            if (!this.TryCollectHomelandFarmInventoryItemsManaged(source, accept, results, seenNetIds))
+            {
+                this.TryCollectHomelandFarmInventoryItemsAura(source, accept, results, seenNetIds);
+            }
+
+            results.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+            this.HomelandFarmLog("Scanned sprinklers: " + results.Count + " (" + source + ").");
+            return results;
+        }
+
         private void RefreshHomelandFarmSeeds()
         {
             this.homelandFarmScannedSeeds.Clear();
@@ -12786,12 +15198,6 @@ namespace HeartopiaMod
                 return true;
             }
 
-            if (this.homelandFarmSowManagedReflectionAttempted)
-            {
-                return false;
-            }
-
-            this.homelandFarmSowManagedReflectionAttempted = true;
             this.TryEnsureHomelandFarmInteropAssembliesLoaded();
 
             if (this.homelandFarmCropPlantPointType == null)
@@ -12815,14 +15221,30 @@ namespace HeartopiaMod
             }
 
             bool ready = this.homelandFarmCropPlantPointType != null && this.homelandFarmCropSeedingMethod != null;
-            if (!ready)
+            if (!ready && !this.homelandFarmSowManagedReflectionAttempted)
             {
+                this.homelandFarmSowManagedReflectionAttempted = true;
                 this.HomelandFarmLog("Sow managed reflection: cropPlantPoint=" + (this.homelandFarmCropPlantPointType != null)
                     + " cropProtocol=" + (this.homelandFarmCropProtocolManagerType != null)
                     + " seedingMethod=" + (this.homelandFarmCropSeedingMethod != null) + ".");
             }
 
             return ready;
+        }
+
+        private object TryHomelandFarmMaterializeCropPlantPoint(object point)
+        {
+            if (point == null)
+            {
+                return null;
+            }
+
+            if (point is HomelandFarmCropPlantPointData data)
+            {
+                return this.CreateHomelandFarmCropPlantPoint(data.Pos, data.Angle, data.LevelObjectNetId, data.PlanterNetId);
+            }
+
+            return point;
         }
 
         // Plain data carrier used when the managed CropPlantPoint type is unavailable (native-only
@@ -12842,6 +15264,7 @@ namespace HeartopiaMod
 
         private object CreateHomelandFarmCropPlantPoint(Vector3 pos, int angle, ulong levelObjectNetId, uint planterNetId)
         {
+            pos = HomelandFarmNormalizeCropSowFieldLocalPos(pos);
             if (this.homelandFarmCropPlantPointType == null)
             {
                 this.EnsureHomelandFarmSowManagedReflection();
@@ -13029,6 +15452,27 @@ namespace HeartopiaMod
             return -1;
         }
 
+        private static bool HomelandFarmIsPreferredSowPutZoneSlot(int candidateSlot, int bestSlot)
+        {
+            if (bestSlot < 0)
+            {
+                return true;
+            }
+
+            // SeedBagCommand → BoxArg.zoneElement.putZoneId from craft raycast uses slot 2 on crop boxes.
+            if (candidateSlot == 2)
+            {
+                return bestSlot != 2;
+            }
+
+            if (bestSlot == 2)
+            {
+                return false;
+            }
+
+            return candidateSlot < bestSlot;
+        }
+
         private static bool HomelandFarmTryUpdateBestSowPutZoneCandidate(
             ulong candidateNetId,
             int score,
@@ -13044,7 +15488,9 @@ namespace HeartopiaMod
             int candidateSlot = HomelandFarmDecodeLevelObjectSlot(candidateNetId);
             if (bestNetId == 0UL
                 || score > bestScore
-                || (score == bestScore && candidateSlot >= 0 && (bestSlot < 0 || candidateSlot < bestSlot)))
+                || (score == bestScore
+                    && candidateSlot >= 0
+                    && HomelandFarmIsPreferredSowPutZoneSlot(candidateSlot, bestSlot)))
             {
                 bestScore = score;
                 bestNetId = candidateNetId;
@@ -13843,83 +16289,219 @@ namespace HeartopiaMod
 
             fieldLocalPos = HomelandFarmReduceCraftPrecision(worldToLocal.MultiplyPoint(worldPosition));
             Quaternion fieldLocalRotation = Quaternion.Inverse(localToWorld.rotation) * worldRotation;
-            angleY = Mathf.RoundToInt(fieldLocalRotation.eulerAngles.y);
+            angleY = HomelandFarmQuantizeFieldLocalSowAngleY(fieldLocalRotation);
             return fieldLocalPos != Vector3.zero;
         }
 
-        // Per-box field-local pose from TransformComponentData (unique grid cell per crop box).
-        // SeedBagCommand sends boxArg.position from GenConfirmOption(element.root), not putZone origin.
-        private bool TryHomelandFarmTryResolveSowPointFromCropBoxTransform(
-            uint planterNetId,
-            ulong putZoneId,
-            out Vector3 fieldLocalPos,
-            out int angleY,
-            out string status)
+        private unsafe bool TryHomelandFarmTryGetAuraPutZoneRectMatrix(IntPtr levelObjectObj, out Matrix4x4 rectMatrix)
         {
-            fieldLocalPos = Vector3.zero;
-            angleY = 0;
-            status = "Crop box field-local transform unavailable.";
-            if (planterNetId == 0U)
+            rectMatrix = Matrix4x4.identity;
+            if (levelObjectObj == IntPtr.Zero)
             {
                 return false;
             }
 
-            if (!this.TryHomelandFarmResolveEntityFieldLocalPosition(planterNetId, out fieldLocalPos)
-                || fieldLocalPos == Vector3.zero)
+            if (this.TryGetMonoObjectMember(levelObjectObj, "_collision", out IntPtr collisionObj)
+                && collisionObj != IntPtr.Zero)
+            {
+                if (this.TryGetMonoMatrix4x4Member(collisionObj, "rectMatrix", out rectMatrix)
+                    || this.TryGetMonoMatrix4x4Member(collisionObj, "_rectMatrix", out rectMatrix))
+                {
+                    return rectMatrix != Matrix4x4.identity;
+                }
+            }
+
+            IntPtr classPtr = auraMonoObjectGetClass != null ? auraMonoObjectGetClass(levelObjectObj) : IntPtr.Zero;
+            if (classPtr == IntPtr.Zero || auraMonoRuntimeInvoke == null)
             {
                 return false;
             }
 
-            if (!this.TryHomelandFarmTryReadPlanterAngle(planterNetId, out angleY))
+            IntPtr getRectMatrixMethod = this.FindAuraMonoMethodOnHierarchy(classPtr, "get_rectMatrix", 0);
+            if (getRectMatrixMethod == IntPtr.Zero)
             {
-                angleY = 0;
+                return false;
             }
 
-            if (this.TryHomelandFarmResolveFarmEntityPosition(planterNetId, out Vector3 worldPos) && worldPos != Vector3.zero)
+            IntPtr exc = IntPtr.Zero;
+            IntPtr boxed = auraMonoRuntimeInvoke(getRectMatrixMethod, levelObjectObj, IntPtr.Zero, ref exc);
+            if (exc != IntPtr.Zero || boxed == IntPtr.Zero || auraMonoObjectUnbox == null)
             {
-                this.TryHomelandFarmRememberPlanterSowAnchor(planterNetId, putZoneId, worldPos, Quaternion.identity);
+                return false;
             }
 
-            status = "Crop box TransformComponentData pos=" + fieldLocalPos + " angle=" + angleY + ".";
+            IntPtr raw = auraMonoObjectUnbox(boxed);
+            if (raw == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            rectMatrix = Marshal.PtrToStructure<Matrix4x4>(raw);
+            return rectMatrix != Matrix4x4.identity;
+        }
+
+        // CraftMode_Multiple OnEnterPlacing: camera yaw + 180 before alignment refines preview rotation.
+        private unsafe bool TryHomelandFarmTryResolveSowPreviewWorldRotation(out Quaternion worldRotation)
+        {
+            worldRotation = Quaternion.identity;
+            if (!this.TryHomelandFarmTryGetAuraLocalPlayerObject(out IntPtr playerObj, out _)
+                || playerObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.TryGetMonoObjectMember(playerObj, "cameraComponent", out IntPtr cameraComponentObj)
+                || cameraComponentObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr cameraTransformObj = IntPtr.Zero;
+            if (!this.TryGetMonoObjectMember(cameraComponentObj, "cameraTransform", out cameraTransformObj)
+                || cameraTransformObj == IntPtr.Zero)
+            {
+                this.TryGetMonoObjectMember(cameraComponentObj, "_cameraTransform", out cameraTransformObj);
+            }
+
+            if (cameraTransformObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.TryGetMonoVector3Member(cameraTransformObj, "eulerAngles", out Vector3 cameraEuler))
+            {
+                return false;
+            }
+
+            worldRotation = Quaternion.Euler(0f, cameraEuler.y + 180f, 0f);
             return true;
         }
 
-        private bool TryHomelandFarmTryResolveSowPointFromPutZone(
+        private bool TryHomelandFarmTryResolveSowSeedRootWorldPose(
             uint planterNetId,
             ulong putZoneId,
-            out Vector3 fieldLocalPos,
-            out int angleY,
+            out Vector3 worldPosition,
+            out Quaternion worldRotation,
             out string status)
         {
-            fieldLocalPos = Vector3.zero;
-            angleY = 0;
-            status = "Sow point unavailable.";
+            worldPosition = Vector3.zero;
+            worldRotation = Quaternion.identity;
+            status = "Sow seed root world pose unavailable.";
             if (planterNetId == 0U || putZoneId == 0UL)
             {
                 return false;
             }
 
-            if (!this.TryHomelandFarmTryInvokeAuraGetLevelObject(putZoneId, out IntPtr putZoneObj, out status)
-                || putZoneObj == IntPtr.Zero)
+            IntPtr putZoneObj = IntPtr.Zero;
+            if (this.TryHomelandFarmTryInvokeAuraGetLevelObject(putZoneId, out putZoneObj, out status)
+                && putZoneObj != IntPtr.Zero)
             {
+                if (this.TryHomelandFarmTryGetAuraPutZoneRectMatrix(putZoneObj, out Matrix4x4 rectMatrix))
+                {
+                    worldPosition = rectMatrix.MultiplyPoint(Vector3.zero);
+                }
+                else if (this.TryHomelandFarmTryGetAuraLevelObjectWorldPose(putZoneObj, out Vector3 putZonePos, out _)
+                    && putZonePos != Vector3.zero)
+                {
+                    worldPosition = putZonePos;
+                }
+            }
+
+            if (worldPosition == Vector3.zero
+                && this.TryHomelandFarmResolveFarmEntityPosition(planterNetId, out Vector3 entityWorldPos)
+                && entityWorldPos != Vector3.zero)
+            {
+                worldPosition = entityWorldPos;
+            }
+
+            if (worldPosition == Vector3.zero)
+            {
+                status = "PutZone/entity world position unavailable planter=" + planterNetId + ".";
                 return false;
             }
 
-            if (!this.TryHomelandFarmTryGetAuraLevelObjectWorldPose(putZoneObj, out Vector3 worldPos, out Quaternion worldRot))
+            if (!this.TryHomelandFarmTryResolveSowPreviewWorldRotation(out worldRotation))
             {
-                status = "PutZone world pose unavailable netId=" + putZoneId + ".";
-                return false;
+                if (putZoneObj != IntPtr.Zero)
+                {
+                    this.TryHomelandFarmTryGetAuraLevelObjectWorldPose(putZoneObj, out _, out worldRotation);
+                }
             }
 
-            this.TryHomelandFarmRememberPlanterSowAnchor(planterNetId, putZoneId, worldPos, worldRot);
+            status = "Seed root world pos=" + worldPosition + ".";
+            return true;
+        }
+
+        // GenSimpleConfirmOption: worldToLocal * element root world position, then ReducePrecision.
+        private bool TryHomelandFarmTryResolveSowFieldLocalPositionFromEntityWorld(
+            uint netId,
+            Vector3 worldPos,
+            out Vector3 fieldLocalPos,
+            out string status)
+        {
+            fieldLocalPos = Vector3.zero;
+            status = "Craft field-local position unavailable.";
+            if (netId == 0U || worldPos == Vector3.zero)
+            {
+                return false;
+            }
 
             if (!this.TryHomelandFarmTryGetCraftFieldNetId(out uint fieldNetId) || fieldNetId == 0U)
             {
-                status = "Craft field netId unavailable.";
+                this.TryHomelandFarmTryReadOwnerId(netId, out fieldNetId);
+            }
+
+            if (fieldNetId == 0U
+                || !this.TryHomelandFarmTryGetFieldCraftMatrices(fieldNetId, out _, out Matrix4x4 worldToLocal))
+            {
+                status = "Field craft matrices unavailable fieldNetId=" + fieldNetId + ".";
                 return false;
             }
 
-            if (!this.TryHomelandFarmTryConvertWorldPoseToFieldLocalSow(
+            fieldLocalPos = HomelandFarmReduceCraftPrecision(worldToLocal.MultiplyPoint(worldPos));
+            if (fieldLocalPos == Vector3.zero)
+            {
+                status = "Field-local position zero after craft conversion.";
+                return false;
+            }
+
+            status = "Craft field-local pos=" + fieldLocalPos + " fieldNetId=" + fieldNetId + ".";
+            return true;
+        }
+
+        // Approximates GenSimpleConfirmOption: putZone rect world pos, camera preview rot, field-local Y normalize.
+        private bool TryHomelandFarmTryResolveSowPointFromCraftPutZone(
+            uint planterNetId,
+            ulong putZoneId,
+            out Vector3 fieldLocalPos,
+            out int angleY,
+            out string status)
+        {
+            fieldLocalPos = Vector3.zero;
+            angleY = 0;
+            status = "Craft putZone sow pose unavailable.";
+            if (planterNetId == 0U || putZoneId == 0UL)
+            {
+                return false;
+            }
+
+            if (!this.TryHomelandFarmTryResolveSowSeedRootWorldPose(
+                    planterNetId,
+                    putZoneId,
+                    out Vector3 worldPos,
+                    out Quaternion worldRot,
+                    out status))
+            {
+                return false;
+            }
+
+            if (!this.TryHomelandFarmTryGetCraftFieldNetId(out uint fieldNetId) || fieldNetId == 0U)
+            {
+                this.TryHomelandFarmTryReadOwnerId(planterNetId, out fieldNetId);
+            }
+
+            if (fieldNetId == 0U
+                || !this.TryHomelandFarmTryConvertWorldPoseToFieldLocalSow(
                     fieldNetId,
                     worldPos,
                     worldRot,
@@ -13930,8 +16512,11 @@ namespace HeartopiaMod
                 return false;
             }
 
-            status = "Sow point ok putZone=" + putZoneId + " fieldNetId=" + fieldNetId + ".";
-            return true;
+            fieldLocalPos = HomelandFarmNormalizeCropSowFieldLocalPos(fieldLocalPos);
+
+            this.TryHomelandFarmRememberPlanterSowAnchor(planterNetId, putZoneId, worldPos, worldRot);
+            status = "Craft putZone pos=" + fieldLocalPos + " angle=" + angleY + " fieldNetId=" + fieldNetId + ".";
+            return fieldLocalPos != Vector3.zero;
         }
 
         private bool TryHomelandFarmTryProbeValidatedSowPutZone(
@@ -13982,6 +16567,23 @@ namespace HeartopiaMod
             if (planterNetId == 0U)
             {
                 return false;
+            }
+
+            // Fast, crash-safe path FIRST: the crop-box put-zone is encode(planter, slot) and uses
+            // slot 2. Probe {2,1,0} and take the first validated slot (one GetLevelObject per box).
+            // Run this before the dictionary/scoring fallback below, which enumerates the WHOLE
+            // LevelObjectManager dictionary per planter (the documented native-AV hazard on this
+            // build) and crashes sow-all at radius 30. ProbeValidated already checks owner + flags.
+            int[] fastSowSlots = { 2, 1, 0 };
+            for (int fs = 0; fs < fastSowSlots.Length; fs++)
+            {
+                if (this.TryHomelandFarmTryProbeValidatedSowPutZone(planterNetId, fastSowSlots[fs], out ulong fastCandidate, out _)
+                    && fastCandidate != 0UL)
+                {
+                    levelObjectNetId = fastCandidate;
+                    this.HomelandFarmLog("Sow putZone planter=" + planterNetId + " slot=" + fastSowSlots[fs] + " -> " + levelObjectNetId + " (mono GetLevelObject).");
+                    return true;
+                }
             }
 
             int slot = -1;
@@ -14361,6 +16963,9 @@ namespace HeartopiaMod
                 }
             }
 
+            // Also run the position-match pass on AuraMono builds: CropBoxItemData link fields are
+            // empty here even when a crop is growing, so TryHomelandFarmCropBoxHasCrop above misses
+            // occupied boxes (occupied=0) and sow then targets planted boxes -> server InvalidPlantBox.
             if (scanNetIds != null && scanNetIds.Count > 0)
             {
                 this.TryHomelandFarmMarkOccupiedCropBoxesByEntityPosition(cropBoxNetIds, scanNetIds, occupiedOut);
@@ -14402,8 +17007,17 @@ namespace HeartopiaMod
             float worldMatchRadiusSq = HomelandFarmCropBoxWorldMatchRadius * HomelandFarmCropBoxWorldMatchRadius;
             foreach (uint cropNetId in scanNetIds)
             {
-                if (cropNetId == 0U
-                    || !this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, cropNetId, out _, out _, "CropItemData"))
+                if (cropNetId == 0U)
+                {
+                    continue;
+                }
+
+                // A box is occupied if a growing crop entity sits on it. The growing crop is a
+                // CropItemData OR (on this build, the common case) a PlantItemData entity — match
+                // either, else occupied detection misses everything and sow hits InvalidPlantBox.
+                if (cropBoxNetIds.Contains(cropNetId)
+                    || (!this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, cropNetId, out _, out _, "CropItemData")
+                        && !this.TryHomelandFarmGetComponentData(this.homelandFarmPlantItemDataType, cropNetId, out _, out _, "PlantItemData")))
                 {
                     continue;
                 }
@@ -14450,63 +17064,14 @@ namespace HeartopiaMod
                 return false;
             }
 
-            if (this.TryHomelandFarmResolveFarmEntityPosition(netId, out Vector3 worldPos) && worldPos != Vector3.zero)
+            if (this.TryHomelandFarmResolveFarmEntityPosition(netId, out Vector3 worldPos) && worldPos != Vector3.zero
+                && this.TryHomelandFarmTryResolveSowFieldLocalPositionFromEntityWorld(netId, worldPos, out fieldLocalPos, out _))
             {
-                uint fieldNetId = 0U;
-                if (!this.TryHomelandFarmGetSelfPlayInFieldOwnerNetId(out fieldNetId) || fieldNetId == 0U)
-                {
-                    this.TryHomelandFarmTryReadOwnerId(netId, out fieldNetId);
-                }
-
-                if (fieldNetId != 0U
-                    && this.TryHomelandFarmTryGetFieldWorldToLocalMatrix(fieldNetId, out Matrix4x4 worldToLocal))
-                {
-                    fieldLocalPos = HomelandFarmReduceCraftPrecision(worldToLocal.MultiplyPoint(worldPos));
-                    return true;
-                }
+                return true;
             }
 
-            if (this.EnsureAuraMonoApiReady() && this.AttachAuraMonoThread())
-            {
-                if (this.TryGetAuraMonoEntityObjectByNetId(netId, out IntPtr entityObj) && entityObj != IntPtr.Zero)
-                {
-                    if (this.TryGetMonoObjectMember(entityObj, "transformComponent", out IntPtr transformComp)
-                        && transformComp != IntPtr.Zero
-                        && this.TryGetMonoObjectMember(transformComp, "TransformData", out IntPtr transformData)
-                        && transformData != IntPtr.Zero)
-                    {
-                        if (this.TryGetMonoVector3Member(transformData, "<position>k__BackingField", out fieldLocalPos)
-                            || this.TryGetMonoVector3Member(transformData, "position", out fieldLocalPos))
-                        {
-                            fieldLocalPos = HomelandFarmReduceCraftPrecision(fieldLocalPos);
-                            return true;
-                        }
-                    }
-
-                    if (this.TryGetMonoVector3Member(entityObj, "localPosition", out fieldLocalPos))
-                    {
-                        fieldLocalPos = HomelandFarmReduceCraftPrecision(fieldLocalPos);
-                        return true;
-                    }
-                }
-
-                if (this.TryHomelandFarmResolveAuraComponentData(netId, "TransformComponentData", out IntPtr transformDataHandle)
-                    && transformDataHandle != IntPtr.Zero)
-                {
-                    IntPtr resolved = this.TryHomelandFarmResolveAuraComponentDataHandle(transformDataHandle);
-                    if (resolved == IntPtr.Zero)
-                    {
-                        resolved = transformDataHandle;
-                    }
-
-                    if (this.TryGetMonoVector3Member(resolved, "<position>k__BackingField", out fieldLocalPos)
-                        || this.TryGetMonoVector3Member(resolved, "position", out fieldLocalPos))
-                    {
-                        fieldLocalPos = HomelandFarmReduceCraftPrecision(fieldLocalPos);
-                        return true;
-                    }
-                }
-            }
+            // Do not walk raw entity pointers (transformComponent/localPosition): stale loaded-entity
+            // handles from large radius scans can AV the mono runtime.
 
             if (!this.HomelandFarmPrefersAuraComponentData())
             {
@@ -14538,7 +17103,8 @@ namespace HeartopiaMod
                 return false;
             }
 
-            if (this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, boxNetId, out _, out _, "CropItemData"))
+            if (!this.HomelandFarmPrefersAuraComponentData()
+                && this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, boxNetId, out _, out _, "CropItemData"))
             {
                 linkedCropNetId = boxNetId;
                 return true;
@@ -14635,7 +17201,7 @@ namespace HeartopiaMod
             }
 
             this.HomelandFarmLog("Sow point planter=" + netId + " putZone=" + levelObjectNetId
-                + " pos=" + sendPos.ToString() + " angle=" + angle + ".");
+                + " pos=" + sendPos.ToString("F3") + " angle=" + angle + ".");
             plantPoints.Add(point);
             return true;
         }
@@ -14681,10 +17247,34 @@ namespace HeartopiaMod
             return vector3;
         }
 
-        // Resolves CropSeeding values for one planter box (SeedBagCommand / GenConfirmOption):
+        // UI GrowCrop wire uses field-local y=0.06 on crop-box cells; aura rectMatrix / transform paths
+        // can land on 0, ~0.1, or double-offset ~0.12 — all must normalize to 0.06 or the server
+        // rejects the batch with InvalidPlantBox.
+        private static Vector3 HomelandFarmNormalizeCropSowFieldLocalPos(Vector3 fieldLocalPos)
+        {
+            float y = fieldLocalPos.y;
+            if (Mathf.Abs(y) < 0.001f
+                || (y > 0.001f && y < 0.15f)
+                || Mathf.Abs(y - (HomelandFarmCropSowFieldLocalY * 2f)) < 0.015f)
+            {
+                fieldLocalPos.y = HomelandFarmCropSowFieldLocalY;
+            }
+
+            return HomelandFarmReduceCraftPrecision(fieldLocalPos);
+        }
+
+        // Matches CraftMath.ReducePrecision(..., anglePrecision=90, BoxSide.Bottom) on field-local rotation.
+        private static int HomelandFarmQuantizeFieldLocalSowAngleY(Quaternion fieldLocalRotation)
+        {
+            float angleY = fieldLocalRotation.eulerAngles.y;
+            angleY = Mathf.Round(angleY / 90f) * 90f;
+            return Mathf.RoundToInt(angleY);
+        }
+
+        // Resolves CropSeeding values for one planter box (SeedBagCommand / GenSimpleConfirmOption):
         //   putZoneId      = validated put-zone LevelObject on the crop box entity
-        //   fieldLocalPos  = per-box field-local (TransformComponentData), NOT putZone template origin
-        //   angleY         = LevelEntityComponentData angle on crop box (fallback 0)
+        //   fieldLocalPos  = ReducePrecision(worldToLocal * seedPreviewRootWorldPos)
+        //   angleY         = RoundToInt(fieldLocal preview rotation Y, 90° steps)
         private bool TryHomelandFarmResolveBoxFieldPlacement(uint netId, out ulong putZoneId, out Vector3 fieldLocalPos, out int angleY)
         {
             putZoneId = 0UL;
@@ -14700,20 +17290,14 @@ namespace HeartopiaMod
                 return false;
             }
 
-            if (this.TryHomelandFarmTryResolveSowPointFromCropBoxTransform(
+            if (!this.TryHomelandFarmTryResolveSowPointFromCraftPutZone(
                     netId,
                     putZoneId,
                     out fieldLocalPos,
                     out angleY,
-                    out string boxStatus)
-                && fieldLocalPos != Vector3.zero)
+                    out string status))
             {
-                return true;
-            }
-
-            if (!this.TryHomelandFarmTryResolveSowPointFromPutZone(netId, putZoneId, out fieldLocalPos, out angleY, out string sowStatus))
-            {
-                this.HomelandFarmLog("Sow point planter=" + netId + " putZone=" + putZoneId + ": " + boxStatus + "; " + sowStatus);
+                this.HomelandFarmLog("Sow point planter=" + netId + " putZone=" + putZoneId + ": " + status);
                 return false;
             }
 
@@ -14725,28 +17309,64 @@ namespace HeartopiaMod
             return this.TryHomelandFarmResolveBoxFieldPlacement(netId, out putZoneId, out fieldLocalPos, out _);
         }
 
-        private bool FindEmptyCropPlanterSlots(int maxSlots, out List<object> plantPoints, out string status)
+        // Suspend the mono GC so raw object pointers held during per-box native sow resolution are
+        // not collected/moved mid-sequence (cause of the random sow-all native AV). Paired with
+        // HomelandFarmAuraGcEnable in a finally. No-op if the export is unavailable.
+        private void HomelandFarmAuraGcDisable()
         {
-            plantPoints = new List<object>();
-            status = "No empty planter slots found.";
+            try
+            {
+                auraMonoGcDisable?.Invoke();
+            }
+            catch
+            {
+            }
+        }
+
+        private void HomelandFarmAuraGcEnable()
+        {
+            try
+            {
+                auraMonoGcEnable?.Invoke();
+            }
+            catch
+            {
+            }
+        }
+
+        // Coroutine: resolves empty planter slots, yielding every HomelandFarmSowSlotsPerFrame boxes
+        // so the per-box AuraMono resolution is spread across frames (prevents the native crash on
+        // sow-all at large radius). Results are returned via homelandFarmSowSlotPoints/Status/Ok.
+        private IEnumerator FindEmptyCropPlanterSlotsRoutine(int maxSlots)
+        {
+            this.homelandFarmSowSlotOk = false;
+            this.homelandFarmSowSlotPoints = new List<object>();
+            this.homelandFarmSowSlotStatus = "No empty planter slots found.";
+
             if (maxSlots <= 0)
             {
-                status = "Seed count is zero.";
-                return false;
+                this.homelandFarmSowSlotStatus = "Seed count is zero.";
+                yield break;
             }
 
-            if (!this.TryHomelandFarmIsInHomeland(out status))
+            if (!this.TryHomelandFarmIsInHomeland(out string homelandStatus))
             {
-                return false;
+                this.homelandFarmSowSlotStatus = homelandStatus;
+                yield break;
             }
 
             if (!this.EnsureHomelandFarmReflectionReady())
             {
-                status = string.IsNullOrEmpty(this.homelandFarmReflectionUnavailableStatus)
+                this.homelandFarmSowSlotStatus = string.IsNullOrEmpty(this.homelandFarmReflectionUnavailableStatus)
                     ? "Homeland farm reflection unavailable."
                     : this.homelandFarmReflectionUnavailableStatus;
-                return false;
+                yield break;
             }
+
+            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+            this.EnsureHomelandFarmSowManagedReflection();
+            this.TryEnsureHomelandFarmComponentDataManagedReflection();
+            this.homelandFarmAuraComponentMissCache.Clear();
 
             this.TryGetHomelandFarmPlayerNetId(out uint playerNetId, out _);
             bool hasPlayerPos = this.TryGetHomelandFarmPlayerPosition(out Vector3 playerPos);
@@ -14764,17 +17384,33 @@ namespace HeartopiaMod
                 this.TryHomelandFarmCollectCropEntityNetIds(cropNetIds, out _);
             }
 
-            HashSet<uint> cropBoxNetIds = new HashSet<uint>();
-            foreach (uint candidateNetId in cropNetIds)
-            {
-                if (candidateNetId == 0U)
-                {
-                    continue;
-                }
+            this.HomelandFarmLog("Sow slot scan: cropNetIds=" + cropNetIds.Count + " resolving crop boxes...");
 
-                if (this.TryHomelandFarmGetComponentData(this.homelandFarmCropBoxItemDataType, candidateNetId, out _, out _, "CropBoxItemData"))
+            HashSet<uint> cropBoxNetIds = new HashSet<uint>();
+            if (this.homelandFarmLastScanCropBoxNetIds.Count > 0)
+            {
+                foreach (uint boxNetId in this.homelandFarmLastScanCropBoxNetIds)
                 {
-                    cropBoxNetIds.Add(candidateNetId);
+                    if (boxNetId != 0U && cropNetIds.Contains(boxNetId))
+                    {
+                        cropBoxNetIds.Add(boxNetId);
+                    }
+                }
+            }
+
+            if (cropBoxNetIds.Count == 0)
+            {
+                foreach (uint candidateNetId in cropNetIds)
+                {
+                    if (candidateNetId == 0U)
+                    {
+                        continue;
+                    }
+
+                    if (this.TryHomelandFarmClassifyFarmNetId(candidateNetId, out bool isCropBox) && isCropBox)
+                    {
+                        cropBoxNetIds.Add(candidateNetId);
+                    }
                 }
             }
 
@@ -14783,44 +17419,73 @@ namespace HeartopiaMod
                 this.TryHomelandFarmCollectComponentsNetIds(this.homelandFarmCropBoxComponentType, cropBoxNetIds, "CropBoxComponent(empty)");
             }
 
+            this.HomelandFarmLog("Sow slot scan: cropBoxes=" + cropBoxNetIds.Count + " marking occupied...");
+
             HashSet<uint> occupiedCropBoxNetIds = new HashSet<uint>();
             this.TryHomelandFarmBuildOccupiedCropBoxNetIds(cropBoxNetIds, cropNetIds, occupiedCropBoxNetIds);
+            this.HomelandFarmLog("Sow slot scan: occupied=" + occupiedCropBoxNetIds.Count + " finding empties...");
 
+            // Let the heavy occupied-detection frame settle before starting per-box resolution.
+            yield return null;
+
+            List<object> plantPoints = this.homelandFarmSowSlotPoints;
             HashSet<ulong> usedLevelObjectNetIds = new HashSet<ulong>();
             int emptyBoxCount = 0;
             string statusNote = string.Empty;
+            int sinceYield = 0;
 
             this.EnsureHomelandFarmScannerTypes();
-            foreach (uint netId in cropBoxNetIds)
+            if (!this.homelandFarmSowGcGuardLogged)
             {
-                if (plantPoints.Count >= maxSlots)
-                {
-                    break;
-                }
+                this.homelandFarmSowGcGuardLogged = true;
+                this.HomelandFarmLog("Sow GC guard available=" + (auraMonoGcDisable != null && auraMonoGcEnable != null) + ".");
+            }
 
-                if (!this.TryHomelandFarmIsEmptyCropPlanter(netId, playerNetId, occupiedCropBoxNetIds))
+            // Suspend the mono GC for the ENTIRE per-box resolution (including across yields): each
+            // box holds raw mono object pointers (GetLevelObject -> rectMatrix reads) across several
+            // invokes, and a GC firing mid-resolution collects/moves them -> native AV (random box
+            // on sow-all). Re-enabled in finally. yield inside try/finally is legal in iterators.
+            this.HomelandFarmAuraGcDisable();
+            try
+            {
+                foreach (uint netId in cropBoxNetIds)
                 {
-                    continue;
-                }
+                    if (plantPoints.Count >= maxSlots)
+                    {
+                        break;
+                    }
 
-                if (this.TryHomelandFarmAppendEmptyPlanterPoint(netId, usedLevelObjectNetIds, plantPoints, maxSlots, ref statusNote))
-                {
-                    emptyBoxCount++;
+                    if (this.TryHomelandFarmIsEmptyCropPlanter(netId, playerNetId, occupiedCropBoxNetIds)
+                        && this.TryHomelandFarmAppendEmptyPlanterPoint(netId, usedLevelObjectNetIds, plantPoints, maxSlots, ref statusNote))
+                    {
+                        emptyBoxCount++;
+                    }
+
+                    // Spread per-box AuraMono resolution across frames.
+                    if (++sinceYield >= HomelandFarmSowSlotsPerFrame)
+                    {
+                        sinceYield = 0;
+                        yield return null;
+                    }
                 }
+            }
+            finally
+            {
+                this.HomelandFarmAuraGcEnable();
             }
 
             if (plantPoints.Count == 0)
             {
-                status = "No empty planter slots (cropBoxes=" + cropBoxNetIds.Count
+                this.homelandFarmSowSlotStatus = "No empty planter slots (cropBoxes=" + cropBoxNetIds.Count
                     + ", occupied=" + occupiedCropBoxNetIds.Count + ")."
                     + (string.IsNullOrEmpty(statusNote) ? string.Empty : " " + statusNote);
-                return false;
+                yield break;
             }
 
-            status = "Found " + plantPoints.Count + " empty slot(s) in radius " + radius.ToString("F0")
+            this.homelandFarmSowSlotStatus = "Found " + plantPoints.Count + " empty slot(s) in radius " + radius.ToString("F0")
                 + " (empty=" + emptyBoxCount + ", occupied=" + occupiedCropBoxNetIds.Count + "/" + cropBoxNetIds.Count + ").";
-            this.HomelandFarmLog(status);
-            return true;
+            this.HomelandFarmLog(this.homelandFarmSowSlotStatus);
+            this.homelandFarmSowSlotOk = true;
         }
 
         private unsafe bool TryHomelandFarmTryGetBackPackNameAuraMono(int staticId, int step, uint netId, out string displayName)
@@ -15277,7 +17942,18 @@ namespace HeartopiaMod
                 int remainingSeeds = seed.Count;
                 while (remainingSeeds > 0)
                 {
-                    if (!this.FindEmptyCropPlanterSlots(remainingSeeds, out List<object> plantPoints, out string slotStatus)
+                    // Drive the slot-scan coroutine manually (yielding its values) so it works under
+                    // both loaders: BepInEx wraps the outer coroutine to Il2Cpp, where a nested
+                    // "yield return managedIEnumerator" is not reliably pumped by Unity.
+                    IEnumerator slotRoutine = this.FindEmptyCropPlanterSlotsRoutine(remainingSeeds);
+                    while (slotRoutine.MoveNext())
+                    {
+                        yield return slotRoutine.Current;
+                    }
+
+                    List<object> plantPoints = this.homelandFarmSowSlotPoints;
+                    string slotStatus = this.homelandFarmSowSlotStatus;
+                    if (!this.homelandFarmSowSlotOk
                         || plantPoints == null
                         || plantPoints.Count == 0)
                     {
@@ -15293,6 +17969,8 @@ namespace HeartopiaMod
 
                         break;
                     }
+
+                    yield return null;
 
                     for (int offset = 0; offset < plantPoints.Count && remainingSeeds > 0; offset += sowBatchSize)
                     {
@@ -15744,6 +18422,73 @@ namespace HeartopiaMod
             return y + rowH + 8f;
         }
 
+        private bool TryHomelandFarmWarmupPrefetchInteropMethods()
+        {
+            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+            this.EnsureHomelandFarmSowManagedReflection();
+
+            if (this.homelandFarmCropSeedingInteropMethod == null)
+            {
+                if (this.homelandFarmCropSeedingMethod != null)
+                {
+                    this.homelandFarmCropSeedingInteropMethod = this.homelandFarmCropSeedingMethod;
+                }
+                else
+                {
+                    Type cropProtocolType = this.homelandFarmCropProtocolManagerType
+                        ?? this.ResolveHomelandFarmManagedType(
+                            "CropProtocolManager",
+                            "XDTDataAndProtocol.ProtocolService.Plant.CropProtocolManager");
+                    if (cropProtocolType != null)
+                    {
+                        if (this.homelandFarmCropProtocolManagerType == null)
+                        {
+                            this.homelandFarmCropProtocolManagerType = cropProtocolType;
+                        }
+
+                        this.homelandFarmCropSeedingInteropMethod = this.ResolveHomelandFarmCropSeedingMethod()
+                            ?? this.GetMethodByNameAndParamCountQuiet(cropProtocolType, "CropSeeding", 2);
+                    }
+                }
+            }
+
+            if (this.homelandFarmCropAddManureInteropMethod == null)
+            {
+                Type cropProtocolType = this.homelandFarmCropProtocolManagerType
+                    ?? this.ResolveHomelandFarmManagedType(
+                        "CropProtocolManager",
+                        "XDTDataAndProtocol.ProtocolService.Plant.CropProtocolManager");
+                if (cropProtocolType != null)
+                {
+                    if (this.homelandFarmCropProtocolManagerType == null)
+                    {
+                        this.homelandFarmCropProtocolManagerType = cropProtocolType;
+                    }
+
+                    this.homelandFarmCropAddManureInteropMethod = this.ResolveHomelandFarmListOnlyStaticMethod(
+                        cropProtocolType,
+                        "AddManure");
+                }
+            }
+
+            return this.homelandFarmCropSeedingInteropMethod != null || this.homelandFarmCropAddManureInteropMethod != null;
+        }
+
+        private void LogHomelandFarmWarmupPrefetchSummary()
+        {
+            this.HomelandFarmLog(
+                "Warmup cache: managed=" + this.homelandFarmManagedReflectionReady
+                + " aura=" + this.homelandFarmAuraReflectionReady
+                + " componentData=" + this.TryEnsureHomelandFarmComponentDataManagedReflection()
+                + " scanner=" + this.homelandFarmScannerTypesResolved
+                + " auraFarm=" + this.auraFarmMethodsReady
+                + " sow=" + (this.homelandFarmCropPlantPointType != null && this.homelandFarmCropSeedingMethod != null)
+                + " seedingInterop=" + (this.homelandFarmCropSeedingInteropMethod != null)
+                + " toolEquip=" + this.homelandFarmToolEquipTypesResolved
+                + " inventory=" + this.homelandFarmInventoryReflectionResolved
+                + " levelObjectCache=" + this.homelandFarmAuraLevelObjectPositionCache.Count + ".");
+        }
+
         private void EnsureHomelandFarmWarmupStarted()
         {
             if (this.homelandFarmWarmupStarted)
@@ -15764,7 +18509,15 @@ namespace HeartopiaMod
             yield return null;
             this.EnsureHomelandFarmReflectionReady();
             yield return null;
+            this.TryEnsureHomelandFarmComponentDataManagedReflection();
+            yield return null;
             this.EnsureHomelandFarmScannerTypes();
+            this.TryEnsureHomelandFarmEntitiesGetComponentsReady(out string getComponentsStatus);
+            if (!string.IsNullOrEmpty(getComponentsStatus))
+            {
+                this.HomelandFarmLog("Warmup GetComponents: " + getComponentsStatus);
+            }
+
             while (!this.auraFarmMethodsReady)
             {
                 this.ResolveAuraFarmRuntimeMethods();
@@ -15777,17 +18530,40 @@ namespace HeartopiaMod
             }
 
             yield return null;
+            this.TryResolveHomelandFarmAuraProtocol(out _);
+            this.TryResolveHomelandFarmAuraScanClasses(out _);
+            yield return null;
+            // Resolve + log the farm component classes (Plant / CropBox / Crop) up front so the
+            // first scan never pays the resolution cost and we can see what resolved in the log.
+            this.HomelandFarmResolveFarmComponentClassesInternal(logResults: true);
+            yield return null;
             this.EnsureHomelandFarmSowManagedReflection();
+            this.TryHomelandFarmWarmupPrefetchInteropMethods();
+            yield return null;
+            this.TryHomelandFarmEnsureToolEquipTypes();
+            this.TryHomelandFarmEnsureNetworkCommandTypes(out _);
+            this.TryHomelandFarmEnsureFertilizationCastResolver(out _);
+            yield return null;
+            this.EnsureHomelandFarmInventoryReflection();
+            this.EnsureHomelandFarmTableDataReflection();
+            this.EnsureHomelandFarmLocalPlayerComponentType();
+            this.EnsureHomelandFarmPlayerDataCenterType();
+            this.TryResolveHomelandFarmCropSeedEntityType(out _);
+            this.TryResolveHomelandFarmCropFertilizerEntityType(out _);
+            this.TryResolveHomelandFarmSprinklerEntityType(out _);
+            yield return null;
+            this.TryHomelandFarmResolveAuraCropPlantPointMembers(out _);
             yield return null;
             this.TryHomelandFarmCacheAuraLevelObjectPositions(true, allowDictionaryScan: true);
-            this.HomelandFarmLog("Warmup complete (reflection + scanner types + sow managed types prefetched).");
+            this.LogHomelandFarmWarmupPrefetchSummary();
+            this.HomelandFarmLog("Warmup complete (reflection + scanner + sow + inventory + level-object cache prefetched).");
             this.homelandFarmWarmupComplete = true;
             this.homelandFarmWarmupCoroutine = null;
         }
 
         private bool IsHomelandFarmWarmupReady()
         {
-            return this.auraFarmMethodsReady;
+            return this.homelandFarmWarmupComplete && this.auraFarmMethodsReady;
         }
 
         private float DrawHomelandFarmTab(int startY)

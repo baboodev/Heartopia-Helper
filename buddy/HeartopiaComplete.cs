@@ -756,7 +756,10 @@ namespace HeartopiaMod
         private Type cachedDirectBagStorageType = null;
         private MethodInfo cachedDirectExecuteBackpackItemFuncMethod = null;
         private readonly Dictionary<string, float> loadedTypeMissCacheUntil = new Dictionary<string, float>(StringComparer.Ordinal);
+        private readonly Dictionary<string, MethodInfo> methodLookupCache = new Dictionary<string, MethodInfo>(StringComparer.Ordinal);
+        private readonly Dictionary<string, float> methodMissCacheUntil = new Dictionary<string, float>(StringComparer.Ordinal);
         private const float LoadedTypeMissCacheSeconds = 30f;
+        private const float LoadedMethodMissCacheSeconds = 30f;
         private const float ToolDurabilityPollInterval = 0.5f;
         private const float FarmActiveToolDurabilityPollInterval = 1f;
         private const float ToolDurabilityLogInterval = 8f;
@@ -11132,23 +11135,52 @@ namespace HeartopiaMod
                 return false;
             }
 
-            if (auraMonoArrayLength != null && this.EnsureAuraMonoArrayGetValueAccessor(collectionObj))
+            if (auraMonoArrayLength != null && this.IsAuraMonoArrayObject(collectionObj))
             {
                 try
                 {
-                    int arrayCount = (int)Math.Min(auraMonoArrayLength(collectionObj).ToUInt64(), 4096UL);
-                    for (int i = 0; i < arrayCount; i++)
+                    int arrayCount = (int)Math.Min(auraMonoArrayLength(collectionObj).ToUInt64(), 8192UL);
+
+                    // Fast path for reference-type arrays (e.g. the ECS GetAllComponents slot array,
+                    // which can be thousands of mostly-null entries). Resolve the element-0 address
+                    // ONCE and read each pointer as a contiguous managed memory read, instead of a
+                    // mono_array_addr_with_size P/Invoke (or Array.GetValue runtime invoke) per
+                    // element — those cost ~µs–ms each, so a few-thousand-slot array would stall the
+                    // frame (symptom: inspectMs ~240/entity even after the invoke->addr change).
+                    IntPtr arrayBase = (auraMonoArrayAddrWithSize != null && arrayCount > 0 && this.IsAuraMonoReferenceArray(collectionClass))
+                        ? auraMonoArrayAddrWithSize(collectionObj, IntPtr.Size, UIntPtr.Zero)
+                        : IntPtr.Zero;
+                    if (arrayBase != IntPtr.Zero)
                     {
-                        IntPtr itemObj = this.GetAuraMonoArrayValue(collectionObj, i);
-                        if (itemObj != IntPtr.Zero)
+                        for (int i = 0; i < arrayCount; i++)
                         {
-                            output.Add(itemObj);
+                            IntPtr itemObj = Marshal.ReadIntPtr(arrayBase, i * IntPtr.Size);
+                            if (itemObj != IntPtr.Zero)
+                            {
+                                output.Add(itemObj);
+                            }
+                        }
+
+                        if (output.Count > 0)
+                        {
+                            return true;
                         }
                     }
-
-                    if (output.Count > 0)
+                    else if (this.EnsureAuraMonoArrayGetValueAccessor(collectionObj))
                     {
-                        return true;
+                        for (int i = 0; i < arrayCount; i++)
+                        {
+                            IntPtr itemObj = this.GetAuraMonoArrayValue(collectionObj, i);
+                            if (itemObj != IntPtr.Zero)
+                            {
+                                output.Add(itemObj);
+                            }
+                        }
+
+                        if (output.Count > 0)
+                        {
+                            return true;
+                        }
                     }
                 }
                 catch
@@ -34514,25 +34546,37 @@ namespace HeartopiaMod
                 return false;
             }
 
-            IntPtr levelImage = this.FindAuraMonoImage(new string[] { "XDTLevelAndEntity", "XDTLevelAndEntity.dll", "Client", "Client.dll" });
-            IntPtr entitiesClass = levelImage != IntPtr.Zero ? auraMonoClassFromName(levelImage, "XDTLevelAndEntity.BaseSystem.EntitiesManager", "Entities") : IntPtr.Zero;
+            IntPtr entitiesClass = this.cachedAuraMonoEntitiesManagerClass;
             if (entitiesClass == IntPtr.Zero)
             {
-                entitiesClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTLevelAndEntity.BaseSystem.EntitiesManager", "Entities");
-            }
-            if (entitiesClass == IntPtr.Zero)
-            {
-                return false;
+                IntPtr levelImage = this.FindAuraMonoImage(new string[] { "XDTLevelAndEntity", "XDTLevelAndEntity.dll", "Client", "Client.dll" });
+                entitiesClass = levelImage != IntPtr.Zero ? auraMonoClassFromName(levelImage, "XDTLevelAndEntity.BaseSystem.EntitiesManager", "Entities") : IntPtr.Zero;
+                if (entitiesClass == IntPtr.Zero)
+                {
+                    entitiesClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTLevelAndEntity.BaseSystem.EntitiesManager", "Entities");
+                }
+                if (entitiesClass == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                this.cachedAuraMonoEntitiesManagerClass = entitiesClass;
             }
 
-            IntPtr getEntityMethod = this.FindAuraMonoMethodOnHierarchy(entitiesClass, "GetEntity", 1);
+            IntPtr getEntityMethod = this.cachedAuraMonoEntitiesGetEntityMethod;
             if (getEntityMethod == IntPtr.Zero)
             {
-                getEntityMethod = this.FindAuraMonoMethodOnHierarchy(entitiesClass, "GetAnyEntity", 1);
-            }
-            if (getEntityMethod == IntPtr.Zero)
-            {
-                return false;
+                getEntityMethod = this.FindAuraMonoMethodOnHierarchy(entitiesClass, "GetEntity", 1);
+                if (getEntityMethod == IntPtr.Zero)
+                {
+                    getEntityMethod = this.FindAuraMonoMethodOnHierarchy(entitiesClass, "GetAnyEntity", 1);
+                }
+                if (getEntityMethod == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                this.cachedAuraMonoEntitiesGetEntityMethod = getEntityMethod;
             }
 
             IntPtr* args = stackalloc IntPtr[1];
@@ -46131,6 +46175,14 @@ namespace HeartopiaMod
 
         internal Type ModFindLoadedType(params string[] names) => this.FindLoadedType(names);
 
+        internal Type ModFindLoadedTypeByFullName(string fullName) => this.FindLoadedTypeByFullName(fullName);
+
+        internal void ClearModReflectionLookupMissCaches()
+        {
+            this.loadedTypeMissCacheUntil.Clear();
+            this.methodMissCacheUntil.Clear();
+        }
+
         internal bool ModTryGetObjectMember(object instance, string memberName, out object value) =>
             this.TryGetObjectMember(instance, memberName, out value);
 
@@ -46150,15 +46202,21 @@ namespace HeartopiaMod
             try
             {
                 Type type = instance.GetType();
-                MethodInfo method = type.GetMethod(
+                Type[] argTypes = args == null || args.Length == 0
+                    ? Type.EmptyTypes
+                    : args.Select(a => a?.GetType() ?? typeof(object)).ToArray();
+                MethodInfo method = this.GetMethodQuiet(
+                    type,
                     methodName,
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
-                    null,
-                    args == null || args.Length == 0 ? Type.EmptyTypes : args.Select(a => a?.GetType() ?? typeof(object)).ToArray(),
-                    null);
+                    argTypes);
                 if (method == null && (args == null || args.Length == 0))
                 {
-                    method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    method = this.GetMethodQuiet(
+                        type,
+                        methodName,
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                        Type.EmptyTypes);
                 }
 
                 if (method == null)
@@ -46887,25 +46945,37 @@ namespace HeartopiaMod
                 return false;
             }
 
-            IntPtr levelImage = this.FindAuraMonoImage(new string[] { "XDTLevelAndEntity", "XDTLevelAndEntity.dll", "Client", "Client.dll" });
-            IntPtr entitiesClass = levelImage != IntPtr.Zero ? auraMonoClassFromName(levelImage, "XDTLevelAndEntity.BaseSystem.EntitiesManager", "Entities") : IntPtr.Zero;
+            IntPtr entitiesClass = this.cachedAuraMonoEntitiesManagerClass;
             if (entitiesClass == IntPtr.Zero)
             {
-                entitiesClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTLevelAndEntity.BaseSystem.EntitiesManager", "Entities");
-            }
-            if (entitiesClass == IntPtr.Zero)
-            {
-                return false;
+                IntPtr levelImage = this.FindAuraMonoImage(new string[] { "XDTLevelAndEntity", "XDTLevelAndEntity.dll", "Client", "Client.dll" });
+                entitiesClass = levelImage != IntPtr.Zero ? auraMonoClassFromName(levelImage, "XDTLevelAndEntity.BaseSystem.EntitiesManager", "Entities") : IntPtr.Zero;
+                if (entitiesClass == IntPtr.Zero)
+                {
+                    entitiesClass = this.FindAuraMonoClassAcrossLoadedAssemblies("XDTLevelAndEntity.BaseSystem.EntitiesManager", "Entities");
+                }
+                if (entitiesClass == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                this.cachedAuraMonoEntitiesManagerClass = entitiesClass;
             }
 
-            IntPtr getEntityMethod = this.FindAuraMonoMethodOnHierarchy(entitiesClass, "GetEntity", 1);
+            IntPtr getEntityMethod = this.cachedAuraMonoEntitiesGetEntityMethod;
             if (getEntityMethod == IntPtr.Zero)
             {
-                getEntityMethod = this.FindAuraMonoMethodOnHierarchy(entitiesClass, "GetAnyEntity", 1);
-            }
-            if (getEntityMethod == IntPtr.Zero)
-            {
-                return false;
+                getEntityMethod = this.FindAuraMonoMethodOnHierarchy(entitiesClass, "GetEntity", 1);
+                if (getEntityMethod == IntPtr.Zero)
+                {
+                    getEntityMethod = this.FindAuraMonoMethodOnHierarchy(entitiesClass, "GetAnyEntity", 1);
+                }
+                if (getEntityMethod == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                this.cachedAuraMonoEntitiesGetEntityMethod = getEntityMethod;
             }
 
             IntPtr* args = stackalloc IntPtr[1];
@@ -47824,7 +47894,170 @@ namespace HeartopiaMod
                 }
             }
 
+            if (!string.IsNullOrEmpty(cacheKey))
+            {
+                this.loadedTypeMissCacheUntil[cacheKey] = Time.unscaledTime + LoadedTypeMissCacheSeconds;
+            }
+
             return null;
+        }
+
+        private Type FindLoadedTypeByFullName(string fullName)
+        {
+            if (string.IsNullOrEmpty(fullName))
+            {
+                return null;
+            }
+
+            return this.FindLoadedType(fullName);
+        }
+
+        private static string BuildMethodLookupCacheKey(Type type, string name, BindingFlags flags, Type[] parameterTypes, int paramCountOnly)
+        {
+            if (type == null || string.IsNullOrEmpty(name))
+            {
+                return string.Empty;
+            }
+
+            string typeName = type.FullName ?? type.Name ?? type.GetHashCode().ToString();
+            if (paramCountOnly >= 0)
+            {
+                return typeName + "|pc:" + paramCountOnly + "|" + name + "|" + (int)flags;
+            }
+
+            Type[] types = parameterTypes ?? Type.EmptyTypes;
+            if (types.Length == 0)
+            {
+                return typeName + "|sig:|" + name + "|" + (int)flags;
+            }
+
+            StringBuilder sb = new StringBuilder(typeName.Length + name.Length + (types.Length * 16));
+            sb.Append(typeName).Append("|sig:").Append(name).Append('|').Append((int)flags);
+            for (int i = 0; i < types.Length; i++)
+            {
+                Type pt = types[i];
+                sb.Append('|').Append(pt?.FullName ?? "_");
+            }
+
+            return sb.ToString();
+        }
+
+        private MethodInfo ResolveCachedMethodQuiet(Type type, string name, BindingFlags flags, Type[] parameterTypes)
+        {
+            if (type == null || string.IsNullOrEmpty(name))
+            {
+                return null;
+            }
+
+            Type[] resolvedParameterTypes = parameterTypes ?? Type.EmptyTypes;
+            const BindingFlags flatten = BindingFlags.FlattenHierarchy;
+            BindingFlags resolvedFlags = flags | flatten;
+            string cacheKey = BuildMethodLookupCacheKey(type, name, resolvedFlags, resolvedParameterTypes, -1);
+            if (!string.IsNullOrEmpty(cacheKey))
+            {
+                if (this.methodLookupCache.TryGetValue(cacheKey, out MethodInfo cachedMethod))
+                {
+                    return cachedMethod;
+                }
+
+                if (this.methodMissCacheUntil.TryGetValue(cacheKey, out float missCacheUntil))
+                {
+                    if (Time.unscaledTime < missCacheUntil)
+                    {
+                        return null;
+                    }
+
+                    this.methodMissCacheUntil.Remove(cacheKey);
+                }
+            }
+
+            MethodInfo method = type.GetMethod(name, resolvedFlags, null, resolvedParameterTypes, null);
+            if (!string.IsNullOrEmpty(cacheKey))
+            {
+                if (method != null)
+                {
+                    this.methodLookupCache[cacheKey] = method;
+                    this.methodMissCacheUntil.Remove(cacheKey);
+                }
+                else
+                {
+                    this.methodMissCacheUntil[cacheKey] = Time.unscaledTime + LoadedMethodMissCacheSeconds;
+                }
+            }
+
+            return method;
+        }
+
+        private MethodInfo ResolveCachedMethodByParamCountQuiet(Type type, string name, int paramCount)
+        {
+            if (type == null || string.IsNullOrEmpty(name))
+            {
+                return null;
+            }
+
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static
+                | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+            string cacheKey = BuildMethodLookupCacheKey(type, name, flags, null, paramCount);
+            if (!string.IsNullOrEmpty(cacheKey))
+            {
+                if (this.methodLookupCache.TryGetValue(cacheKey, out MethodInfo cachedMethod))
+                {
+                    return cachedMethod;
+                }
+
+                if (this.methodMissCacheUntil.TryGetValue(cacheKey, out float missCacheUntil))
+                {
+                    if (Time.unscaledTime < missCacheUntil)
+                    {
+                        return null;
+                    }
+
+                    this.methodMissCacheUntil.Remove(cacheKey);
+                }
+            }
+
+            MethodInfo resolved = null;
+            MethodInfo[] methods = type.GetMethods(flags);
+            for (int i = 0; i < methods.Length; i++)
+            {
+                MethodInfo candidate = methods[i];
+                if (!string.Equals(candidate.Name, name, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                ParameterInfo[] parameters = candidate.GetParameters();
+                if (parameters != null && parameters.Length == paramCount)
+                {
+                    resolved = candidate;
+                    break;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(cacheKey))
+            {
+                if (resolved != null)
+                {
+                    this.methodLookupCache[cacheKey] = resolved;
+                    this.methodMissCacheUntil.Remove(cacheKey);
+                }
+                else
+                {
+                    this.methodMissCacheUntil[cacheKey] = Time.unscaledTime + LoadedMethodMissCacheSeconds;
+                }
+            }
+
+            return resolved;
+        }
+
+        private MethodInfo GetMethodQuiet(Type type, string name, BindingFlags flags, Type[] parameterTypes)
+        {
+            return this.ResolveCachedMethodQuiet(type, name, flags, parameterTypes);
+        }
+
+        private MethodInfo GetMethodByNameAndParamCountQuiet(Type type, string name, int paramCount)
+        {
+            return this.ResolveCachedMethodByParamCountQuiet(type, name, paramCount);
         }
 
         private string DescribeType(Type type)
@@ -63869,6 +64102,11 @@ namespace HeartopiaMod
         private IntPtr cachedBirdPhotoDetailInfoStandNetIdField = IntPtr.Zero;
         private bool cachedBirdPhotoDetailInfoFieldsResolved = false;
         private readonly Dictionary<AuraMonoMethodCacheKey, IntPtr> auraMonoMethodLookupCache = new Dictionary<AuraMonoMethodCacheKey, IntPtr>();
+        // Cached EntitiesManager class + GetEntity method so per-entity netId->object resolution
+        // (TryGetAuraMonoEntityObjectByNetId) does not repeat FindAuraMonoImage / class-from-name
+        // on every call. Mono class/method pointers are stable for the process lifetime.
+        private IntPtr cachedAuraMonoEntitiesManagerClass = IntPtr.Zero;
+        private IntPtr cachedAuraMonoEntitiesGetEntityMethod = IntPtr.Zero;
         private readonly Dictionary<AuraMonoFieldCacheKey, IntPtr> auraMonoFieldLookupCache = new Dictionary<AuraMonoFieldCacheKey, IntPtr>();
         private readonly HashSet<uint> _birdFarmSeenNetIds = new HashSet<uint>();
         // Component verification cache: once we know a netId is (or is not) a real bird,

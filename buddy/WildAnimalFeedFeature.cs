@@ -2667,12 +2667,11 @@ namespace HeartopiaMod
                 return false;
             }
 
-            this.wildAnimalFeedProtocolFeedMethod = protocolType.GetMethod(
+            this.wildAnimalFeedProtocolFeedMethod = this.GetMethodQuiet(
+                protocolType,
                 "Feed",
                 BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-                null,
-                new[] { this.wildAnimalFeedAnimalGroupType, typeof(IEnumerable<uint>) },
-                null);
+                new[] { this.wildAnimalFeedAnimalGroupType, typeof(IEnumerable<uint>) });
             if (this.wildAnimalFeedProtocolFeedMethod == null)
             {
                 foreach (MethodInfo method in protocolType.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
@@ -2697,16 +2696,31 @@ namespace HeartopiaMod
                 "Instance",
                 BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.FlattenHierarchy)
                 ?? this.GetDataModuleInstanceProperty(this.wildAnimalFeedWildAnimalSystemType);
-            this.wildAnimalFeedGetUnlockedAnimalsMethod = this.wildAnimalFeedWildAnimalSystemType.GetMethod("GetUnlockedAnimals", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            this.wildAnimalFeedGetFullnessMethod = this.wildAnimalFeedWildAnimalSystemType.GetMethod("GetFullness", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            this.wildAnimalFeedGetFeedTroughCapacityMethod = this.wildAnimalFeedWildAnimalSystemType.GetMethod("GetFeedTroughCapacity", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            this.wildAnimalFeedGetFavoriteFoodMethod = this.wildAnimalFeedWildAnimalSystemType.GetMethod("GetFavoriteFood", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            this.wildAnimalFeedGetFoodsMethod = this.wildAnimalFeedWildAnimalSystemType.GetMethod(
+            this.wildAnimalFeedGetUnlockedAnimalsMethod = this.GetMethodQuiet(
+                this.wildAnimalFeedWildAnimalSystemType,
+                "GetUnlockedAnimals",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                Type.EmptyTypes);
+            this.wildAnimalFeedGetFullnessMethod = this.GetMethodQuiet(
+                this.wildAnimalFeedWildAnimalSystemType,
+                "GetFullness",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                Type.EmptyTypes);
+            this.wildAnimalFeedGetFeedTroughCapacityMethod = this.GetMethodQuiet(
+                this.wildAnimalFeedWildAnimalSystemType,
+                "GetFeedTroughCapacity",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                Type.EmptyTypes);
+            this.wildAnimalFeedGetFavoriteFoodMethod = this.GetMethodQuiet(
+                this.wildAnimalFeedWildAnimalSystemType,
+                "GetFavoriteFood",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                Type.EmptyTypes);
+            this.wildAnimalFeedGetFoodsMethod = this.GetMethodQuiet(
+                this.wildAnimalFeedWildAnimalSystemType,
                 "GetFoods",
                 BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                null,
-                new[] { this.wildAnimalFeedAnimalGroupType, this.wildAnimalFeedStorageTypeType },
-                null);
+                new[] { this.wildAnimalFeedAnimalGroupType, this.wildAnimalFeedStorageTypeType });
 
             if (this.wildAnimalFeedProtocolFeedMethod == null
                 || this.wildAnimalFeedWildAnimalSystemInstanceProperty == null

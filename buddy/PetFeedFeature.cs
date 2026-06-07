@@ -1172,16 +1172,49 @@ namespace HeartopiaMod
                 return false;
             }
 
-            this.petFeedPrepareMethod = protocolType.GetMethod("PrepareFeed", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(uint) }, null);
-            this.petFeedBeginMethod = protocolType.GetMethod("BeginFeed", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            this.petFeedPrepareMethod = this.GetMethodQuiet(
+                protocolType,
+                "PrepareFeed",
+                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+                new[] { typeof(uint) });
+            this.petFeedBeginMethod = this.GetMethodByNameAndParamCountQuiet(protocolType, "BeginFeed", 0)
+                ?? this.GetMethodQuiet(
+                    protocolType,
+                    "BeginFeed",
+                    BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+                    Type.EmptyTypes);
             this.petFeedPetSystemInstanceProperty = this.petFeedPetSystemType.GetProperty("Instance", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.FlattenHierarchy)
                 ?? this.GetDataModuleInstanceProperty(this.petFeedPetSystemType);
-            this.petFeedGetPetComponentDatasMethod = this.petFeedPetSystemType.GetMethod("GetPetComponentDatas", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { this.petFeedEntityTypeType }, null);
-            this.petFeedInitFoodsMethod = this.petFeedPetSystemType.GetMethod("InitFoods", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { this.petFeedEntityTypeType }, null);
-            this.petFeedInitFoodsForPickerMethod = this.petFeedPetSystemType.GetMethod("InitFoods", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { this.petFeedPetTypeType, this.petFeedStorageTypeType }, null);
-            this.petFeedGetFoodsMethod = this.petFeedPetSystemType.GetMethod("GetFoods", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
-            this.petFeedGetFoodBackpackItemsMethod = this.petFeedPetSystemType.GetMethod("GetFoodBackpackItems", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
-            this.petFeedGetEatenFavoriteFoodsMethod = this.petFeedPetSystemType.GetMethod("GetEatenFavoriteFoods", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(uint) }, null);
+            this.petFeedGetPetComponentDatasMethod = this.GetMethodQuiet(
+                this.petFeedPetSystemType,
+                "GetPetComponentDatas",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                new[] { this.petFeedEntityTypeType });
+            this.petFeedInitFoodsMethod = this.GetMethodQuiet(
+                this.petFeedPetSystemType,
+                "InitFoods",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                new[] { this.petFeedEntityTypeType });
+            this.petFeedInitFoodsForPickerMethod = this.GetMethodQuiet(
+                this.petFeedPetSystemType,
+                "InitFoods",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                new[] { this.petFeedPetTypeType, this.petFeedStorageTypeType });
+            this.petFeedGetFoodsMethod = this.GetMethodQuiet(
+                this.petFeedPetSystemType,
+                "GetFoods",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                Type.EmptyTypes);
+            this.petFeedGetFoodBackpackItemsMethod = this.GetMethodQuiet(
+                this.petFeedPetSystemType,
+                "GetFoodBackpackItems",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                Type.EmptyTypes);
+            this.petFeedGetEatenFavoriteFoodsMethod = this.GetMethodQuiet(
+                this.petFeedPetSystemType,
+                "GetEatenFavoriteFoods",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                new[] { typeof(uint) });
 
             if (this.petFeedPrepareMethod == null || this.petFeedBeginMethod == null || this.petFeedPetSystemInstanceProperty == null || this.petFeedGetPetComponentDatasMethod == null || this.petFeedInitFoodsMethod == null || this.petFeedInitFoodsForPickerMethod == null || this.petFeedGetFoodsMethod == null || this.petFeedGetFoodBackpackItemsMethod == null)
             {
@@ -1237,60 +1270,6 @@ namespace HeartopiaMod
             }
 
             return true;
-        }
-
-        private Type FindLoadedTypeByFullName(string fullName)
-        {
-            if (string.IsNullOrEmpty(fullName))
-            {
-                return null;
-            }
-
-            Type directType = Type.GetType(fullName, false);
-            if (directType != null && string.Equals(directType.FullName, fullName, StringComparison.Ordinal))
-            {
-                return directType;
-            }
-
-            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            foreach (Assembly assembly in assemblies)
-            {
-                Type type = assembly.GetType(fullName, false);
-                if (type != null && string.Equals(type.FullName, fullName, StringComparison.Ordinal))
-                {
-                    return type;
-                }
-            }
-
-            foreach (Assembly assembly in assemblies)
-            {
-                Type[] types;
-                try
-                {
-                    types = assembly.GetTypes();
-                }
-                catch (ReflectionTypeLoadException ex)
-                {
-                    types = ex.Types;
-                }
-                catch
-                {
-                    continue;
-                }
-
-                if (types == null)
-                {
-                    continue;
-                }
-
-                Type resolved = types.FirstOrDefault(type => type != null && string.Equals(type.FullName, fullName, StringComparison.Ordinal));
-                if (resolved != null)
-                {
-                    return resolved;
-                }
-            }
-
-            return null;
         }
 
         private bool TryGetPetFeedTarget(object petData, int maxFullness, out PetFeedTarget target)
