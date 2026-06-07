@@ -40,6 +40,11 @@ namespace HeartopiaMod
                 return;
             }
 
+            this.DailyQuestSubmitLog(
+                "=== Auto Submit Daily Items started"
+                + " skip5star=" + this.dailyQuestSubmitSkipFiveStar
+                + " silent=" + silent
+                + " ===");
             this.dailyQuestSubmitLastStatus = "Submitting daily item orders...";
             this.dailyQuestSubmitCoroutine = ModCoroutines.Start(this.DailyQuestAutoSubmitItemsRoutine(silent));
         }
@@ -63,6 +68,7 @@ namespace HeartopiaMod
             if (!this.TryCollectDailyQuestOrdersForSubmit(out List<IntPtr> orders, out _, out string prepStatus))
             {
                 this.dailyQuestSubmitLastStatus = prepStatus;
+                this.DailyQuestSubmitLog("collect orders failed: " + prepStatus);
                 if (!silent)
                 {
                     this.AddMenuNotification("Daily submit: " + prepStatus, new Color(1f, 0.55f, 0.45f));
@@ -71,6 +77,8 @@ namespace HeartopiaMod
                 this.dailyQuestSubmitCoroutine = null;
                 yield break;
             }
+
+            this.DailyQuestSubmitLogOrderSnapshot(orders);
 
             int attempted = 0;
             int submitted = 0;
@@ -81,30 +89,57 @@ namespace HeartopiaMod
                 IntPtr orderComponent = orders[i];
                 if (orderComponent == IntPtr.Zero)
                 {
+                    this.DailyQuestSubmitLog("process order[" + i + "] skip: null component");
+                    skipped++;
                     continue;
                 }
 
                 int orderKey = this.TryGetMonoIntMember(orderComponent, "TaskOrderId", out int key) ? key : 0;
                 if (orderKey <= 0)
                 {
+                    this.DailyQuestSubmitLog(
+                        "process order[" + i + "] skip: invalid TaskOrderId"
+                        + " | " + this.FormatDailyQuestOrderComponentFields(orderComponent));
+                    skipped++;
                     continue;
                 }
 
-                this.TryResolveDailyQuestTaskFromOrderKey(orderKey, out int taskId, out _, out _, out _, out _);
+                this.TryResolveDailyQuestTaskFromOrderKey(
+                    orderKey,
+                    out int taskId,
+                    out int orderRefreshType,
+                    out int orderSpecialId,
+                    out int orderLevel,
+                    out string resolveNote);
                 if (taskId <= 0)
                 {
                     taskId = orderKey;
                 }
 
-                if (!this.TryGetGameTaskStateAura(taskId, out int state, out _))
+                this.DailyQuestSubmitLog(
+                    "process order[" + i + "] orderKey=" + orderKey
+                    + " taskId=" + taskId
+                    + " resolve=" + resolveNote
+                    + " refreshType=" + orderRefreshType
+                    + " specialId=" + orderSpecialId
+                    + " level=" + orderLevel
+                    + " | " + this.FormatDailyQuestOrderComponentFields(orderComponent));
+
+                if (!this.TryGetGameTaskStateAura(taskId, out int state, out string stateStatus))
                 {
+                    this.DailyQuestSubmitLog("skip taskId=" + taskId + " GetTaskState failed: " + stateStatus);
                     skipped++;
                     continue;
                 }
 
                 if (state != DailyQuestSubmitStateCanSubmit)
                 {
-                    this.DailyQuestSubmitLog("skip taskId=" + taskId + " state=" + this.FormatGameTaskState(state));
+                    this.DailyQuestSubmitLog(
+                        "skip taskId=" + taskId
+                        + " state=" + this.FormatGameTaskState(state)
+                        + " (need CanSubmit="
+                        + DailyQuestSubmitStateCanSubmit
+                        + ")");
                     skipped++;
                     continue;
                 }
@@ -112,10 +147,22 @@ namespace HeartopiaMod
                 if (!this.TryGetTableGameTaskRowAura(taskId, out DailyQuestGameTaskInfo info, out string configNote)
                     || info.SubmitTargetCount <= 0)
                 {
-                    this.DailyQuestSubmitLog("skip taskId=" + taskId + " no submitTargetItem (" + configNote + ")");
+                    this.DailyQuestSubmitLog(
+                        "skip taskId=" + taskId
+                        + " no submitTargetItem targets="
+                        + info.SubmitTargetCount
+                        + " (" + configNote + ")");
                     skipped++;
                     continue;
                 }
+
+                this.DailyQuestSubmitLog(
+                    "attempt taskId=" + taskId
+                    + " submitNpc=" + info.SubmitNpc
+                    + " submitType=" + info.SubmitType
+                    + " submitParam=" + info.SubmitParam
+                    + " targets=" + info.SubmitTargetCount);
+                this.DailyQuestSubmitLogSubmitTargets(taskId);
 
                 attempted++;
                 string submitStatus;
@@ -326,7 +373,7 @@ namespace HeartopiaMod
                 }
 
                 int needNum = this.TryGetMonoIntMember(targetItem, "needNum", out int need) ? need : 0;
-                int minQuality = this.TryGetMonoIntMember(targetItem, "quality", out int quality) ? quality : 0;
+                int targetQuality = this.TryGetMonoIntMember(targetItem, "quality", out int quality) ? quality : 0;
                 if (needNum <= 0)
                 {
                     status = "invalid needNum";
@@ -355,11 +402,6 @@ namespace HeartopiaMod
                     }
 
                     if (this.ShouldSkipDailyQuestSubmitItem(starRate))
-                    {
-                        continue;
-                    }
-
-                    if (minQuality > 1 && starRate < minQuality)
                     {
                         continue;
                     }
@@ -393,6 +435,16 @@ namespace HeartopiaMod
 
                 if (candidates.Count == 0)
                 {
+                    this.LogDailyQuestTargetCandidateDiagnostics(
+                        taskId,
+                        targetIndex,
+                        targetItem,
+                        targetQuality,
+                        submitTargetsArray,
+                        checkSubmitMethod,
+                        checkSubmitItemsMethod,
+                        backPackSystemObj,
+                        storageItems);
                     status = "no matching items for target " + (targetIndex + 1);
                     return false;
                 }
@@ -417,7 +469,7 @@ namespace HeartopiaMod
                         + " star=" + candidate.StarRate
                         + " taskId=" + taskId
                         + " target=" + (targetIndex + 1)
-                        + " minQ=" + minQuality
+                        + " targetQuality=" + targetQuality
                         + " submitWay=" + tableSubmitWay);
 
                     remaining -= take;
@@ -1444,6 +1496,254 @@ namespace HeartopiaMod
             }
 
             ModLogger.Msg("[DailyQuestSubmit] " + message);
+        }
+
+        private void DailyQuestSubmitLogOrderSnapshot(List<IntPtr> orders)
+        {
+            if (orders == null)
+            {
+                this.DailyQuestSubmitLog("order snapshot: null list");
+                return;
+            }
+
+            this.DailyQuestSubmitLog(
+                "--- daily orders snapshot count=" + orders.Count
+                + " refreshType=Daily(" + DailyQuestRefreshTypeDaily + ")"
+                + " skip5star=" + this.dailyQuestSubmitSkipFiveStar
+                + " ---");
+
+            for (int i = 0; i < orders.Count; i++)
+            {
+                IntPtr orderComponent = orders[i];
+                if (orderComponent == IntPtr.Zero)
+                {
+                    this.DailyQuestSubmitLog("order[" + i + "] null component");
+                    continue;
+                }
+
+                int orderKey = this.TryGetMonoIntMember(orderComponent, "TaskOrderId", out int key) ? key : 0;
+                bool resolved = this.TryResolveDailyQuestTaskFromOrderKey(
+                    orderKey,
+                    out int taskId,
+                    out int refreshType,
+                    out int specialId,
+                    out int level,
+                    out string resolveNote);
+                if (!resolved || taskId <= 0)
+                {
+                    taskId = orderKey;
+                }
+
+                string stateLine;
+                string stateStatus = "n/a";
+                if (taskId > 0 && this.TryGetGameTaskStateAura(taskId, out int state, out stateStatus))
+                {
+                    stateLine = this.FormatGameTaskState(state) + "(" + state + ")";
+                }
+                else
+                {
+                    stateLine = "unreadable(" + stateStatus + ")";
+                }
+
+                string configLine;
+                DailyQuestGameTaskInfo info = default(DailyQuestGameTaskInfo);
+                string configNote = "n/a";
+                if (taskId > 0 && this.TryGetTableGameTaskRowAura(taskId, out info, out configNote))
+                {
+                    configLine = "submitNpc=" + info.SubmitNpc
+                        + " submitType=" + info.SubmitType
+                        + " submitParam=" + info.SubmitParam
+                        + " targets=" + info.SubmitTargetCount
+                        + " (" + configNote + ")";
+                }
+                else
+                {
+                    configLine = "config missing (" + configNote + ")";
+                }
+
+                this.DailyQuestSubmitLog(
+                    "order[" + i + "] orderKey=" + orderKey
+                    + " taskId=" + taskId
+                    + " resolve=" + resolveNote
+                    + " tableRefreshType=" + refreshType
+                    + " specialId=" + specialId
+                    + " level=" + level
+                    + " state=" + stateLine
+                    + " | " + configLine
+                    + " | " + this.FormatDailyQuestOrderComponentFields(orderComponent));
+
+                if (taskId > 0)
+                {
+                    this.DailyQuestSubmitLogSubmitTargets(taskId);
+                }
+            }
+
+            this.DailyQuestSubmitLog("--- end order snapshot ---");
+        }
+
+        private void DailyQuestSubmitLogSubmitTargets(int taskId)
+        {
+            string rowStatus = "n/a";
+            if (taskId <= 0
+                || !this.TryGetDailyQuestGameTaskRowPtrAura(taskId, out IntPtr gameTaskRow, out rowStatus))
+            {
+                this.DailyQuestSubmitLog("  targets taskId=" + taskId + " unreadable: " + rowStatus);
+                return;
+            }
+
+            int submitWay = this.TryGetMonoIntMember(gameTaskRow, "submitWay", out int way) ? way : 0;
+            if (!this.TryGetDailyQuestSubmitTargetsAura(gameTaskRow, out _, out List<IntPtr> targets) || targets.Count == 0)
+            {
+                this.DailyQuestSubmitLog("  targets taskId=" + taskId + " submitWay=" + submitWay + " empty");
+                return;
+            }
+
+            for (int targetIndex = 0; targetIndex < targets.Count; targetIndex++)
+            {
+                this.DailyQuestSubmitLog(
+                    "  "
+                    + this.FormatDailyQuestSubmitTargetLine(targetIndex, targets[targetIndex])
+                    + " submitWay=" + submitWay);
+            }
+        }
+
+        private string FormatDailyQuestOrderComponentFields(IntPtr orderComponent)
+        {
+            if (orderComponent == IntPtr.Zero)
+            {
+                return "component=null";
+            }
+
+            string[] intMembers =
+            {
+                "TaskOrderId", "taskId", "state", "refreshType", "specialId", "level",
+                "progress", "isFinish", "isFinished", "finish", "orderId", "id"
+            };
+
+            List<string> parts = new List<string>();
+            for (int i = 0; i < intMembers.Length; i++)
+            {
+                if (this.TryGetMonoIntMember(orderComponent, intMembers[i], out int value))
+                {
+                    parts.Add(intMembers[i] + "=" + value);
+                }
+            }
+
+            return parts.Count > 0 ? string.Join(" ", parts) : "no readable int fields";
+        }
+
+        private string FormatDailyQuestSubmitTargetLine(int targetIndex, IntPtr targetItem)
+        {
+            if (targetItem == IntPtr.Zero)
+            {
+                return "target[" + targetIndex + "] null";
+            }
+
+            int needNum = this.TryGetMonoIntMember(targetItem, "needNum", out int need) ? need : -1;
+            int quality = this.TryGetMonoIntMember(targetItem, "quality", out int q) ? q : 0;
+            int staticId = this.TryGetDailyQuestSubmitTargetStaticId(targetItem);
+            return "target[" + targetIndex + "] needNum=" + needNum
+                + " targetQuality=" + quality
+                + " staticId=" + staticId;
+        }
+
+        private int TryGetDailyQuestSubmitTargetStaticId(IntPtr targetItem)
+        {
+            string[] idMembers = { "staticId", "itemId", "id", "type", "itemType", "targetId", "itemStaticId" };
+            for (int i = 0; i < idMembers.Length; i++)
+            {
+                if (this.TryGetMonoIntMember(targetItem, idMembers[i], out int value) && value > 0)
+                {
+                    return value;
+                }
+            }
+
+            return 0;
+        }
+
+        private void LogDailyQuestTargetCandidateDiagnostics(
+            int taskId,
+            int targetIndex,
+            IntPtr targetItem,
+            int targetQuality,
+            IntPtr submitTargetsArray,
+            IntPtr checkSubmitMethod,
+            IntPtr checkSubmitItemsMethod,
+            IntPtr backPackSystemObj,
+            List<IntPtr> storageItems)
+        {
+            int total = storageItems != null ? storageItems.Count : 0;
+            int invalidItem = 0;
+            int locked = 0;
+            int skipFiveStar = 0;
+            int checkSubmitItemsFail = 0;
+            int checkSubmitItemFail = 0;
+            int passed = 0;
+
+            for (int itemIndex = 0; itemIndex < total; itemIndex++)
+            {
+                IntPtr itemObj = storageItems[itemIndex];
+                if (itemObj == IntPtr.Zero)
+                {
+                    invalidItem++;
+                    continue;
+                }
+
+                if (!this.TryGetDailyQuestItemSubmitSortKey(itemObj, out uint netId, out int count, out int price, out int starRate)
+                    || netId == 0U
+                    || count <= 0)
+                {
+                    invalidItem++;
+                    continue;
+                }
+
+                if (this.TryGetDirectBackpackItemIsLocked(itemObj, out bool isLocked) && isLocked)
+                {
+                    locked++;
+                    continue;
+                }
+
+                if (this.ShouldSkipDailyQuestSubmitItem(starRate))
+                {
+                    skipFiveStar++;
+                    continue;
+                }
+
+                if (checkSubmitItemsMethod != IntPtr.Zero && submitTargetsArray != IntPtr.Zero
+                    && (!this.TryInvokeBackPackCheckSubmitItemsAura(
+                            checkSubmitItemsMethod,
+                            backPackSystemObj,
+                            submitTargetsArray,
+                            netId,
+                            out bool matchesAll)
+                        || !matchesAll))
+                {
+                    checkSubmitItemsFail++;
+                    continue;
+                }
+
+                if (!this.TryInvokeBackPackCheckSubmitItemAura(checkSubmitMethod, backPackSystemObj, targetItem, netId, out bool matches)
+                    || !matches)
+                {
+                    checkSubmitItemFail++;
+                    continue;
+                }
+
+                passed++;
+            }
+
+            this.DailyQuestSubmitLog(
+                "candidate diagnostics taskId=" + taskId
+                + " " + this.FormatDailyQuestSubmitTargetLine(targetIndex, targetItem)
+                + " storage=" + total
+                + " targetQuality=" + targetQuality
+                + " passed=" + passed
+                + " locked=" + locked
+                + " skip5star=" + skipFiveStar
+                + " CheckSubmitItems fail=" + checkSubmitItemsFail
+                + " CheckSubmitItem fail=" + checkSubmitItemFail
+                + " invalid=" + invalidItem
+                + " skip5starEnabled=" + this.dailyQuestSubmitSkipFiveStar);
         }
 
         private bool TryResolveDailyQuestTaskFromOrderKey(
