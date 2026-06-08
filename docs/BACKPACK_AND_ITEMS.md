@@ -203,7 +203,7 @@ Dump paths: `ProtocolService/WildAnimal/WildAnimalProtocolManager.cs`, `Protocol
 
 ```
 1. WildAnimalProtocolManager.HaveGift()          → giftCount + target AnimalGroup ids {2, 8, …}
-2. TryEnumerateAuraMonoLoadedEntityObjects()
+2. TryEnumerateAuraMonoLoadedEntityObjects()      (uncapped for this scan — see note)
    For each entity netId:
      AnimalProtocolManager.GetNetworkEntity(netId)
      If AnimalUtil.IsGiftBox(entity) && GetGroup in target groups → add netId
@@ -212,13 +212,17 @@ Dump paths: `ProtocolService/WildAnimal/WildAnimalProtocolManager.cs`, `Protocol
      AnimalProtocolManager.TakeGift(netId)
 ```
 
+> **Gifts are gift boxes.** Both `IWildAnimalService.HaveGift()` and `GetGifts()` iterate the same `_giftBoxes` filter (key `GiftBoxGroupProperty`), so the pending `AnimalGroup` ids from step 1 correspond to gift-box level entities (spawned by `WildAnimalProtocolManager.SpawnGift`, interact 31). The scan finds them as `IsGiftBox` matches, not `HaveGift(entity)` matches.
+
+> **Entity-enumeration cap (June 2026 fix).** `TryEnumerateAuraMonoLoadedEntityObjects` normally truncates at `MaxAuraMonoEntities = 4096` (`HeartopiaComplete.cs`). In a **dense / public town** the loaded set exceeds 4096 and gift-box entities can sit past the cut-off, so the scan reported `entities=4096 … giftBoxes=0` and claimed nothing. Because claim is a one-shot button (not a per-frame hot path) the scan now raises the cap to `WildAnimalGiftEntityScanCap = 65536` via `auraMonoEntityEnumerationCapOverride` (set around the enumeration, reset in `finally`) and the inner `i < 4096` loop cap was removed. The global 4096 default and the BirdFarm `>= MaxAuraMonoEntities` checks are untouched.
+
 **Pre-claim validation** (`TryOwnerNetIdHasClaimableWildGift`): same AuraMono checks as step 2 — `IsGiftBox`/`GetGroup` or `HaveGift(entity)`/`GetGroup`. No managed `DataCenter` fallback.
 
 ### Removed / non-working paths (do not re-add without BepInEx interop fix)
 
 | Path | Why removed |
 |------|-------------|
-| `EcsService.TryGet<IWildAnimalService>` + `GetGifts()` / `GetAnimals()` | Interop types not loaded in BepInEx (`EcsService=False IWildAnimalService=False`) |
+| `EcsService.TryGet<IWildAnimalService>` + `GetGifts()` / `GetAnimals()` | Interop types not loaded in BepInEx (`EcsService=False IWildAnimalService=False`). Would be the cleanest path (returns gift entities directly, no scan), but on this build the service only lives in the generic static cache `EcsService.EcsCacheService<IWildAnimalService>._instance`, reachable solely via the generic `EcsService.TryGet<T>`. AuraMono generic inflation (`mono_class_inflate_generic_method`) is disabled as unsafe on embedded mono (`HomelandFarmAllowUnsafeAuraMonoGetComponents = false`) and its `MonoGenericContext.method_inst` is built incorrectly (raw `MonoType*` array, no `MonoGenericInst` header). Revisit only with a correctly hand-built `MonoGenericInst`. |
 | Level-object scan (`LevelObjectManager`, interact id 31) | `displayable=0` — managed `DataCenter` unavailable; redundant once entity scan works |
 | `GetSpecies(AnimalGroup)` | Species/trough entity, not a gift target |
 | Managed `DataCenter.TryGetComponentData` | Same interop gap as daily-quest types; gift feature does not depend on it |
@@ -229,16 +233,25 @@ Typical success:
 
 ```
 [WildAnimalGift] HaveGift: count=2, groups=2
-[WildAnimalGift] Entity scan: 2 from entity scan (inspected=… giftBoxes=2 animalGifts=0)
+[WildAnimalGift] Entity scan: 2 from entity scan (inspected=… netResolved=… giftBoxes=2 animalGifts=0 methods[getNetworkEntity=True isGiftBox=True haveGiftEntity=True getGroup=True])
 [WildAnimalGift] Collect done targets=2/2 netIds=[…]
 [WildAnimalGift] TakeGift ok netId=…
 ```
+
+The entity-scan status line carries diagnostic counters so a `0` result is self-explanatory:
+
+| Field | Meaning |
+|-------|---------|
+| `inspected` | Entities with a non-zero netId that were examined |
+| `netResolved` | `GetNetworkEntity(netId)` returned non-zero — if this is `0`, `NetworkEntityService` / `GetNetworkEntity` is the broken step, not the scan |
+| `giftBoxes` / `animalGifts` | Entities matching `IsGiftBox` / `HaveGift(entity)` in a target group |
+| `methods[…]` | Whether each AuraMono method resolved (`False` ⇒ class/method lookup failed, fix that first) |
 
 | Log | Meaning |
 |-----|---------|
 | `HaveGift: count=0` | No pending gifts (red dots cleared) |
 | `Entity scan failed: …` | AuraMono unavailable or empty entity list — enter world / wait for sync |
-| `giftBoxes=0 animalGifts=0` with `pending>0` | Groups have gifts but entities not loaded yet — retry after animals/boxes spawn |
+| `giftBoxes=0 animalGifts=0` with `pending>0` | Gift entities not in the inspected set. Check `entities=` (was it the old 4096 cap?), `netResolved`, and `methods[…]` to localize. Pre-fix cause was the 4096 truncation in dense towns (now raised to 65536). |
 | `TakeGift failed: gift entity unavailable` | Entity despawned between scan and claim |
 | `TakeGift failed: gift box wrong group` | Group filter mismatch (rare) |
 
@@ -275,7 +288,7 @@ Cooldown: 1.25 s between **Claim All** presses; 0.45 s between individual `TakeG
 | `price=2147483647` in logs | `GetItemPrice` failed; sort uses `int.MaxValue` (sorts last) — table fallback may still apply |
 | Auto sell finds nothing | Wrong item key, star filter, or scan source set to Warehouse while items are in bag |
 | Transfer skips stack | `isLocked` or zero `netId` |
-| Wild gifts `targets=0` with `pending>0` | Entity scan found no matching `GiftBoxGroupProperty` / `AnimalGiftComponent` — reload area or retry after sync |
+| Wild gifts `targets=0` with `pending>0` | Entity scan found no matching `GiftBoxGroupProperty` / `AnimalGiftComponent`. Check the scan diagnostics (`netResolved`, `methods[…]`); historically this was the 4096 entity-enumeration cap in dense towns (fixed June 2026 — cap raised to 65536 for this scan). Otherwise reload area / retry after sync |
 | Wild gifts `AuraMono unavailable` | Mono API not ready — enter world, wait for AuraMono init |
 
 Enable verbose gift logs: set `WildAnimalGiftLogsEnabled = true` in `WildAnimalGiftFeature.cs` (default on; rebuild required). Other features: `MasterLogDailyQuestSubmit`, etc. in `HeartopiaComplete.cs`.

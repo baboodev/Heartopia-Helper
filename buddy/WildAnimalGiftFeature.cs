@@ -12,6 +12,10 @@ namespace HeartopiaMod
         private const float WildAnimalGiftActionCooldownSeconds = 1.25f;
         private const float WildAnimalGiftDelayBetweenTakesSeconds = 0.45f;
 
+        // Claim is a one-shot button press (not a per-frame hot path), so opt out of the default 4096 entity
+        // truncation: in dense towns gift-box level entities can sit past index 4096 and never get inspected.
+        private const int WildAnimalGiftEntityScanCap = 65536;
+
         private IntPtr wildAnimalGiftAuraWildAnimalProtocolClass = IntPtr.Zero;
         private IntPtr wildAnimalGiftAuraHaveGiftGroupsMethod = IntPtr.Zero;
         private IntPtr wildAnimalGiftAuraHaveGiftEntityMethod = IntPtr.Zero;
@@ -283,19 +287,31 @@ namespace HeartopiaMod
                 return false;
             }
 
-            if (!this.TryEnumerateAuraMonoLoadedEntityObjects(out List<IntPtr> entities, out string enumerateStatus) || entities.Count <= 0)
+            List<IntPtr> entities;
+            string enumerateStatus;
+            int previousCap = this.auraMonoEntityEnumerationCapOverride;
+            this.auraMonoEntityEnumerationCapOverride = WildAnimalGiftEntityScanCap;
+            try
             {
-                status = enumerateStatus;
-                return false;
+                if (!this.TryEnumerateAuraMonoLoadedEntityObjects(out entities, out enumerateStatus) || entities.Count <= 0)
+                {
+                    status = enumerateStatus;
+                    return false;
+                }
+            }
+            finally
+            {
+                this.auraMonoEntityEnumerationCapOverride = previousCap;
             }
 
             int inspected = 0;
+            int netResolved = 0;
             int giftBoxes = 0;
             int animalGifts = 0;
             int added = 0;
             this.WildAnimalGiftLog("Entity scan: entities=" + entities.Count + " targetGroups=" + targetGroupIds.Count);
 
-            for (int i = 0; i < entities.Count && i < 4096 && netIds.Count < targetCount; i++)
+            for (int i = 0; i < entities.Count && netIds.Count < targetCount; i++)
             {
                 IntPtr entityObj = entities[i];
                 if (entityObj == IntPtr.Zero || !this.TryGetAuraMonoEntityNetId(entityObj, out uint entityNetId) || entityNetId == 0U)
@@ -308,6 +324,8 @@ namespace HeartopiaMod
                 {
                     continue;
                 }
+
+                netResolved++;
 
                 bool matched = false;
                 bool isGiftBox = false;
@@ -347,7 +365,13 @@ namespace HeartopiaMod
                 }
             }
 
-            status = added + " from entity scan (inspected=" + inspected + " giftBoxes=" + giftBoxes + " animalGifts=" + animalGifts + ")";
+            status = added + " from entity scan (inspected=" + inspected
+                + " netResolved=" + netResolved
+                + " giftBoxes=" + giftBoxes + " animalGifts=" + animalGifts
+                + " methods[getNetworkEntity=" + (this.wildAnimalGiftAuraGetNetworkEntityMethod != IntPtr.Zero)
+                + " isGiftBox=" + (this.wildAnimalGiftAuraAnimalUtilIsGiftBoxMethod != IntPtr.Zero)
+                + " haveGiftEntity=" + (this.wildAnimalGiftAuraHaveGiftEntityMethod != IntPtr.Zero)
+                + " getGroup=" + (this.wildAnimalGiftAuraAnimalUtilGetGroupMethod != IntPtr.Zero) + "])";
             return true;
         }
 

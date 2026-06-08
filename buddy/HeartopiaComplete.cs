@@ -11352,6 +11352,13 @@ namespace HeartopiaMod
 
         private const int MaxAuraMonoEntities = 4096; // Dense towns can exceed 2000 loaded entities; NetCook needs later cook-builds too.
 
+        // One-shot actions (e.g. wild gift claim) can opt out of the 4096 truncation so dense towns don't hide targets.
+        // 0 = use the default MaxAuraMonoEntities cap. Always reset via try/finally after the enumeration.
+        private int auraMonoEntityEnumerationCapOverride = 0;
+
+        private int AuraMonoEntityEnumerationCap =>
+            this.auraMonoEntityEnumerationCapOverride > 0 ? this.auraMonoEntityEnumerationCapOverride : MaxAuraMonoEntities;
+
         private bool TryAddAuraMonoEntityObject(IntPtr candidateObj, List<IntPtr> output, HashSet<long> seenEntityPtrs)
         {
             if (candidateObj == IntPtr.Zero || output == null || seenEntityPtrs == null)
@@ -11360,7 +11367,7 @@ namespace HeartopiaMod
             }
 
             // Prevent memory issues - limit max entities
-            if (output.Count >= MaxAuraMonoEntities)
+            if (output.Count >= this.AuraMonoEntityEnumerationCap)
             {
                 return false;
             }
