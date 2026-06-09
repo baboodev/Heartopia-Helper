@@ -1269,7 +1269,8 @@ public class AutoFishLogic
 		}
 		else
 		{
-			bool keyDown = Input.GetKeyDown(this.autoFishHotkey);
+			bool keyDown = !HeartopiaComplete.IsModHotkeyBlockedByInstrument(this.autoFishHotkey)
+				&& Input.GetKeyDown(this.autoFishHotkey);
 			if (keyDown)
 			{
 				this.ToggleAutoFish();

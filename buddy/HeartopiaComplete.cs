@@ -2071,41 +2071,41 @@ namespace HeartopiaMod
             // Check for keybinds (Only if not currently rebinding and not just assigned)
             if (string.IsNullOrEmpty(this.keyBindingActive) && Time.unscaledTime - this.keyBindAssignedAt >= 0.2f)
             {
-                if (Input.GetKeyDown(this.keyToggleMenu))
+                if (this.TryGetModHotkeyDown(this.keyToggleMenu))
                 {
                     this.showMenu = !this.showMenu;
                     this.blockInputReleaseUntil = Time.unscaledTime + 0.18f;
                 }
-                if (Input.GetKeyDown(this.keyToggleRadar))
+                if (this.TryGetModHotkeyDown(this.keyToggleRadar))
                 {
                     this.ToggleRadar();
                     this.AddMenuNotification($"Radar {(this.isRadarActive ? "Enabled" : "Disabled")}", this.isRadarActive ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyAutoForaging))
+                if (this.TryGetModHotkeyDown(this.keyAutoForaging))
                 {
                     this.SetAutoCollectEnabled(!this.autoFarmEnabled);
                 }
-                if (Input.GetKeyDown(this.keyAuraFarm))
+                if (this.TryGetModHotkeyDown(this.keyAuraFarm))
                 {
                     this.SetAuraFarmEnabled(!this.auraFarmEnabled);
                 }
-                if (Input.GetKeyDown(this.keyWaterWeedRadius))
+                if (this.TryGetModHotkeyDown(this.keyWaterWeedRadius))
                 {
                     this.StartHomelandFarmWaterAndWeed(silent: false);
                 }
-                if (Input.GetKeyDown(this.keyAutoInsectFarm))
+                if (this.TryGetModHotkeyDown(this.keyAutoInsectFarm))
                 {
                     InsectNetFarm.ToggleEnabled(this);
                     bool insectFarmEnabled = InsectNetFarm.IsEnabled;
                     this.AddMenuNotification($"Auto Insect Farm {(insectFarmEnabled ? "Enabled" : "Disabled")}", insectFarmEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyAutoBirdFarm))
+                if (this.TryGetModHotkeyDown(this.keyAutoBirdFarm))
                 {
                     BirdNetFarm.ToggleEnabled(this);
                     bool birdFarmEnabled = BirdNetFarm.IsEnabled;
                     this.AddMenuNotification($"Auto Bird Farm {(birdFarmEnabled ? "Enabled" : "Disabled")}", birdFarmEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyAutoFishShadowNet))
+                if (this.TryGetModHotkeyDown(this.keyAutoFishShadowNet))
                 {
                     AutoFishingFarm.ToggleEnabled(this);
                     bool fishShadowNetEnabled = AutoFishingFarm.IsEnabled;
@@ -2113,7 +2113,7 @@ namespace HeartopiaMod
                         "Fish Shadow Net " + (fishShadowNetEnabled ? "Enabled" : "Disabled"),
                         fishShadowNetEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyMassCook))
+                if (this.TryGetModHotkeyDown(this.keyMassCook))
                 {
                     if (this.netCookEnabled)
                     {
@@ -2128,12 +2128,12 @@ namespace HeartopiaMod
                         this.AddMenuNotification(status, started ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyAutoPuzzle))
+                if (this.TryGetModHotkeyDown(this.keyAutoPuzzle))
                 {
                     bool nextPuzzle = !this.puzzleAutoEnabled;
                     this.SetPuzzleAutoEnabled(nextPuzzle, true);
                 }
-                if (Input.GetKeyDown(this.keyAutoCatPlay))
+                if (this.TryGetModHotkeyDown(this.keyAutoCatPlay))
                 {
                     this.petPlayAutoCatEnabled = !this.petPlayAutoCatEnabled;
                     this.PetPlayLog("Cat play " + (this.petPlayAutoCatEnabled ? "enabled" : "disabled"));
@@ -2141,7 +2141,7 @@ namespace HeartopiaMod
                         "Auto Cat Play " + (this.petPlayAutoCatEnabled ? "Enabled" : "Disabled"),
                         this.petPlayAutoCatEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyAutoDogTrain))
+                if (this.TryGetModHotkeyDown(this.keyAutoDogTrain))
                 {
                     this.petPlayAutoDogEnabled = !this.petPlayAutoDogEnabled;
                     this.PetPlayLog("Dog train " + (this.petPlayAutoDogEnabled ? "enabled" : "disabled"));
@@ -2149,29 +2149,29 @@ namespace HeartopiaMod
                         "Auto Dog Train " + (this.petPlayAutoDogEnabled ? "Enabled" : "Disabled"),
                         this.petPlayAutoDogEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyFeedAllCats))
+                if (this.TryGetModHotkeyDown(this.keyFeedAllCats))
                 {
                     this.StartPetFeedAll(false);
                 }
-                if (Input.GetKeyDown(this.keyFeedAllDogs))
+                if (this.TryGetModHotkeyDown(this.keyFeedAllDogs))
                 {
                     this.StartPetFeedAll(true);
                 }
-                if (Input.GetKeyDown(this.keySpawnBubble))
+                if (this.TryGetModHotkeyDown(this.keySpawnBubble))
                 {
                     bool spawned = this.TrySpawnBubbleOnKeybind();
                     this.AddMenuNotification(
                         spawned ? "Bubble spawned" : "Bubble spawn failed (enter world / wait for mono hooks)",
                         spawned ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyBypassUI))
+                if (this.TryGetModHotkeyDown(this.keyBypassUI))
                 {
                     this.bypassEnabled = !this.bypassEnabled;
                     ModLogger.Msg("Bypass UI/Skeleton " + (this.bypassEnabled ? "Enabled" : "Disabled"));
                     this.RunBypassLogic(this.bypassEnabled);
                     this.AddMenuNotification($"Bypass UI {(this.bypassEnabled ? "Enabled" : "Disabled")}", this.bypassEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyBypassOverlap))
+                if (this.TryGetModHotkeyDown(this.keyBypassOverlap))
                 {
                     this.bypassOverlapEnabled = !this.bypassOverlapEnabled;
                     HeartopiaComplete.bypassOverlapEnabledStatic = this.bypassOverlapEnabled;
@@ -2179,12 +2179,12 @@ namespace HeartopiaMod
                         this.EnsureBypassPatched();
                     this.AddMenuNotification($"Bypass Overlap {(this.bypassOverlapEnabled ? "Enabled" : "Disabled")}", this.bypassOverlapEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyBirdVacuum))
+                if (this.TryGetModHotkeyDown(this.keyBirdVacuum))
                 {
                     this.birdVacuumEnabled = !this.birdVacuumEnabled;
                     this.AddMenuNotification($"Bird Vacuum {(this.birdVacuumEnabled ? "Enabled" : "Disabled")}", this.birdVacuumEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyDisableAll))
+                if (this.TryGetModHotkeyDown(this.keyDisableAll))
                 {
                     this.StopMeteorAutoInteractSequence();
                     this.autoFarmEnabled = false;
@@ -2231,15 +2231,15 @@ namespace HeartopiaMod
                     ModLogger.Msg("All features disabled and game speed reset");
                     this.AddMenuNotification("All features disabled", new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyInspectPlayer))
+                if (this.TryGetModHotkeyDown(this.keyInspectPlayer))
                 {
                     this.InspectPlayerComponents();
                 }
-                if (Input.GetKeyDown(this.keyInspectMove))
+                if (this.TryGetModHotkeyDown(this.keyInspectMove))
                 {
                     this.InspectMovementComponent();
                 }
-                if (Input.GetKeyDown(this.keyAutoRepair))
+                if (this.TryGetModHotkeyDown(this.keyAutoRepair))
                 {
                     if (!this.IsAutoRepairActiveOrQueued() && !this.isAutoEating)
                     {
@@ -2252,7 +2252,7 @@ namespace HeartopiaMod
                         this.AddMenuNotification(this.L("Auto Repair already running"), new Color(1f, 0.55f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyAutoEat))
+                if (this.TryGetModHotkeyDown(this.keyAutoEat))
                 {
                     if (!this.isRepairing && !this.isAutoEating)
                     {
@@ -2264,7 +2264,7 @@ namespace HeartopiaMod
                         this.AddMenuNotification(this.L("Auto Eat already running"), new Color(1f, 0.55f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyCameraToggle))
+                if (this.TryGetModHotkeyDown(this.keyCameraToggle))
                 {
                     this.mouseLookEnabled = !this.mouseLookEnabled;
                     this.SaveKeybinds(false);
@@ -2273,7 +2273,7 @@ namespace HeartopiaMod
                         $"Camera Toggle {(this.mouseLookEnabled ? "Enabled" : "Disabled")}",
                         this.mouseLookEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyAntiAfk))
+                if (this.TryGetModHotkeyDown(this.keyAntiAfk))
                 {
                     this.antiAfkEnabled = !this.antiAfkEnabled;
                     this.lastAntiAfkPulseAt = Time.unscaledTime;
@@ -2299,29 +2299,29 @@ namespace HeartopiaMod
                 }
                 else
                 {
-                    if (Input.GetKeyDown(this.autoSnowHotkey))
+                    if (this.TryGetModHotkeyDown(this.autoSnowHotkey))
                     {
                         this.autoSnowEnabled = !this.autoSnowEnabled;
                         if (!this.autoSnowEnabled) this.snowWidgetQueue.Clear();
                         this.AddMenuNotification($"Auto Snow Sculpture {(this.autoSnowEnabled ? "Enabled" : "Disabled")}", this.autoSnowEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyAutoJoinFriend))
+                if (this.TryGetModHotkeyDown(this.keyAutoJoinFriend))
                 {
                     this.StartLobbyAutoJoinFriend("Hotkey triggered");
                 }
-                if (Input.GetKeyDown(this.keyJoinPublic))
+                if (this.TryGetModHotkeyDown(this.keyJoinPublic))
                 {
                     this.autoJoinFriendEnabled = false;
                     this.autoClickStartEnabled = false;
                     bool success = this.ClickButtonIfExistsReturn(START_GAME_BUTTON_PATH);
                     this.AddMenuNotification($"Join Public: {(success ? "Clicked" : "Button not found")}", success ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyJoinMyTown))
+                if (this.TryGetModHotkeyDown(this.keyJoinMyTown))
                 {
                     this.StartLobbyAutoJoinMyTown("Hotkey triggered");
                 }
-                if (Input.GetKeyDown(this.keyNoclip))
+                if (this.TryGetModHotkeyDown(this.keyNoclip))
                 {
                     this.noclipEnabled = !this.noclipEnabled;
                     if (this.noclipEnabled)
@@ -2336,62 +2336,62 @@ namespace HeartopiaMod
                         this.AddMenuNotification("Noclip: DISABLED", new Color(1f, 0.55f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyGameSpeed1x))
+                if (this.TryGetModHotkeyDown(this.keyGameSpeed1x))
                 {
                     this.SetGameSpeed(1f);
                     this.AddMenuNotification("Game Speed: 1x", new Color(0.45f, 1f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyGameSpeed2x))
+                if (this.TryGetModHotkeyDown(this.keyGameSpeed2x))
                 {
                     this.SetGameSpeed(2f);
                     this.AddMenuNotification("Game Speed: 2x", new Color(0.45f, 1f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyGameSpeed5x))
+                if (this.TryGetModHotkeyDown(this.keyGameSpeed5x))
                 {
                     this.SetGameSpeed(5f);
                     this.AddMenuNotification("Game Speed: 5x", new Color(0.45f, 1f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyGameSpeed10x))
+                if (this.TryGetModHotkeyDown(this.keyGameSpeed10x))
                 {
                     this.SetGameSpeed(10f);
                     this.AddMenuNotification("Game Speed: 10x", new Color(0.45f, 1f, 0.55f));
                 }
-                if (Input.GetKeyDown(this.keyEquipAxe))
+                if (this.TryGetModHotkeyDown(this.keyEquipAxe))
                 {
                     if (this.TryToggleEquipHandToolHotkey(1, out bool unequipped, out _))
                     {
                         this.AddMenuNotification(unequipped ? "Unequipping Axe" : "Equipping Axe", new Color(0.45f, 1f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyEquipNet))
+                if (this.TryGetModHotkeyDown(this.keyEquipNet))
                 {
                     if (this.TryToggleEquipHandToolHotkey(5, out bool unequipped, out _))
                     {
                         this.AddMenuNotification(unequipped ? "Unequipping Net" : "Equipping Net", new Color(0.45f, 1f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyEquipRod))
+                if (this.TryGetModHotkeyDown(this.keyEquipRod))
                 {
                     if (this.TryToggleEquipHandToolHotkey(3, out bool unequipped, out _))
                     {
                         this.AddMenuNotification(unequipped ? "Unequipping Rod" : "Equipping Rod", new Color(0.45f, 1f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyEquipSprinkler))
+                if (this.TryGetModHotkeyDown(this.keyEquipSprinkler))
                 {
                     if (this.TryToggleEquipHandToolHotkey(2, out bool unequipped, out _))
                     {
                         this.AddMenuNotification(unequipped ? "Unequipping Sprinkler" : "Equipping Sprinkler", new Color(0.45f, 1f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyEquipBirdScanner))
+                if (this.TryGetModHotkeyDown(this.keyEquipBirdScanner))
                 {
                     if (this.TryToggleEquipHandToolHotkey(4, out bool unequipped, out _))
                     {
                         this.AddMenuNotification(unequipped ? "Unequipping Bird Scanner" : "Equipping Bird Scanner", new Color(0.45f, 1f, 0.55f));
                     }
                 }
-                if (Input.GetKeyDown(this.keyEquipPad))
+                if (this.TryGetModHotkeyDown(this.keyEquipPad))
                 {
                     if (this.TryToggleEquipHandToolHotkey(6, out bool unequipped, out _))
                     {

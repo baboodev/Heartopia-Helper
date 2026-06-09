@@ -196,6 +196,7 @@
     <Compile Include="LocalizationManager.cs" />
     <Compile Include="LodSettingsFeature.cs" />
     <Compile Include="HideJumpButtonFeature.cs" />
+    <Compile Include="InstrumentHotkeyGuardFeature.cs" />
     <Compile Include="HomelandFarmFeature.cs" />
     <Compile Include="BunnyHopFeature.cs" />
     <Compile Include="BubbleFeature.cs" />
