@@ -73,6 +73,8 @@ namespace HeartopiaMod
         private KeyCode keyEquipNet = KeyCode.None;
         private KeyCode keyEquipRod = KeyCode.None;
         private KeyCode keyEquipSprinkler = KeyCode.None;
+        private KeyCode keyEquipBirdScanner = KeyCode.None;
+        private KeyCode keyEquipPad = KeyCode.None;
         private KeyCode keyAutoInsectFarm = KeyCode.None;
         private KeyCode keyAutoBirdFarm = KeyCode.None;
         private KeyCode keyMassCook = KeyCode.None;
@@ -339,6 +341,8 @@ namespace HeartopiaMod
             public int keyEquipNet;
             public int keyEquipRod;
             public int keyEquipSprinkler;
+            public int keyEquipBirdScanner;
+            public int keyEquipPad;
             public int keyAutoInsectFarm;
             public int keyAutoBirdFarm;
             public int keyMassCook;
@@ -914,6 +918,8 @@ namespace HeartopiaMod
             data.keyEquipNet = (int)this.keyEquipNet;
             data.keyEquipRod = (int)this.keyEquipRod;
             data.keyEquipSprinkler = (int)this.keyEquipSprinkler;
+            data.keyEquipBirdScanner = (int)this.keyEquipBirdScanner;
+            data.keyEquipPad = (int)this.keyEquipPad;
             data.keyAutoInsectFarm = (int)this.keyAutoInsectFarm;
             data.keyAutoBirdFarm = (int)this.keyAutoBirdFarm;
             data.keyMassCook = (int)this.keyMassCook;
@@ -1040,6 +1046,8 @@ namespace HeartopiaMod
             this.keyEquipNet = (KeyCode)data.keyEquipNet;
             this.keyEquipRod = (KeyCode)data.keyEquipRod;
             this.keyEquipSprinkler = (KeyCode)data.keyEquipSprinkler;
+            this.keyEquipBirdScanner = (KeyCode)data.keyEquipBirdScanner;
+            this.keyEquipPad = (KeyCode)data.keyEquipPad;
             this.keyAutoInsectFarm = (KeyCode)data.keyAutoInsectFarm;
             this.keyAutoBirdFarm = (KeyCode)data.keyAutoBirdFarm;
             this.keyMassCook = (KeyCode)data.keyMassCook;
@@ -2187,7 +2195,6 @@ namespace HeartopiaMod
                     this.bypassEnabled = false;
                     this.antiAfkEnabled = false;
                     this.StopAutoCookInternal("Disabled");
-                    this.pendingToolEquipType = 0;
                     this.isAutoEating = false;
                     this.StopTreeFarm("Stopped");
                     this.mouseLookEnabled = false;
@@ -2351,22 +2358,45 @@ namespace HeartopiaMod
                 }
                 if (Input.GetKeyDown(this.keyEquipAxe))
                 {
-                    this.StartToolEquipRequest(1);
-                    this.AddMenuNotification("Equipping Axe", new Color(0.45f, 1f, 0.55f));
+                    if (this.TryToggleEquipHandToolHotkey(1, out bool unequipped, out _))
+                    {
+                        this.AddMenuNotification(unequipped ? "Unequipping Axe" : "Equipping Axe", new Color(0.45f, 1f, 0.55f));
+                    }
                 }
                 if (Input.GetKeyDown(this.keyEquipNet))
                 {
-                    this.StartToolEquipRequest(2);
-                    this.AddMenuNotification("Equipping Net", new Color(0.45f, 1f, 0.55f));
+                    if (this.TryToggleEquipHandToolHotkey(5, out bool unequipped, out _))
+                    {
+                        this.AddMenuNotification(unequipped ? "Unequipping Net" : "Equipping Net", new Color(0.45f, 1f, 0.55f));
+                    }
                 }
                 if (Input.GetKeyDown(this.keyEquipRod))
                 {
-                    this.StartToolEquipRequest(3);
-                    this.AddMenuNotification("Equipping Rod", new Color(0.45f, 1f, 0.55f));
+                    if (this.TryToggleEquipHandToolHotkey(3, out bool unequipped, out _))
+                    {
+                        this.AddMenuNotification(unequipped ? "Unequipping Rod" : "Equipping Rod", new Color(0.45f, 1f, 0.55f));
+                    }
                 }
                 if (Input.GetKeyDown(this.keyEquipSprinkler))
                 {
-                    this.EquipHomelandFarmSprinklerHotkey();
+                    if (this.TryToggleEquipHandToolHotkey(2, out bool unequipped, out _))
+                    {
+                        this.AddMenuNotification(unequipped ? "Unequipping Sprinkler" : "Equipping Sprinkler", new Color(0.45f, 1f, 0.55f));
+                    }
+                }
+                if (Input.GetKeyDown(this.keyEquipBirdScanner))
+                {
+                    if (this.TryToggleEquipHandToolHotkey(4, out bool unequipped, out _))
+                    {
+                        this.AddMenuNotification(unequipped ? "Unequipping Bird Scanner" : "Equipping Bird Scanner", new Color(0.45f, 1f, 0.55f));
+                    }
+                }
+                if (Input.GetKeyDown(this.keyEquipPad))
+                {
+                    if (this.TryToggleEquipHandToolHotkey(6, out bool unequipped, out _))
+                    {
+                        this.AddMenuNotification(unequipped ? "Unequipping Pad" : "Equipping Pad", new Color(0.45f, 1f, 0.55f));
+                    }
                 }
             }
 
@@ -2525,7 +2555,6 @@ namespace HeartopiaMod
             }
             AutoFishingFarm.Update(this);
             this.ProcessAutoSell();
-            this.ProcessPendingToolEquipRequest();
             this.RunTreeFarmLogic();
             this.RunLobbyAutoActions();
             this.CloseAnnouncementPanelIfPresent();
@@ -3201,7 +3230,7 @@ namespace HeartopiaMod
             // Settings tab with sub-tabs
             if (this.settingsSubTab == 1)
             {
-                return string.IsNullOrEmpty(this.keyBindingActive) ? 1400f : 300f;
+                return string.IsNullOrEmpty(this.keyBindingActive) ? 1560f : 300f;
             }
             if (this.settingsSubTab == 2)
             {
@@ -24007,7 +24036,7 @@ namespace HeartopiaMod
             int num = startY;
             if (this.DrawPrimaryActionButton(new Rect(20f, (float)num, 260f, 35f), "Equip Axe"))
             {
-                this.StartToolEquipRequest(1);
+                this.EquipHandTool(1);
             }
             num += 45;
             string toggleText = this.autoResourceFarmEnabled ? "DISABLE CHOP & MINE" : "ENABLE CHOP & MINE";
@@ -24276,7 +24305,6 @@ namespace HeartopiaMod
                     this.antiAfkMouseDownClearAt = 0f;
                     this.antiAfkMouseHoldClearAt = 0f;
                     this.StopAutoCookInternal("Disabled");
-                    this.pendingToolEquipType = 0;
                     this.isAutoEating = false;
                     this.autoSellEnabled = false;
                     this.SetAuraFarmEnabled(false);
@@ -39809,193 +39837,6 @@ namespace HeartopiaMod
             }
         }
 
-        private bool IsToolboxOpen()
-        {
-            return this.IsToolsPanelOpen();
-        }
-
-        private bool IsToolsPanelOpen()
-        {
-            GameObject toolsPanel = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Full/ToolsPanel(Clone)");
-            return toolsPanel != null && toolsPanel.activeInHierarchy;
-        }
-
-        public void StartToolEquipRequest(int toolType)
-        {
-            this.pendingToolEquipType = toolType;
-            this.pendingToolEquipUntil = Time.time + 3f;
-            this.nextToolEquipAttemptAt = Time.time;
-            this.ProcessPendingToolEquipRequest();
-        }
-
-        private void ProcessPendingToolEquipRequest()
-        {
-            if (this.pendingToolEquipType == 0)
-            {
-                return;
-            }
-            if (Time.time > this.pendingToolEquipUntil)
-            {
-                this.pendingToolEquipType = 0;
-                return;
-            }
-            if (Time.time < this.nextToolEquipAttemptAt)
-            {
-                return;
-            }
-
-            this.nextToolEquipAttemptAt = Time.time + 0.2f;
-
-            string friendlyName;
-            string[] needles;
-            if (this.pendingToolEquipType == 1)
-            {
-                friendlyName = "Axe";
-                needles = new string[] { "axe_axe001", "axe" };
-            }
-            else if (this.pendingToolEquipType == 2)
-            {
-                friendlyName = "Net";
-                needles = new string[] { "net_net001", "catchingnet", "bugnet", "net" };
-            }
-            else if (this.pendingToolEquipType == 4)
-            {
-                friendlyName = "Bird Scanner";
-                needles = new string[] { "birdscanner", "bird_scanner", "scanner_bird" };
-            }
-            else
-            {
-                friendlyName = "Fishing Rod";
-                needles = new string[] { "rod_rod001", "fishingrod", "fishing_rod", "rod" };
-            }
-
-            // Try clicking the tool directly from the status bar first (preferred)
-            bool clicked = this.TryEquipStatusBarItemBySpriteAny(needles);
-            if (clicked)
-            {
-                ModLogger.Msg("[Tools] Equip click sent from status bar for " + friendlyName);
-                this.AddMenuNotification($"Equip click: {friendlyName}", new Color(0.45f, 1f, 0.55f));
-                this.pendingToolEquipType = 0;
-                return;
-            }
-
-
-            // If status-bar didn't work, only attempt toolbox-based equip when ToolsPanel is already open.
-            if (!this.IsToolsPanelOpen())
-            {
-                // Open the tools panel using the handable opener button (preferred path)
-                this.ClickButtonIfExistsWithParent("GameApp/startup_root(Clone)/XDUIRoot/Status/StatusPanel(Clone)/AniRoot@ani@queueanimation/right_layout@ani/bottom_right_layout@go/handable_bar@go/handable@w/handable@btn@ani/bg/dec");
-                return;
-            }
-
-            // Fallback: try equipping from the opened ToolsPanel
-            clicked = this.TryEquipToolboxItemBySpriteAny(needles);
-
-            if (clicked)
-            {
-                ModLogger.Msg("[Tools] Equip click sent for " + friendlyName);
-                this.AddMenuNotification($"Equip click: {friendlyName}", new Color(0.45f, 1f, 0.55f));
-                this.CloseToolboxIfOpen();
-                this.pendingToolEquipType = 0;
-            }
-        }
-
-        private bool TryEquipToolboxItemBySpriteAny(string[] spriteNeedles)
-        {
-            GameObject toolsPanel = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Full/ToolsPanel(Clone)");
-            if (toolsPanel == null || !toolsPanel.activeInHierarchy)
-            {
-                return false;
-            }
-
-            Image[] images = toolsPanel.GetComponentsInChildren<Image>(true);
-            if (images == null || images.Length == 0)
-            {
-                return false;
-            }
-
-            foreach (Image image in images)
-            {
-                if (image == null || image.sprite == null || !image.gameObject.activeInHierarchy)
-                {
-                    continue;
-                }
-
-                string spriteName = image.sprite.name.ToLowerInvariant();
-                bool isMatch = false;
-                foreach (string needle in spriteNeedles)
-                {
-                    if (!string.IsNullOrEmpty(needle) && spriteName.Contains(needle.ToLowerInvariant()))
-                    {
-                        isMatch = true;
-                        break;
-                    }
-                }
-                if (!isMatch)
-                {
-                    continue;
-                }
-
-                Button button = image.GetComponent<Button>();
-                if (button == null) button = image.GetComponentInParent<Button>();
-                if (button != null && button.interactable && button.gameObject.activeInHierarchy)
-                {
-                    button.onClick.Invoke();
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private bool TryEquipStatusBarItemBySpriteAny(string[] spriteNeedles)
-        {
-            GameObject statusRoot = GameObject.Find("GameApp/startup_root(Clone)/XDUIRoot/Status/StatusPanel(Clone)/AniRoot@ani@queueanimation/right_layout@ani/bottom_right_layout@go/handable_bar@go");
-            if (statusRoot == null || !statusRoot.activeInHierarchy)
-            {
-                return false;
-            }
-
-            Image[] images = statusRoot.GetComponentsInChildren<Image>(true);
-            if (images == null || images.Length == 0)
-            {
-                return false;
-            }
-
-            foreach (Image image in images)
-            {
-                if (image == null || image.sprite == null || !image.gameObject.activeInHierarchy)
-                {
-                    continue;
-                }
-
-                string spriteName = image.sprite.name.ToLowerInvariant();
-                bool isMatch = false;
-                foreach (string needle in spriteNeedles)
-                {
-                    if (!string.IsNullOrEmpty(needle) && spriteName.Contains(needle.ToLowerInvariant()))
-                    {
-                        isMatch = true;
-                        break;
-                    }
-                }
-                if (!isMatch)
-                {
-                    continue;
-                }
-
-                Button button = image.GetComponent<Button>();
-                if (button == null) button = image.GetComponentInParent<Button>();
-                if (button != null && button.interactable && button.gameObject.activeInHierarchy)
-                {
-                    button.onClick.Invoke();
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
         private string GetHierarchyPath(Transform transform)
         {
             if (transform == null)
@@ -40115,7 +39956,7 @@ namespace HeartopiaMod
             this.treeFarmChopSent = 0;
             this.treeFarmNextActionAt = Time.time;
             this.treeFarmStatus = "Equipping Axe...";
-            this.StartToolEquipRequest(1);
+            this.EquipHandTool(1);
             // If using hardcoded positions, populate the patrol points list from static arrays
             if (this.treeFarmUseHardcoded)
             {
@@ -40846,7 +40687,6 @@ namespace HeartopiaMod
             this.treeFarmChopSent = 0;
             this.treeFarmStatus = reason;
             this.CloseToolboxIfOpen();
-            this.pendingToolEquipType = 0;
         }
 
         private void RunTreeFarmLogic()
@@ -40923,7 +40763,7 @@ namespace HeartopiaMod
             switch (this.treeFarmState)
             {
                 case HeartopiaComplete.TreeFarmState.EquipAxe:
-                    this.StartToolEquipRequest(1);
+                    this.EquipHandTool(1);
                     this.treeFarmStatus = "Waiting after axe equip...";
                     this.treeFarmState = HeartopiaComplete.TreeFarmState.WaitAfterEquip;
                     this.treeFarmNextActionAt = Time.time + 2f;
@@ -61567,6 +61407,8 @@ namespace HeartopiaMod
                             case "Equip Net": this.keyEquipNet = newKey; break;
                             case "Equip Rod": this.keyEquipRod = newKey; break;
                             case "Equip Sprinkler": this.keyEquipSprinkler = newKey; break;
+                            case "Equip Bird Scanner": this.keyEquipBirdScanner = newKey; break;
+                            case "Equip Pad": this.keyEquipPad = newKey; break;
                             case "Auto Insect Farm": this.keyAutoInsectFarm = newKey; break;
                             case "Auto Bird Farm": this.keyAutoBirdFarm = newKey; break;
                             case "Mass Cook": this.keyMassCook = newKey; break;
@@ -61624,7 +61466,7 @@ namespace HeartopiaMod
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Bypass Overlap", ref this.keyBypassOverlap);
             num += 14;
 
-            this.BeginKeybindSection(ref num, left, contentWidth, "SPEED & TOOLS", 8, subHeaderStyle, accent, panelFill, panelLine);
+            this.BeginKeybindSection(ref num, left, contentWidth, "SPEED & TOOLS", 10, subHeaderStyle, accent, panelFill, panelLine);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Game Speed 1x", ref this.keyGameSpeed1x);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Game Speed 2x", ref this.keyGameSpeed2x);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Game Speed 5x", ref this.keyGameSpeed5x);
@@ -61633,6 +61475,8 @@ namespace HeartopiaMod
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Equip Net", ref this.keyEquipNet);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Equip Rod", ref this.keyEquipRod);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Equip Sprinkler", ref this.keyEquipSprinkler);
+            this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Equip Bird Scanner", ref this.keyEquipBirdScanner);
+            this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Equip Pad", ref this.keyEquipPad);
             num += 18;
 
             if (this.DrawDangerActionButton(new Rect(left, (float)num, contentWidth, 34f), "RESET TO DEFAULTS"))
@@ -61668,6 +61512,8 @@ namespace HeartopiaMod
                 this.keyEquipNet = KeyCode.None;
                 this.keyEquipRod = KeyCode.None;
                 this.keyEquipSprinkler = KeyCode.None;
+                this.keyEquipBirdScanner = KeyCode.None;
+                this.keyEquipPad = KeyCode.None;
                 this.keyAutoInsectFarm = KeyCode.None;
                 this.keyAutoBirdFarm = KeyCode.None;
                 this.keyMassCook = KeyCode.None;
@@ -63460,9 +63306,6 @@ namespace HeartopiaMod
         private MethodInfo cachedFishingExitFishingMethod = null;
         private float lastFishingEnterRequestedAt = -999f;
         private float lastFishingExitRequestedAt = -999f;
-        private int pendingToolEquipType = 0; // 0 = none, 1 = axe, 2 = net, 3 = fishing rod, 4 = bird scanner
-        private float pendingToolEquipUntil = 0f;
-        private float nextToolEquipAttemptAt = 0f;
         private GameObject cachedPlayerObject = null;
         private float cachedNearestPlayerDistance = 999f;
         private float nextNearestPlayerDistanceRefreshAt = 0f;

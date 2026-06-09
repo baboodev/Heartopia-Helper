@@ -29,8 +29,14 @@ namespace HeartopiaMod
         // Crop-box sow put-zone slot: levelObjectNetId = (slot << 32) | planterNetId. Crop boxes use
         // slot 2 (craft raycast put-zone), per HOMELAND_SOW_ALIGNMENT.md.
         private const int HomelandFarmCropBoxCraftPutZoneSlot = 2;
-        // ToolType.Sprinkler — equipped via HoldToolCommand / ToolSystem.SetHandhold, not backpack AddHolder.
+        // Game ToolType ids — equipped via HoldToolCommand / ToolSystem.SetHandhold, not backpack AddHolder.
+        private const int HomelandFarmAxeToolTypeId = 1;
         private const int HomelandFarmSprinklerToolTypeId = 2;
+        private const int HomelandFarmRodToolTypeId = 3;
+        private const int HomelandFarmBirdScannerToolTypeId = 4;
+        private const int HomelandFarmNetToolTypeId = 5;
+        private const int HomelandFarmPadToolTypeId = 6;
+        private const int HomelandFarmHolderSystemHoldTool = 3; // EHolderSystem.HoldTool
         private const float HomelandFarmCommandDelaySeconds = 0.35f;
         private const float HomelandFarmWaterCommandDelaySeconds = 0.1f;
         private const float HomelandFarmFertilizeCastWaitSeconds = 1.2f;
@@ -327,6 +333,7 @@ namespace HeartopiaMod
         private Type homelandFarmAddHolderSystemCommandType = null;
         private Type homelandFarmEHolderSystemType = null;
         private Type homelandFarmHoldToolCommandType = null;
+        private Type homelandFarmCancelHolderSystemCommandType = null;
         private Type homelandFarmToolProtocolManagerType = null;
         private MethodInfo homelandFarmToolProtocolSetHandHoldMethod = null;
         private Type homelandFarmToolSystemType = null;
@@ -991,6 +998,8 @@ namespace HeartopiaMod
         private void OnAuraFarmRuntimeResolverReady()
         {
             this.EnsureHomelandFarmWarmupStarted();
+            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
+            this.EnsureNoclipVehicleAuraMono(logIfPending: true);
         }
 
         internal void UpdateHomelandFarmBackground()
@@ -7072,6 +7081,11 @@ namespace HeartopiaMod
                 "EcsClient.XDT.Scene.Shared.Modules.Tools.HoldToolCommand",
                 "XDT.Scene.Shared.Modules.Tools.HoldToolCommand",
                 "Il2CppEcsClient.XDT.Scene.Shared.Modules.Tools.HoldToolCommand");
+            this.homelandFarmCancelHolderSystemCommandType = this.ResolveHomelandFarmManagedType(
+                "CancelHolderSystemCommand",
+                "EcsClient.XDT.Scene.Shared.Modules.Tools.CancelHolderSystemCommand",
+                "XDT.Scene.Shared.Modules.Tools.CancelHolderSystemCommand",
+                "Il2CppEcsClient.XDT.Scene.Shared.Modules.Tools.CancelHolderSystemCommand");
 
             this.homelandFarmToolProtocolManagerType = this.ResolveHomelandFarmManagedType(
                 "ToolProtocolManager",
@@ -7159,6 +7173,7 @@ namespace HeartopiaMod
         private bool HomelandFarmHasToolEquipPathAvailable()
         {
             return this.homelandFarmHoldToolCommandType != null
+                || this.homelandFarmCancelHolderSystemCommandType != null
                 || this.homelandFarmToolProtocolSetHandHoldMethod != null
                 || this.homelandFarmToolSystemSetHandholdMethod != null
                 || this.homelandFarmAuraToolProtocolSetHandHoldMethod != IntPtr.Zero
@@ -7199,9 +7214,14 @@ namespace HeartopiaMod
             return toolSystemInstance != null;
         }
 
-        private bool TryHomelandFarmTryResolveSprinklerToolSkinId(out int skinId)
+        private bool TryHomelandFarmTryResolveToolSkinId(int toolId, out int skinId)
         {
             skinId = 0;
+            if (toolId <= 0)
+            {
+                return false;
+            }
+
             if (!this.TryHomelandFarmTryGetToolSystemInstance(out object toolSystemInstance)
                 || toolSystemInstance == null
                 || this.homelandFarmToolSystemGetToolMethod == null)
@@ -7211,7 +7231,7 @@ namespace HeartopiaMod
 
             try
             {
-                object tool = this.homelandFarmToolSystemGetToolMethod.Invoke(toolSystemInstance, new object[] { HomelandFarmSprinklerToolTypeId });
+                object tool = this.homelandFarmToolSystemGetToolMethod.Invoke(toolSystemInstance, new object[] { toolId });
                 if (tool == null)
                 {
                     return false;
@@ -7283,10 +7303,61 @@ namespace HeartopiaMod
             return sent;
         }
 
+        private bool TryHomelandFarmSendCancelHandToolCommand(out string status)
+        {
+            status = "Cancel HoldTool SendCommand unavailable.";
+            if (this.homelandFarmToolProtocolSetHandHoldMethod != null)
+            {
+                try
+                {
+                    this.homelandFarmToolProtocolSetHandHoldMethod.Invoke(null, new object[] { 0, 0 });
+                    status = "ToolProtocolManager.SetHandHold(0) ok.";
+                    this.HomelandFarmLog(status);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    status = "ToolProtocolManager.SetHandHold(0) exception: " + (ex.InnerException ?? ex).Message;
+                }
+            }
+
+            if (this.TryHomelandFarmInvokeAuraToolProtocolCancelHandHold(out string auraProtocolStatus))
+            {
+                status = auraProtocolStatus;
+                return true;
+            }
+
+            if (this.homelandFarmCancelHolderSystemCommandType == null)
+            {
+                this.TryHomelandFarmEnsureToolEquipTypes();
+            }
+
+            if (this.homelandFarmCancelHolderSystemCommandType == null)
+            {
+                return false;
+            }
+
+            bool sent = this.TryHomelandFarmSendCommand(
+                this.homelandFarmCancelHolderSystemCommandType,
+                command =>
+                {
+                    object cmd = command;
+                    return this.TrySetFieldValue(this.homelandFarmCancelHolderSystemCommandType, ref cmd, "System", HomelandFarmHolderSystemHoldTool);
+                },
+                out status);
+            if (sent)
+            {
+                status = "CancelHolderSystemCommand ok.";
+                this.HomelandFarmLog(status);
+            }
+
+            return sent;
+        }
+
         private unsafe bool TryHomelandFarmInvokeAuraToolSystemSetHandhold(int toolId, out string status)
         {
             status = "Aura ToolSystem.SetHandhold unavailable.";
-            if (toolId <= 0)
+            if (toolId < 0)
             {
                 status = "Tool id missing.";
                 return false;
@@ -7372,16 +7443,49 @@ namespace HeartopiaMod
             return true;
         }
 
-        private bool TryHomelandFarmEquipSprinklerTool(out string status)
+        private unsafe bool TryHomelandFarmInvokeAuraToolProtocolCancelHandHold(out string status)
         {
-            status = "Sprinkler tool equip unavailable.";
+            status = "Aura ToolProtocolManager.SetHandHold(0) unavailable.";
+            if (!this.TryHomelandFarmEnsureToolEquipAuraMethods()
+                || this.homelandFarmAuraToolProtocolSetHandHoldMethod == IntPtr.Zero
+                || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            int toolId = 0;
+            int skinId = 0;
+            IntPtr exc = IntPtr.Zero;
+            IntPtr* args = stackalloc IntPtr[2];
+            args[0] = (IntPtr)(&toolId);
+            args[1] = (IntPtr)(&skinId);
+            auraMonoRuntimeInvoke(this.homelandFarmAuraToolProtocolSetHandHoldMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+            if (exc != IntPtr.Zero)
+            {
+                status = "Aura ToolProtocolManager.SetHandHold(0) failed exc=0x" + exc.ToInt64().ToString("X") + ".";
+                return false;
+            }
+
+            status = "Aura ToolProtocolManager.SetHandHold(0) ok.";
+            this.HomelandFarmLog(status);
+            return true;
+        }
+
+        private bool TryHomelandFarmEquipHandTool(int toolId, out string status)
+        {
+            status = "Tool equip unavailable.";
+            if (toolId <= 0)
+            {
+                status = "Tool id missing.";
+                return false;
+            }
+
             if (!this.TryHomelandFarmEnsureToolEquipTypes())
             {
                 return false;
             }
 
-            int toolId = HomelandFarmSprinklerToolTypeId;
-            this.TryHomelandFarmTryResolveSprinklerToolSkinId(out int skinId);
+            this.TryHomelandFarmTryResolveToolSkinId(toolId, out int skinId);
 
             if (this.TryHomelandFarmInvokeAuraToolSystemSetHandhold(toolId, out string auraToolSystemStatus))
             {
@@ -7413,6 +7517,107 @@ namespace HeartopiaMod
             }
 
             return this.TryHomelandFarmSendHoldToolCommand(toolId, skinId, out status);
+        }
+
+        private bool TryHomelandFarmUnequipHandTool(out string status)
+        {
+            status = "Unequip hand tool unavailable.";
+            if (!this.TryHomelandFarmEnsureToolEquipTypes())
+            {
+                return false;
+            }
+
+            if (this.TryHomelandFarmInvokeAuraToolSystemSetHandhold(0, out string auraToolSystemStatus))
+            {
+                status = auraToolSystemStatus;
+                return true;
+            }
+
+            if (this.TryHomelandFarmTryGetToolSystemInstance(out object toolSystemInstance)
+                && toolSystemInstance != null
+                && this.homelandFarmToolSystemSetHandholdMethod != null)
+            {
+                try
+                {
+                    this.homelandFarmToolSystemSetHandholdMethod.Invoke(toolSystemInstance, new object[] { 0 });
+                    status = "ToolSystem.SetHandhold(0) ok.";
+                    this.HomelandFarmLog(status);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    status = "ToolSystem.SetHandhold(0) exception: " + (ex.InnerException ?? ex).Message;
+                }
+            }
+
+            if (this.TryHomelandFarmInvokeAuraToolProtocolCancelHandHold(out string auraProtocolStatus))
+            {
+                status = auraProtocolStatus;
+                return true;
+            }
+
+            return this.TryHomelandFarmSendCancelHandToolCommand(out status);
+        }
+
+        public bool TryEquipHandTool(int toolId, out string status)
+        {
+            if (toolId == 0)
+            {
+                return this.TryHomelandFarmUnequipHandTool(out status);
+            }
+
+            return this.TryHomelandFarmEquipHandTool(toolId, out status);
+        }
+
+        public void EquipHandTool(int toolId)
+        {
+            this.TryEquipHandTool(toolId, out _);
+        }
+
+        private bool TryIsHandToolEquipped(int toolId)
+        {
+            if (toolId <= 0)
+            {
+                return false;
+            }
+
+            if (this.TryGetCurrentToolInfo(out int currentToolId, out _, out _) && currentToolId == toolId)
+            {
+                return true;
+            }
+
+            switch (toolId)
+            {
+                case HomelandFarmSprinklerToolTypeId:
+                    return this.TryHomelandFarmTryIsHandHoldSprinklerEquipped();
+                case HomelandFarmNetToolTypeId:
+                    return this.TryGetInsectNetToolStatus(out bool netEquipped, out _) && netEquipped;
+                case HomelandFarmRodToolTypeId:
+                    return this.TryGetFishingRodToolStatus(out bool rodEquipped, out _) && rodEquipped;
+                case HomelandFarmBirdScannerToolTypeId:
+                    return this.TryGetBirdScannerToolStatus(out bool scannerEquipped, out _) && scannerEquipped;
+                default:
+                    return false;
+            }
+        }
+
+        public bool TryToggleEquipHandToolHotkey(int toolId, out bool unequipped, out string status)
+        {
+            unequipped = false;
+            status = string.Empty;
+            if (toolId <= 0)
+            {
+                status = "Invalid tool id.";
+                return false;
+            }
+
+            if (this.TryIsHandToolEquipped(toolId))
+            {
+                unequipped = true;
+                return this.TryEquipHandTool(0, out status);
+            }
+
+            return this.TryEquipHandTool(toolId, out status);
         }
 
         private bool TryHomelandFarmEquipHandhold(uint itemNetId, out string status)
@@ -15237,7 +15442,7 @@ namespace HeartopiaMod
             {
                 if (mode == HomelandFarmWaterMode.InRadius && !this.TryHomelandFarmTryIsHandHoldSprinklerEquipped())
                 {
-                    if (!this.TryHomelandFarmEquipSprinklerTool(out string equipStatus))
+                    if (!this.TryEquipHandTool(HomelandFarmSprinklerToolTypeId, out string equipStatus))
                     {
                         this.homelandFarmLastStatus = "Equip sprinkler failed: " + equipStatus;
                         this.HomelandFarmLog(this.homelandFarmLastStatus);

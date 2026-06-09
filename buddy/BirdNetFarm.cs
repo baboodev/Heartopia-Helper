@@ -29,7 +29,7 @@ namespace HeartopiaMod
         private const float ScannerEquipRetryInterval = 3.25f;
         private static bool scannerEquipRequestActive = false;
         private static float nextScannerEquipAttemptAt = -999f;
-        private static int previousToolEquipType = 0;
+        private static int previousToolId = 0;
         private static bool previousToolRestorePending = false;
         private static int sessionCatchCount = 0;
         private static int sessionScaredCount = 0;
@@ -128,7 +128,7 @@ namespace HeartopiaMod
                 lastKnownScannerToolStatusAt = -999f;
                 scannerEquipRequestActive = false;
                 nextScannerEquipAttemptAt = -999f;
-                previousToolEquipType = 0;
+                previousToolId = 0;
                 previousToolRestorePending = false;
                 _pendingConfirmNetIds.Clear();
                 _pendingTimeoutStrikes.Clear();
@@ -396,7 +396,7 @@ namespace HeartopiaMod
 
             if (host.UI_DrawPrimaryActionButton(new Rect(20f, num, 260f, 35f), "Equip Bird Scanner"))
             {
-                host.StartToolEquipRequest(4);
+                host.EquipHandTool(4);
             }
             num += 45;
 
@@ -941,7 +941,7 @@ namespace HeartopiaMod
             float now = Time.unscaledTime;
             if (now >= nextScannerEquipAttemptAt)
             {
-                host.StartToolEquipRequest(4);
+                host.EquipHandTool(4);
                 nextScannerEquipAttemptAt = now + ScannerEquipRetryInterval;
                 lastStatus = "Equipping Bird Scanner...";
                 Log("Bird Scanner missing; sent equip request.");
@@ -953,7 +953,7 @@ namespace HeartopiaMod
 
         private static void CapturePreviousTool(HeartopiaComplete host)
         {
-            previousToolEquipType = 0;
+            previousToolId = 0;
             previousToolRestorePending = false;
 
             if (host == null || !host.TryGetCurrentToolInfo(out int toolId, out _, out _))
@@ -961,11 +961,11 @@ namespace HeartopiaMod
                 return;
             }
 
-            previousToolEquipType = MapToolIdToEquipType(toolId);
-            previousToolRestorePending = previousToolEquipType != 0 && previousToolEquipType != 4;
+            previousToolId = toolId;
+            previousToolRestorePending = toolId != 0 && toolId != 4;
             if (previousToolRestorePending)
             {
-                Log("Captured previous tool equipType=" + previousToolEquipType);
+                Log("Captured previous toolId=" + previousToolId);
             }
         }
 
@@ -973,45 +973,28 @@ namespace HeartopiaMod
         {
             if (host == null)
             {
-                previousToolEquipType = 0;
+                previousToolId = 0;
                 previousToolRestorePending = false;
                 return;
             }
 
-            if (!previousToolRestorePending || previousToolEquipType == 0)
+            if (!previousToolRestorePending || previousToolId == 0)
             {
                 if (host.TryGetBirdScannerToolStatus(out bool scannerEquipped, out _) && scannerEquipped)
                 {
-                    host.StartToolEquipRequest(4);
-                    Log("No previous supported tool captured; attempting to toggle Bird Scanner off.");
+                    host.EquipHandTool(0);
+                    Log("No previous supported tool captured; unequipping Bird Scanner.");
                 }
 
-                previousToolEquipType = 0;
+                previousToolId = 0;
                 previousToolRestorePending = false;
                 return;
             }
 
-            host.StartToolEquipRequest(previousToolEquipType);
-            Log("Restoring previous tool equipType=" + previousToolEquipType);
-            previousToolEquipType = 0;
+            host.EquipHandTool(previousToolId);
+            Log("Restoring previous toolId=" + previousToolId);
+            previousToolId = 0;
             previousToolRestorePending = false;
-        }
-
-        private static int MapToolIdToEquipType(int toolId)
-        {
-            switch (toolId)
-            {
-                case 1:
-                    return 1;
-                case 3:
-                    return 3;
-                case 4:
-                    return 4;
-                case 5:
-                    return 2;
-                default:
-                    return 0;
-            }
         }
 
         public static void ForceStop(HeartopiaComplete host = null)
@@ -1027,7 +1010,7 @@ namespace HeartopiaMod
             lastKnownScannerToolStatusAt = -999f;
             scannerEquipRequestActive = false;
             nextScannerEquipAttemptAt = -999f;
-            previousToolEquipType = 0;
+            previousToolId = 0;
             previousToolRestorePending = false;
             sessionCatchCount = 0;
             sessionScaredCount = 0;

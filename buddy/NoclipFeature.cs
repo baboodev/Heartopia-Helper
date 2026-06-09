@@ -49,13 +49,6 @@ namespace HeartopiaMod
         private IntPtr noclipAuraEnableInputMethod;
         private bool noclipVehicleJumpInputSuppressed;
 
-        private void OnAuraFarmRuntimeResolverReady()
-        {
-            this.EnsureHomelandFarmWarmupStarted();
-            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
-            this.EnsureNoclipVehicleAuraMono(logIfPending: true);
-        }
-
         private void EnsureNoclipVehicleAuraMono(bool logIfPending = false)
         {
             if (this.noclipVehicleAuraReady)

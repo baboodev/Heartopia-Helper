@@ -87,7 +87,7 @@ namespace HeartopiaMod
 
             if (host.UI_DrawPrimaryActionButton(new Rect(20f, (float)num, 260f, 35f), "Equip Net"))
             {
-                host.StartToolEquipRequest(2);
+                host.EquipHandTool(5);
             }
             num += 45;
 

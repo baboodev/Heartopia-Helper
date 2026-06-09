@@ -33,7 +33,7 @@ namespace HeartopiaMod
         private static float nextNetEquipAttemptAt = -999f;
         private static float nextToolStatusRefreshAt = -999f;
         private static float lastNetConfirmedAt = -999f;
-        private static int previousToolEquipType = 0;
+        private static int previousToolId = 0;
         private static bool previousToolRestorePending = false;
         private static readonly Dictionary<uint, float> recentCountedNetIds = new Dictionary<uint, float>();
         private static readonly Dictionary<uint, float> recentTargetedNetIds = new Dictionary<uint, float>();
@@ -240,7 +240,7 @@ namespace HeartopiaMod
 
             if (host.UI_DrawPrimaryActionButton(new Rect(20f, num, 260f, 35f), "Auto Equip Net"))
             {
-                host.StartToolEquipRequest(2);
+                host.EquipHandTool(5);
                 Log("Auto Equip Net button pressed.");
             }
             num += 42;
@@ -550,7 +550,7 @@ namespace HeartopiaMod
             nextNetEquipAttemptAt = -999f;
             nextToolStatusRefreshAt = -999f;
             lastNetConfirmedAt = -999f;
-            previousToolEquipType = 0;
+            previousToolId = 0;
             previousToolRestorePending = false;
             sessionCatchCount = 0;
             recentCountedNetIds.Clear();
@@ -657,7 +657,7 @@ namespace HeartopiaMod
 
             if (now >= nextNetEquipAttemptAt)
             {
-                host.StartToolEquipRequest(2);
+                host.EquipHandTool(5);
                 nextNetEquipAttemptAt = now + NetEquipRetryInterval;
                 nextToolStatusRefreshAt = now + ToolStatusRefreshIntervalWhileEquipping;
                 lastStatus = "Equipping net...";
@@ -670,7 +670,7 @@ namespace HeartopiaMod
 
         private static void CapturePreviousTool(HeartopiaComplete host)
         {
-            previousToolEquipType = 0;
+            previousToolId = 0;
             previousToolRestorePending = false;
 
             if (host == null || !host.TryGetCurrentToolInfo(out int toolId, out _, out _))
@@ -678,11 +678,11 @@ namespace HeartopiaMod
                 return;
             }
 
-            previousToolEquipType = MapToolIdToEquipType(toolId);
-            previousToolRestorePending = previousToolEquipType != 0 && previousToolEquipType != 2;
+            previousToolId = toolId;
+            previousToolRestorePending = toolId != 0 && toolId != 5;
             if (previousToolRestorePending)
             {
-                Log("Captured previous tool equipType=" + previousToolEquipType);
+                Log("Captured previous toolId=" + previousToolId);
             }
         }
 
@@ -690,45 +690,28 @@ namespace HeartopiaMod
         {
             if (host == null)
             {
-                previousToolEquipType = 0;
+                previousToolId = 0;
                 previousToolRestorePending = false;
                 return;
             }
 
-            if (!previousToolRestorePending || previousToolEquipType == 0)
+            if (!previousToolRestorePending || previousToolId == 0)
             {
                 if (host.TryGetInsectNetToolStatus(out bool netEquipped, out _) && netEquipped)
                 {
-                    host.StartToolEquipRequest(2);
-                    Log("No previous supported tool captured; attempting to toggle net off.");
+                    host.EquipHandTool(0);
+                    Log("No previous supported tool captured; unequipping net.");
                 }
 
-                previousToolEquipType = 0;
+                previousToolId = 0;
                 previousToolRestorePending = false;
                 return;
             }
 
-            host.StartToolEquipRequest(previousToolEquipType);
-            Log("Restoring previous tool equipType=" + previousToolEquipType);
-            previousToolEquipType = 0;
+            host.EquipHandTool(previousToolId);
+            Log("Restoring previous toolId=" + previousToolId);
+            previousToolId = 0;
             previousToolRestorePending = false;
-        }
-
-        private static int MapToolIdToEquipType(int toolId)
-        {
-            switch (toolId)
-            {
-                case 1:
-                    return 1;
-                case 3:
-                    return 3;
-                case 4:
-                    return 4;
-                case 5:
-                    return 2;
-                default:
-                    return 0;
-            }
         }
     }
 }
