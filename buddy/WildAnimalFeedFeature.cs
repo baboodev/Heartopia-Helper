@@ -61,6 +61,10 @@ namespace HeartopiaMod
         private IntPtr wildAnimalFeedAuraTableDataClass = IntPtr.Zero;
         private IntPtr wildAnimalFeedAuraGetAnimalFoodThoughMethod = IntPtr.Zero;
         private bool wildAnimalFeedAuraTableDataCacheAttempted = false;
+        private bool wildAnimalFeedGameTimeReflectionResolved = false;
+        private MethodInfo wildAnimalFeedGameTimeCheckPeriodMethod = null;
+        private IntPtr wildAnimalFeedAuraGameTimeClass = IntPtr.Zero;
+        private IntPtr wildAnimalFeedAuraGameTimeCheckPeriodMethod = IntPtr.Zero;
 
         private sealed class WildAnimalFeedManagedInventorySnapshot
         {
@@ -118,6 +122,7 @@ namespace HeartopiaMod
             public Dictionary<uint, int> ReservedCountsByNetId = new Dictionary<uint, int>();
             public int CheckedGroups;
             public int HungryGroups;
+            public int SkippedOffIsland;
             public WildAnimalFeedAuraInventorySnapshot Inventory;
         }
 
@@ -768,6 +773,7 @@ namespace HeartopiaMod
             int totalSkippedFavorite = 0;
             int totalSkippedLock = 0;
             int totalSkippedInvalid = 0;
+            int totalSkippedOffIsland = 0;
             Dictionary<uint, int> reservedCountsByNetId = new Dictionary<uint, int>();
             List<object> unlockedGroups = new List<object>();
             if (!this.TryEnumerateManagedCollectionItems(groupsObj, unlockedGroups))
@@ -802,6 +808,13 @@ namespace HeartopiaMod
                     object groupObj = unlockedGroups[groupIndex];
                     if (!this.TryGetAnimalGroupId(groupObj, out int groupId) || groupId <= 0)
                     {
+                        continue;
+                    }
+
+                    if (this.ShouldSkipWildAnimalFeedGroupOffIsland(groupId))
+                    {
+                        totalSkippedOffIsland++;
+                        this.WildAnimalFeedLogDetail("Group " + groupId + " skip: limited-time off-island");
                         continue;
                     }
 
@@ -907,6 +920,10 @@ namespace HeartopiaMod
             {
                 status += " skipInv=" + totalSkippedInvalid;
             }
+            if (totalSkippedOffIsland > 0)
+            {
+                status += " skipLeft=" + totalSkippedOffIsland;
+            }
             if (plans.Count == 0 && hungryGroups > 0 && totalRawFoods == 0)
             {
                 status += " (no food found in bag/warehouse)";
@@ -971,7 +988,8 @@ namespace HeartopiaMod
                 yield return null;
             }
 
-            status = "AuraMono groups=" + context.CheckedGroups + " hungry=" + context.HungryGroups + " feedable=" + plans.Count;
+            status = "AuraMono groups=" + context.CheckedGroups + " hungry=" + context.HungryGroups + " feedable=" + plans.Count
+                + (context.SkippedOffIsland > 0 ? " skipLeft=" + context.SkippedOffIsland : string.Empty);
             this.WildAnimalFeedLog("=== AuraMono plan result: " + status + " ===");
             setStatus?.Invoke(status);
         }
@@ -1044,6 +1062,13 @@ namespace HeartopiaMod
 
             if (!this.TryGetWildAnimalFeedGroupIdAuraMono(groupObj, out int groupId) || groupId <= 0)
             {
+                return;
+            }
+
+            if (this.ShouldSkipWildAnimalFeedGroupOffIsland(groupId))
+            {
+                context.SkippedOffIsland++;
+                this.WildAnimalFeedLogDetail("AuraMono group " + groupId + " skip: limited-time off-island");
                 return;
             }
 
@@ -2818,6 +2843,163 @@ namespace HeartopiaMod
             }
 
             return favoriteIds.Count > 0;
+        }
+
+        private bool ShouldSkipWildAnimalFeedGroupOffIsland(int groupId)
+        {
+            if (!this.TryGetWildAnimalGroupAppearTime(groupId, out int appearTime) || appearTime <= 0)
+            {
+                return false;
+            }
+
+            return this.TryGameTimeCheckInSpecifiedTimePeriod(appearTime, out bool inPeriod) && !inPeriod;
+        }
+
+        private bool TryGetWildAnimalGroupAppearTime(int groupId, out int appearTime)
+        {
+            appearTime = 0;
+            try
+            {
+                if (!this.EnsureWildAnimalFeedTableDataReflection() || this.wildAnimalFeedGetAnimalGroupMethod == null)
+                {
+                    return false;
+                }
+
+                object[] args = this.wildAnimalFeedGetAnimalGroupMethod.GetParameters().Length == 2
+                    ? new object[] { groupId, false }
+                    : new object[] { groupId };
+                object group = this.wildAnimalFeedGetAnimalGroupMethod.Invoke(null, args);
+                if (group == null)
+                {
+                    return false;
+                }
+
+                if (this.TryGetObjectMember(group, "appearTime", out object appearObj) && appearObj != null)
+                {
+                    appearTime = Convert.ToInt32(appearObj);
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryGameTimeCheckInSpecifiedTimePeriod(int periodId, out bool inPeriod)
+        {
+            inPeriod = false;
+            if (periodId <= 0)
+            {
+                inPeriod = true;
+                return true;
+            }
+
+            if (this.TryGameTimeCheckInSpecifiedTimePeriodManaged(periodId, out inPeriod))
+            {
+                return true;
+            }
+
+            return this.TryGameTimeCheckInSpecifiedTimePeriodAuraMono(periodId, out inPeriod);
+        }
+
+        private bool TryGameTimeCheckInSpecifiedTimePeriodManaged(int periodId, out bool inPeriod)
+        {
+            inPeriod = false;
+            if (!this.EnsureWildAnimalFeedGameTimeReflection())
+            {
+                return false;
+            }
+
+            try
+            {
+                object result = this.wildAnimalFeedGameTimeCheckPeriodMethod.Invoke(null, new object[] { periodId });
+                inPeriod = result != null && Convert.ToBoolean(result);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private unsafe bool TryGameTimeCheckInSpecifiedTimePeriodAuraMono(int periodId, out bool inPeriod)
+        {
+            inPeriod = false;
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            if (this.wildAnimalFeedAuraGameTimeCheckPeriodMethod == IntPtr.Zero)
+            {
+                if (this.wildAnimalFeedAuraGameTimeClass == IntPtr.Zero)
+                {
+                    this.wildAnimalFeedAuraGameTimeClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                        "XDTDataAndProtocol.ProtocolService",
+                        "GameTimeUtility");
+                    if (this.wildAnimalFeedAuraGameTimeClass == IntPtr.Zero)
+                    {
+                        this.wildAnimalFeedAuraGameTimeClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                            string.Empty,
+                            "GameTimeUtility");
+                    }
+                }
+
+                if (this.wildAnimalFeedAuraGameTimeClass != IntPtr.Zero)
+                {
+                    this.wildAnimalFeedAuraGameTimeCheckPeriodMethod = this.FindAuraMonoMethodOnHierarchy(
+                        this.wildAnimalFeedAuraGameTimeClass,
+                        "CheckInSpecifiedTimePeriod",
+                        1);
+                }
+            }
+
+            if (this.wildAnimalFeedAuraGameTimeCheckPeriodMethod == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr* args = stackalloc IntPtr[1];
+            args[0] = (IntPtr)(&periodId);
+            IntPtr exc = IntPtr.Zero;
+            IntPtr resultObj = auraMonoRuntimeInvoke(this.wildAnimalFeedAuraGameTimeCheckPeriodMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+            if (exc != IntPtr.Zero || resultObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.TryUnboxMonoBoolean(resultObj, out inPeriod))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool EnsureWildAnimalFeedGameTimeReflection()
+        {
+            if (this.wildAnimalFeedGameTimeReflectionResolved)
+            {
+                return this.wildAnimalFeedGameTimeCheckPeriodMethod != null;
+            }
+
+            this.wildAnimalFeedGameTimeReflectionResolved = true;
+            Type gameTimeType = this.FindLoadedTypeByFullName("XDTDataAndProtocol.ProtocolService.GameTimeUtility")
+                ?? this.FindLoadedType("XDTDataAndProtocol.ProtocolService.GameTimeUtility", "GameTimeUtility");
+            if (gameTimeType == null)
+            {
+                return false;
+            }
+
+            this.wildAnimalFeedGameTimeCheckPeriodMethod = gameTimeType.GetMethod(
+                "CheckInSpecifiedTimePeriod",
+                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+                null,
+                new[] { typeof(int) },
+                null);
+            return this.wildAnimalFeedGameTimeCheckPeriodMethod != null;
         }
 
         private bool TryGetWildAnimalGroupMeta(int groupId, out List<int> favoriteFoods, out int favoriteAddition, out string groupName)
