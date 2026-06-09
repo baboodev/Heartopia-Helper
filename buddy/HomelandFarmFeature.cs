@@ -20031,6 +20031,7 @@ namespace HeartopiaMod
             }
 
             yield return null;
+            this.EnsureNoclipVehicleAuraMono(logIfPending: true);
             this.TryResolveHomelandFarmAuraProtocol(out _);
             this.TryResolveHomelandFarmAuraScanClasses(out _);
             yield return null;

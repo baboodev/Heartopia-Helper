@@ -72,6 +72,7 @@ namespace HeartopiaMod
         private KeyCode keyEquipAxe = KeyCode.None;
         private KeyCode keyEquipNet = KeyCode.None;
         private KeyCode keyEquipRod = KeyCode.None;
+        private KeyCode keyEquipSprinkler = KeyCode.None;
         private KeyCode keyAutoInsectFarm = KeyCode.None;
         private KeyCode keyAutoBirdFarm = KeyCode.None;
         private KeyCode keyMassCook = KeyCode.None;
@@ -337,6 +338,7 @@ namespace HeartopiaMod
             public int keyEquipAxe;
             public int keyEquipNet;
             public int keyEquipRod;
+            public int keyEquipSprinkler;
             public int keyAutoInsectFarm;
             public int keyAutoBirdFarm;
             public int keyMassCook;
@@ -911,6 +913,7 @@ namespace HeartopiaMod
             data.keyEquipAxe = (int)this.keyEquipAxe;
             data.keyEquipNet = (int)this.keyEquipNet;
             data.keyEquipRod = (int)this.keyEquipRod;
+            data.keyEquipSprinkler = (int)this.keyEquipSprinkler;
             data.keyAutoInsectFarm = (int)this.keyAutoInsectFarm;
             data.keyAutoBirdFarm = (int)this.keyAutoBirdFarm;
             data.keyMassCook = (int)this.keyMassCook;
@@ -1036,6 +1039,7 @@ namespace HeartopiaMod
             this.keyEquipAxe = (KeyCode)data.keyEquipAxe;
             this.keyEquipNet = (KeyCode)data.keyEquipNet;
             this.keyEquipRod = (KeyCode)data.keyEquipRod;
+            this.keyEquipSprinkler = (KeyCode)data.keyEquipSprinkler;
             this.keyAutoInsectFarm = (KeyCode)data.keyAutoInsectFarm;
             this.keyAutoBirdFarm = (KeyCode)data.keyAutoBirdFarm;
             this.keyMassCook = (KeyCode)data.keyMassCook;
@@ -2359,6 +2363,10 @@ namespace HeartopiaMod
                 {
                     this.StartToolEquipRequest(3);
                     this.AddMenuNotification("Equipping Rod", new Color(0.45f, 1f, 0.55f));
+                }
+                if (Input.GetKeyDown(this.keyEquipSprinkler))
+                {
+                    this.EquipHomelandFarmSprinklerHotkey();
                 }
             }
 
@@ -61558,6 +61566,7 @@ namespace HeartopiaMod
                             case "Equip Axe": this.keyEquipAxe = newKey; break;
                             case "Equip Net": this.keyEquipNet = newKey; break;
                             case "Equip Rod": this.keyEquipRod = newKey; break;
+                            case "Equip Sprinkler": this.keyEquipSprinkler = newKey; break;
                             case "Auto Insect Farm": this.keyAutoInsectFarm = newKey; break;
                             case "Auto Bird Farm": this.keyAutoBirdFarm = newKey; break;
                             case "Mass Cook": this.keyMassCook = newKey; break;
@@ -61615,7 +61624,7 @@ namespace HeartopiaMod
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Bypass Overlap", ref this.keyBypassOverlap);
             num += 14;
 
-            this.BeginKeybindSection(ref num, left, contentWidth, "SPEED & TOOLS", 7, subHeaderStyle, accent, panelFill, panelLine);
+            this.BeginKeybindSection(ref num, left, contentWidth, "SPEED & TOOLS", 8, subHeaderStyle, accent, panelFill, panelLine);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Game Speed 1x", ref this.keyGameSpeed1x);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Game Speed 2x", ref this.keyGameSpeed2x);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Game Speed 5x", ref this.keyGameSpeed5x);
@@ -61623,6 +61632,7 @@ namespace HeartopiaMod
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Equip Axe", ref this.keyEquipAxe);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Equip Net", ref this.keyEquipNet);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Equip Rod", ref this.keyEquipRod);
+            this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Equip Sprinkler", ref this.keyEquipSprinkler);
             num += 18;
 
             if (this.DrawDangerActionButton(new Rect(left, (float)num, contentWidth, 34f), "RESET TO DEFAULTS"))
@@ -61657,6 +61667,7 @@ namespace HeartopiaMod
                 this.keyEquipAxe = KeyCode.None;
                 this.keyEquipNet = KeyCode.None;
                 this.keyEquipRod = KeyCode.None;
+                this.keyEquipSprinkler = KeyCode.None;
                 this.keyAutoInsectFarm = KeyCode.None;
                 this.keyAutoBirdFarm = KeyCode.None;
                 this.keyMassCook = KeyCode.None;
