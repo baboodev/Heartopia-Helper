@@ -1902,6 +1902,7 @@ namespace HeartopiaMod
         // Token: 0x06000004 RID: 4 RVA: 0x00002390 File Offset: 0x00000590
         public void OnLateUpdate()
         {
+            this.ProcessNoclipVehicleOnLateUpdate();
             this.UpdateDirectMouseLookCamera(this.mouseLookCaptureActive);
 
             bool flag = this.monitorPosition;
@@ -2053,63 +2054,7 @@ namespace HeartopiaMod
                 }
             }
             
-            // Handle Noclip Flying
-            if (this.noclipEnabled)
-            {
-                GameObject player = GetPlayer();
-                if (player != null)
-                {
-                    Vector3 moveDirection = Vector3.zero;
-                    
-                    // Get camera for movement directions
-                    Camera mainCamera = Camera.main;
-                    if (mainCamera != null)
-                    {
-                        // Horizontal movement relative to camera (ignoring Y rotation for standard WASD)
-                        Vector3 cameraForward = mainCamera.transform.forward;
-                        Vector3 cameraRight = mainCamera.transform.right;
-                        
-                        // Flatten to horizontal plane
-                        cameraForward.y = 0;
-                        cameraRight.y = 0;
-                        cameraForward.Normalize();
-                        cameraRight.Normalize();
-                        
-                        if (Input.GetKey(KeyCode.W)) moveDirection += cameraForward;
-                        if (Input.GetKey(KeyCode.S)) moveDirection -= cameraForward;
-                        if (Input.GetKey(KeyCode.A)) moveDirection -= cameraRight;
-                        if (Input.GetKey(KeyCode.D)) moveDirection += cameraRight;
-                    }
-                    else
-                    {
-                        // Fallback to world directions if no camera
-                        if (Input.GetKey(KeyCode.W)) moveDirection += Vector3.forward;
-                        if (Input.GetKey(KeyCode.S)) moveDirection += Vector3.back;
-                        if (Input.GetKey(KeyCode.A)) moveDirection += Vector3.left;
-                        if (Input.GetKey(KeyCode.D)) moveDirection += Vector3.right;
-                    }
-                    
-                    // Vertical movement (Space/Ctrl)
-                    if (Input.GetKey(KeyCode.Space)) moveDirection += Vector3.up;
-                    if (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) moveDirection -= Vector3.up;
-                    
-                    // Calculate speed with boost
-                    float currentSpeed = this.noclipSpeed;
-                    if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
-                    {
-                        currentSpeed *= this.noclipBoostMultiplier;
-                    }
-                    
-                    // Normalize and apply speed
-                    if (moveDirection != Vector3.zero)
-                    {
-                        moveDirection.Normalize();
-                        Vector3 newPosition = player.transform.position + moveDirection * currentSpeed * Time.deltaTime;
-                        HeartopiaComplete.OverridePlayerPosition = true;
-                        HeartopiaComplete.OverridePosition = newPosition;
-                    }
-                }
-            }
+            this.ProcessNoclipMovementOnUpdate();
             
             // Check for keybinds (Only if not currently rebinding and not just assigned)
             if (string.IsNullOrEmpty(this.keyBindingActive) && Time.unscaledTime - this.keyBindAssignedAt >= 0.2f)
@@ -2245,6 +2190,7 @@ namespace HeartopiaMod
                     this.noclipEnabled = false;
                     this.UpdateMouseLookState();
                     HeartopiaComplete.OverridePlayerPosition = false;
+                    this.ClearNoclipVehicleOverride();
                     this.noclipBoostMultiplier = 2f;
                     this.SetGameSpeed(1f);
                     this.fpsBypassEnabled = false;
@@ -2369,18 +2315,13 @@ namespace HeartopiaMod
                     this.noclipEnabled = !this.noclipEnabled;
                     if (this.noclipEnabled)
                     {
-                        // Set override position to current position to prevent unwanted movement
-                        GameObject player = GetPlayer();
-                        if (player != null)
-                        {
-                            HeartopiaComplete.OverridePosition = player.transform.position;
-                        }
-                        HeartopiaComplete.OverridePlayerPosition = true;
+                        this.InitializeNoclipOverridePosition();
                         this.AddMenuNotification("Noclip: ENABLED", new Color(0.45f, 1f, 0.55f));
                     }
                     else
                     {
                         HeartopiaComplete.OverridePlayerPosition = false;
+                        this.ClearNoclipVehicleOverride();
                         this.AddMenuNotification("Noclip: DISABLED", new Color(1f, 0.55f, 0.55f));
                     }
                 }
@@ -11177,22 +11118,15 @@ namespace HeartopiaMod
                             return true;
                         }
                     }
-                    else if (this.EnsureAuraMonoArrayGetValueAccessor(collectionObj))
-                    {
-                        for (int i = 0; i < arrayCount; i++)
-                        {
-                            IntPtr itemObj = this.GetAuraMonoArrayValue(collectionObj, i);
-                            if (itemObj != IntPtr.Zero)
-                            {
-                                output.Add(itemObj);
-                            }
-                        }
 
-                        if (output.Count > 0)
-                        {
-                            return true;
-                        }
-                    }
+                    // NOTE: the old per-element Array.GetValue fallback was removed. It was the
+                    // ves_icall_System_Array_GetValue / icall.c abort+AV source: it ran for VALUE-type
+                    // arrays (and any object misdetected as an array), boxing each element. For object
+                    // enumeration those boxed structs are useless (not entity pointers), and invoking
+                    // Array.GetValue per element on a collection the game is mutating (e.g. entities
+                    // loading/unloading while roaming) crashes natively (uncatchable). Reference-type
+                    // arrays use the safe contiguous read above; everything else falls through to the
+                    // get_Item / GetEnumerator / nested-member paths below.
                 }
                 catch
                 {
@@ -24345,6 +24279,7 @@ namespace HeartopiaMod
                     this.cameraFOV = 60f;
                     this.noclipEnabled = false;
                     HeartopiaComplete.OverridePlayerPosition = false;
+                    this.ClearNoclipVehicleOverride();
                     this.noclipBoostMultiplier = 2f;
                     this.RestoreCameraFOV();
                 }
@@ -62497,17 +62432,12 @@ namespace HeartopiaMod
                 this.noclipEnabled = this.DrawSwitchToggle(new Rect(20f, (float)num, 260f, 25f), this.noclipEnabled, "Noclip");
                 if (this.noclipEnabled)
                 {
-                    // Set override position to current position when enabled
-                    GameObject player = GetPlayer();
-                    if (player != null)
-                    {
-                        HeartopiaComplete.OverridePosition = player.transform.position;
-                    }
-                    HeartopiaComplete.OverridePlayerPosition = true;
+                    this.InitializeNoclipOverridePosition();
                 }
                 else
                 {
                     HeartopiaComplete.OverridePlayerPosition = false;
+                    this.ClearNoclipVehicleOverride();
                 }
                 num += 30;
 
