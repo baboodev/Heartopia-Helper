@@ -81,6 +81,7 @@ namespace HeartopiaMod
         private KeyCode keyAutoPuzzle = KeyCode.None;
         private KeyCode keyAutoCatPlay = KeyCode.None;
         private KeyCode keyAutoDogTrain = KeyCode.None;
+        private KeyCode keyAutoPetWash = KeyCode.None;
         private KeyCode keyFeedAllCats = KeyCode.None;
         private KeyCode keyFeedAllDogs = KeyCode.None;
         private KeyCode keySpawnBubble = KeyCode.None;
@@ -349,6 +350,7 @@ namespace HeartopiaMod
             public int keyAutoPuzzle;
             public int keyAutoCatPlay;
             public int keyAutoDogTrain;
+            public int keyAutoPetWash;
             public int keyFeedAllCats;
             public int keyFeedAllDogs;
             public int keySpawnBubble;
@@ -926,6 +928,7 @@ namespace HeartopiaMod
             data.keyAutoPuzzle = (int)this.keyAutoPuzzle;
             data.keyAutoCatPlay = (int)this.keyAutoCatPlay;
             data.keyAutoDogTrain = (int)this.keyAutoDogTrain;
+            data.keyAutoPetWash = (int)this.keyAutoPetWash;
             data.keyFeedAllCats = (int)this.keyFeedAllCats;
             data.keyFeedAllDogs = (int)this.keyFeedAllDogs;
             data.keySpawnBubble = (int)this.keySpawnBubble;
@@ -1054,6 +1057,7 @@ namespace HeartopiaMod
             this.keyAutoPuzzle = (KeyCode)data.keyAutoPuzzle;
             this.keyAutoCatPlay = (KeyCode)data.keyAutoCatPlay;
             this.keyAutoDogTrain = (KeyCode)data.keyAutoDogTrain;
+            this.keyAutoPetWash = (KeyCode)data.keyAutoPetWash;
             this.keyFeedAllCats = (KeyCode)data.keyFeedAllCats;
             this.keyFeedAllDogs = (KeyCode)data.keyFeedAllDogs;
             this.keySpawnBubble = (KeyCode)data.keySpawnBubble;
@@ -1382,6 +1386,7 @@ namespace HeartopiaMod
                         else if (line.Contains("keyAutoPuzzle")) this.keyAutoPuzzle = (KeyCode)GetJsonInt(line, "\"keyAutoPuzzle\":");
                         else if (line.Contains("keyAutoCatPlay")) this.keyAutoCatPlay = (KeyCode)GetJsonInt(line, "\"keyAutoCatPlay\":");
                         else if (line.Contains("keyAutoDogTrain")) this.keyAutoDogTrain = (KeyCode)GetJsonInt(line, "\"keyAutoDogTrain\":");
+                        else if (line.Contains("keyAutoPetWash")) this.keyAutoPetWash = (KeyCode)GetJsonInt(line, "\"keyAutoPetWash\":");
                         else if (line.Contains("keyFeedAllCats")) this.keyFeedAllCats = (KeyCode)GetJsonInt(line, "\"keyFeedAllCats\":");
                         else if (line.Contains("keyFeedAllDogs")) this.keyFeedAllDogs = (KeyCode)GetJsonInt(line, "\"keyFeedAllDogs\":");
                         else if (line.Contains("keySpawnBubble")) this.keySpawnBubble = (KeyCode)GetJsonInt(line, "\"keySpawnBubble\":");
@@ -1970,7 +1975,7 @@ namespace HeartopiaMod
                 this.EnsureNetCookWorldCookerRegistrationPatch();
                 this.UpdateNetCookRuntimeReadiness();
             }
-            if (this.petPlayAutoCatEnabled || this.petPlayAutoDogEnabled)
+            if (this.petPlayAutoCatEnabled || this.petPlayAutoDogEnabled || this.petPlayAutoWashEnabled)
             {
                 this.EnsurePetPlayRuntimePatches();
             }
@@ -2149,6 +2154,14 @@ namespace HeartopiaMod
                         "Auto Dog Train " + (this.petPlayAutoDogEnabled ? "Enabled" : "Disabled"),
                         this.petPlayAutoDogEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
+                if (this.TryGetModHotkeyDown(this.keyAutoPetWash))
+                {
+                    this.petPlayAutoWashEnabled = !this.petPlayAutoWashEnabled;
+                    this.PetPlayLog("Pet wash " + (this.petPlayAutoWashEnabled ? "enabled" : "disabled"));
+                    this.AddMenuNotification(
+                        "Auto Pet Wash " + (this.petPlayAutoWashEnabled ? "Enabled" : "Disabled"),
+                        this.petPlayAutoWashEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
+                }
                 if (this.TryGetModHotkeyDown(this.keyFeedAllCats))
                 {
                     this.StartPetFeedAll(false);
@@ -2220,6 +2233,7 @@ namespace HeartopiaMod
                     this.puzzleAutoEnabled = false;
                     this.petPlayAutoCatEnabled = false;
                     this.petPlayAutoDogEnabled = false;
+                    this.petPlayAutoWashEnabled = false;
                     this.StopWildAnimalFeedCoroutine();
                     SimulateFKeyHeld = false;
                     SimulateFKeyDown = false;
@@ -61415,6 +61429,7 @@ namespace HeartopiaMod
                             case "Auto Puzzle": this.keyAutoPuzzle = newKey; break;
                             case "Auto Cat Play": this.keyAutoCatPlay = newKey; break;
                             case "Auto Dog Train": this.keyAutoDogTrain = newKey; break;
+                            case "Auto Pet Wash": this.keyAutoPetWash = newKey; break;
                             case "Feed All Cats": this.keyFeedAllCats = newKey; break;
                             case "Feed All Dogs": this.keyFeedAllDogs = newKey; break;
                             case "Spawn Bubble": this.keySpawnBubble = newKey; break;
@@ -61438,7 +61453,7 @@ namespace HeartopiaMod
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Inspect Move", ref this.keyInspectMove);
             num += 14;
 
-            this.BeginKeybindSection(ref num, left, contentWidth, "AUTOMATION", 17, subHeaderStyle, accent, panelFill, panelLine);
+            this.BeginKeybindSection(ref num, left, contentWidth, "AUTOMATION", 18, subHeaderStyle, accent, panelFill, panelLine);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Foraging", ref this.keyAutoForaging);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Aura Farm", ref this.keyAuraFarm);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Water + Weed Radius", ref this.keyWaterWeedRadius);
@@ -61449,6 +61464,7 @@ namespace HeartopiaMod
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Puzzle", ref this.keyAutoPuzzle);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Cat Play", ref this.keyAutoCatPlay);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Dog Train", ref this.keyAutoDogTrain);
+            this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Pet Wash", ref this.keyAutoPetWash);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Feed All Cats", ref this.keyFeedAllCats);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Feed All Dogs", ref this.keyFeedAllDogs);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Snow Sculpture", ref this.autoSnowHotkey);
@@ -61520,6 +61536,7 @@ namespace HeartopiaMod
                 this.keyAutoPuzzle = KeyCode.None;
                 this.keyAutoCatPlay = KeyCode.None;
                 this.keyAutoDogTrain = KeyCode.None;
+                this.keyAutoPetWash = KeyCode.None;
                 this.keyFeedAllCats = KeyCode.None;
                 this.keyFeedAllDogs = KeyCode.None;
                 this.keySpawnBubble = KeyCode.None;

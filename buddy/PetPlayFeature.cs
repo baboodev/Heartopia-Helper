@@ -14,6 +14,7 @@ namespace HeartopiaMod
 
         private bool petPlayAutoCatEnabled = false;
         private bool petPlayAutoDogEnabled = false;
+        private bool petPlayAutoWashEnabled = false;
         private bool petPlayRuntimeReadyLogged = false;
         private float petPlayNextResolverProbeAt = 0f;
         private float petPlayNextAutoTickAt = 0f;
@@ -36,6 +37,14 @@ namespace HeartopiaMod
         private float petPlayNextPanelInvokeFailureLogAt = 0f;
         private float petPlayNextActiveQuestionFailureLogAt = 0f;
         private float petPlayNextCatQuestionScanAt = 0f;
+        private float petPlayNextWashTickAt = 0f;
+        private float petPlayLastWashClickAt = -999f;
+        private uint petPlayLastWashPetNetId = 0U;
+        private int petPlayWashClickCount = 0;
+        private bool petPlayWashClickLocked = false;
+        private bool petPlayWashSawButtonHidden = false;
+        private MethodInfo petPlayPetBathingRoundStartMethod = null;
+        private IntPtr petPlayAuraPetBathingRoundStartMethod = IntPtr.Zero;
 
         private float DrawPetPlayTab(int startY)
         {
@@ -53,7 +62,7 @@ namespace HeartopiaMod
             GUI.Label(new Rect(left, num, width, 30f), "PET CARE", headerStyle);
             num += 42;
 
-            Rect trainRect = new Rect(left, num, width, 118f);
+            Rect trainRect = new Rect(left, num, width, 160f);
             GUI.Box(trainRect, string.Empty, this.themePanelStyle ?? GUI.skin.box);
             this.DrawCardOutline(trainRect, 1f);
             GUI.Label(new Rect(trainRect.x + 16f, trainRect.y + 12f, 180f, 20f), "TRAINING", labelStyle);
@@ -74,7 +83,15 @@ namespace HeartopiaMod
                 this.PetPlayLog("Dog train " + (nextDog ? "enabled" : "disabled"));
             }
 
-            num += 132;
+            rowY += 42f;
+            bool nextWash = this.DrawSwitchToggle(new Rect(trainRect.x + 16f, rowY, 250f, 28f), this.petPlayAutoWashEnabled, "Auto Pet Wash");
+            if (nextWash != this.petPlayAutoWashEnabled)
+            {
+                this.petPlayAutoWashEnabled = nextWash;
+                this.PetPlayLog("Pet wash " + (nextWash ? "enabled" : "disabled"));
+            }
+
+            num += 174;
             int petFoodOptionCount = this.GetPetFeedFoodDropdownOptionCount();
             this.ClampPetFeedFoodDropdownScrollIndex();
             int visibleFoodRows = this.petFeedFoodDropdownOpen ? Math.Min(PetFeedFoodVisibleRows, petFoodOptionCount) : 0;
@@ -312,7 +329,8 @@ namespace HeartopiaMod
         {
             bool catQteVisible = this.petPlayAutoCatEnabled && Time.unscaledTime < this.petPlayLastCatAnswerAt + 1.2f;
             bool dogQteVisible = this.petPlayAutoDogEnabled && Time.unscaledTime < this.petPlayLastDogAnswerAt + 1.2f;
-            bool active = catQteVisible || dogQteVisible;
+            bool washActive = this.petPlayAutoWashEnabled && Time.unscaledTime < this.petPlayLastWashClickAt + 2f;
+            bool active = catQteVisible || dogQteVisible || washActive;
             if (!active && (this.petPlayRuntimeReadyLogged || Time.unscaledTime < 18f))
             {
                 return;
@@ -358,7 +376,7 @@ namespace HeartopiaMod
 
         private void UpdatePetPlayAutomation()
         {
-            if (!this.petPlayAutoCatEnabled && !this.petPlayAutoDogEnabled)
+            if (!this.petPlayAutoCatEnabled && !this.petPlayAutoDogEnabled && !this.petPlayAutoWashEnabled)
             {
                 return;
             }
@@ -374,7 +392,8 @@ namespace HeartopiaMod
             {
                 this.petPlayNextHeartbeatAt = Time.unscaledTime + 3f;
                 this.PetPlayLog("Auto tick. cat=" + this.petPlayAutoCatEnabled
-                    + " dogTrain=" + this.petPlayAutoDogEnabled);
+                    + " dogTrain=" + this.petPlayAutoDogEnabled
+                    + " wash=" + this.petPlayAutoWashEnabled);
             }
 
             if (this.petPlayAutoCatEnabled)
@@ -385,6 +404,11 @@ namespace HeartopiaMod
             if (this.petPlayAutoDogEnabled)
             {
                 this.TryAutoAnswerDogPlayFromUi();
+            }
+
+            if (this.petPlayAutoWashEnabled)
+            {
+                this.TryAutoPetWash();
             }
         }
 
@@ -2117,6 +2141,248 @@ namespace HeartopiaMod
             }
         }
 
+        private void TryAutoPetWash()
+        {
+            float scanDelay = this.petPlayWashClickLocked ? 0.1f : 0.28f;
+            if (Time.unscaledTime < this.petPlayNextWashTickAt)
+            {
+                return;
+            }
+
+            this.petPlayNextWashTickAt = Time.unscaledTime + scanDelay;
+
+            if (!this.TryGetActivePetBathState(out uint petNetId, out bool skillButtonActive, out bool roundActive, out string status) || petNetId == 0U)
+            {
+                this.petPlayWashClickLocked = false;
+                this.petPlayWashSawButtonHidden = false;
+                this.petPlayLastWashPetNetId = 0U;
+                return;
+            }
+
+            if (this.petPlayWashClickLocked)
+            {
+                if (Time.unscaledTime - this.petPlayLastWashClickAt > 20f)
+                {
+                    this.petPlayWashClickLocked = false;
+                    this.petPlayWashSawButtonHidden = false;
+                    this.PetPlayLog("Pet bath lock timeout reset netId=" + petNetId + ".");
+                }
+                else
+                {
+                    if (!skillButtonActive)
+                    {
+                        this.petPlayWashSawButtonHidden = true;
+                    }
+
+                    if (this.petPlayWashSawButtonHidden && skillButtonActive && !roundActive)
+                    {
+                        this.petPlayWashClickLocked = false;
+                        this.petPlayWashSawButtonHidden = false;
+                    }
+
+                    return;
+                }
+            }
+
+            if (!skillButtonActive || roundActive)
+            {
+                return;
+            }
+
+            if (!this.TryInvokePetBathingRoundStart(petNetId))
+            {
+                return;
+            }
+
+            this.petPlayLastWashPetNetId = petNetId;
+            this.petPlayLastWashClickAt = Time.unscaledTime;
+            this.petPlayWashClickCount++;
+            this.petPlayWashClickLocked = true;
+            this.petPlayWashSawButtonHidden = false;
+            this.petPlayNextWashTickAt = Time.unscaledTime + 0.35f;
+            this.PetPlayLog("Pet bath click netId=" + petNetId + " total=" + this.petPlayWashClickCount + " " + status + ".");
+        }
+
+        private bool TryGetActivePetBathState(out uint petNetId, out bool skillButtonActive, out bool roundActive, out string status)
+        {
+            petNetId = 0U;
+            skillButtonActive = false;
+            roundActive = false;
+            status = "PetBathPanel not found.";
+
+            try
+            {
+                if (!this.TryGetAuraMonoUiView("XDTGame.UI.Panel.PetBathPanel", "PetBathPanel", out IntPtr panelObj, out status)
+                    || panelObj == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                if (!this.TryGetMonoUInt32Member(panelObj, "_petNetId", out petNetId) || petNetId == 0U)
+                {
+                    status = "PetBathPanel._petNetId unavailable.";
+                    return false;
+                }
+
+                this.TryGetMonoBoolMember(panelObj, "_roundStart", out roundActive);
+                if (!this.TryGetPetBathPanelSkillButtonActive(panelObj, out skillButtonActive, out string buttonStatus))
+                {
+                    status = buttonStatus;
+                    return false;
+                }
+
+                status = "PetBathPanel netId=" + petNetId
+                    + " roundActive=" + roundActive
+                    + " skillButton=" + skillButtonActive
+                    + " " + buttonStatus;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                status = "PetBathPanel exception: " + ex.Message;
+                return false;
+            }
+        }
+
+        private bool TryGetPetBathPanelSkillButtonActive(IntPtr panelObj, out bool active, out string status)
+        {
+            active = false;
+            status = "skill_main_hold_widget unavailable.";
+
+            if (panelObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.TryReadAuraMonoObjectField(panelObj, out IntPtr uiObj, "ui")
+                || uiObj == IntPtr.Zero)
+            {
+                status = "PetBathPanel.ui unavailable.";
+                return false;
+            }
+
+            if (!this.TryReadAuraMonoObjectField(uiObj, out IntPtr skillWidgetObj, "skill_main_hold_widget")
+                || skillWidgetObj == IntPtr.Zero)
+            {
+                status = "PetBathPanel.skill_main_hold_widget unavailable.";
+                return false;
+            }
+
+            if (!this.TryInvokeAuraMonoZeroArg(skillWidgetObj, out IntPtr gameObjectObj, "get_gameObject")
+                || gameObjectObj == IntPtr.Zero)
+            {
+                status = "skill_main_hold_widget.gameObject unavailable.";
+                return false;
+            }
+
+            if (!this.ModTryAuraMonoReadBoolProperty(gameObjectObj, "get_activeInHierarchy", out active))
+            {
+                status = "skill_main_hold_widget.activeInHierarchy unreadable.";
+                return false;
+            }
+
+            status = "skill_main_hold_widget.active=" + active;
+            return true;
+        }
+
+        private bool TryInvokePetBathingRoundStart(uint petNetId)
+        {
+            if (this.TryInvokeAuraMonoPetBathingRoundStart(petNetId))
+            {
+                return true;
+            }
+
+            if (!this.EnsurePetBathingRoundStartMethod())
+            {
+                this.PetPlayLog("PetProtocolManager.PetBathingRoundStart unavailable.");
+                return false;
+            }
+
+            this.petPlayPetBathingRoundStartMethod.Invoke(null, new object[] { petNetId });
+            return true;
+        }
+
+        private bool EnsurePetBathingRoundStartMethod()
+        {
+            if (this.petPlayPetBathingRoundStartMethod != null)
+            {
+                return true;
+            }
+
+            Type protocolType = this.FindLoadedType(
+                "XDTDataAndProtocol.ProtocolService.Pet.PetProtocolManager",
+                "PetProtocolManager");
+            if (protocolType == null)
+            {
+                return false;
+            }
+
+            this.petPlayPetBathingRoundStartMethod = protocolType.GetMethod(
+                "PetBathingRoundStart",
+                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+                null,
+                new Type[] { typeof(uint) },
+                null);
+            return this.petPlayPetBathingRoundStartMethod != null;
+        }
+
+        private bool EnsureAuraMonoPetBathingRoundStartMethod(out string status)
+        {
+            status = "AuraMono pet bath protocol unavailable.";
+            if (this.petPlayAuraPetBathingRoundStartMethod != IntPtr.Zero)
+            {
+                status = "AuraMono pet bath protocol ready.";
+                return true;
+            }
+
+            try
+            {
+                if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+                {
+                    status = "AuraMono API not ready.";
+                    return false;
+                }
+
+                IntPtr protocolClass = this.FindAuraMonoClassByFullName("XDTDataAndProtocol.ProtocolService.Pet.PetProtocolManager");
+                if (protocolClass == IntPtr.Zero)
+                {
+                    status = "PetProtocolManager class unavailable.";
+                    return false;
+                }
+
+                this.petPlayAuraPetBathingRoundStartMethod = this.FindAuraMonoMethodOnHierarchy(protocolClass, "PetBathingRoundStart", 1);
+                status = "AuraMono pet bath class=0x" + protocolClass.ToInt64().ToString("X")
+                    + " roundStart=0x" + this.petPlayAuraPetBathingRoundStartMethod.ToInt64().ToString("X");
+                return this.petPlayAuraPetBathingRoundStartMethod != IntPtr.Zero;
+            }
+            catch (Exception ex)
+            {
+                status = "AuraMono pet bath exception: " + ex.Message;
+                return false;
+            }
+        }
+
+        private unsafe bool TryInvokeAuraMonoPetBathingRoundStart(uint petNetId)
+        {
+            if (!this.EnsureAuraMonoPetBathingRoundStartMethod(out string status) || this.petPlayAuraPetBathingRoundStartMethod == IntPtr.Zero)
+            {
+                this.PetPlayLog("Aura pet bath unavailable: " + status);
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr* args = stackalloc IntPtr[1];
+            args[0] = (IntPtr)(&petNetId);
+            auraMonoRuntimeInvoke(this.petPlayAuraPetBathingRoundStartMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+            bool ok = exc == IntPtr.Zero;
+            if (!ok)
+            {
+                this.PetPlayLog("Aura pet bath netId=" + petNetId + " exc=0x" + exc.ToInt64().ToString("X"));
+            }
+
+            return ok;
+        }
+
         private bool TryFindCatQteFromVisibleUi(out int qteValue, out string spriteName)
         {
             qteValue = -1;
@@ -2484,14 +2750,16 @@ namespace HeartopiaMod
                 Type trackingCat = this.FindLoadedType("XDTGame.UI.Panel.TrackingCatPlay", "TrackingCatPlay");
                 Type catPanel = this.FindLoadedType("XDTGame.UI.Panel.CatPlayStatusPanel", "CatPlayStatusPanel");
                 Type dogPanel = this.FindLoadedType("XDTGame.UI.Panel.DogPlayStatusPanel", "DogPlayStatusPanel");
+                Type bathPanel = this.FindLoadedType("XDTGame.UI.Panel.PetBathPanel", "PetBathPanel");
                 Type meowProtocol = this.FindLoadedType("XDTDataAndProtocol.ProtocolService.Meow.MeowProtocolManager", "MeowProtocolManager");
                 Type petProtocol = this.FindLoadedType("XDTDataAndProtocol.ProtocolService.Pet.PetProtocolManager", "PetProtocolManager");
                 IntPtr auraMeow = this.FindAuraMonoClassByFullName("XDTDataAndProtocol.ProtocolService.Meow.MeowProtocolManager");
                 IntPtr auraPet = this.FindAuraMonoClassByFullName("XDTDataAndProtocol.ProtocolService.Pet.PetProtocolManager");
-                this.PetPlayLog("Resolver probe: managed trackingCat/catPanel/dogPanel/meow/pet="
-                    + (trackingCat != null) + "/" + (catPanel != null) + "/" + (dogPanel != null) + "/" + (meowProtocol != null) + "/" + (petProtocol != null)
+                this.EnsureAuraMonoPetBathingRoundStartMethod(out string washStatus);
+                this.PetPlayLog("Resolver probe: managed trackingCat/catPanel/dogPanel/bathPanel/meow/pet="
+                    + (trackingCat != null) + "/" + (catPanel != null) + "/" + (dogPanel != null) + "/" + (bathPanel != null) + "/" + (meowProtocol != null) + "/" + (petProtocol != null)
                     + " aura meow/pet=0x" + auraMeow.ToInt64().ToString("X") + "/0x" + auraPet.ToInt64().ToString("X")
-                    + " cat=" + catStatus + " dog=" + dogStatus);
+                    + " cat=" + catStatus + " dog=" + dogStatus + " wash=" + washStatus);
             }
             catch (Exception ex)
             {
