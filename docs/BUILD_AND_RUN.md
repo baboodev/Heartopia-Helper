@@ -243,6 +243,7 @@ When reporting bugs, include game patch, loader name + version, and git commit.
 
 ## Related Documentation
 
+- [AGENTS.md](../AGENTS.md) — agent/developer onboarding (build, types, dumps)
 - [FEATURES.md](./FEATURES.md) — UI and features
 - [TECHNICAL.md](./TECHNICAL.md) — architecture and config schema
 - [TYPE_RESOLUTION.md](./TYPE_RESOLUTION.md) — runtime type lookup (`FindLoadedType`, SendCommand, Mono)

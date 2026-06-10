@@ -6,6 +6,7 @@ Specialized docs (still valid, linked from here):
 
 | Document | Focus |
 |----------|--------|
+| [../AGENTS.md](../AGENTS.md) | **Agent onboarding** — where to start, build, type resolution, dump workflow |
 | [DECOMPILED_SOURCE_MAP.md](./DECOMPILED_SOURCE_MAP.md) | **`ilspy-dumps/` + `gameassembly-dumps/` navigation + every game type the mod touches** |
 | [TECHNICAL.md](./TECHNICAL.md) | Patches, config schema, frame loops |
 | [TYPE_RESOLUTION.md](./TYPE_RESOLUTION.md) | `FindLoadedType`, SendCommand, pitfalls |

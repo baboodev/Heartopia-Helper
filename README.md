@@ -26,6 +26,7 @@ Configure your game path: copy `buddy/Directory.Build.props.example` → `buddy/
 
 | Document | Contents |
 |----------|----------|
+| [AGENTS.md](AGENTS.md) | **AI / developer onboarding** — docs map, type resolution, decompilations, build |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Game + mod architecture, source maps, interop/reflection/AuraMono matrix |
 | [docs/DECOMPILED_SOURCE_MAP.md](docs/DECOMPILED_SOURCE_MAP.md) | Offline dumps: `ilspy-dumps/` (Mono) + `gameassembly-dumps/` (IL2CPP) |
 | [docs/BUILD_AND_RUN.md](docs/BUILD_AND_RUN.md) | Prerequisites, build, deploy, logs |
