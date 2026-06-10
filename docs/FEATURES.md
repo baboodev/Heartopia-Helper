@@ -437,7 +437,25 @@ Item names in the seed/fertilizer selectors resolve through the same game-table 
 
 **Stop:** manual (Stop button / Stop auto farm), or automatic once the selected seed runs out **and** the last harvest is collected.
 
-Notes & limits: crop discovery uses an AuraMono proximity scan; in very dense homelands the inspect cap and the global entity/level-object enumeration caps (raised to 8192) bound it. The targeted `Entities.GetComponents<CropBoxComponent>` source is unavailable on this build, so discovery falls back to the proximity scan. Enable `MasterLogHomelandFarm` for per-tick logs (`Auto crop timing`, `Auto poll`, `next ripe in …`).
+Enable `MasterLogHomelandFarm` for per-tick logs (`Auto crop timing`, `Auto poll`, `next ripe in …`).
+
+### Entity discovery — the scan funnel
+
+Every farm operation (manual button, hotkey, auto-farm, capture) resolves its target net-ids through one funnel, `TryHomelandFarmCollectFarmEntityNetIds` in `HomelandFarmFeature.cs`. Sources are tried in order; cheap/cached ones first, the expensive native walk last:
+
+| # | Source | Notes |
+|---|--------|-------|
+| 1 | RegisteredCache | Persisted targets from earlier discovery. Skipped for capture (`useAutoFarmCollectShortcuts:false`) and skips zero-position entries in spatial scans. |
+| 2 | InteractSeeds | Current interact-target seeds. |
+| 3 | **ComponentRadius (direct ECS)** | `Entities.GetComponents<CropBoxComponent/CropComponent/PlantComponent>` via the AuraMono generic-invoke path. **This is now the primary source** and returns the authoritative crop-box + crop + plant set. |
+| 4 | SphereQuery / Cylinder | Entity spatial queries — return 0 on this build. |
+| 5 | LevelObjectCache | In-memory level-object position cache (crop boxes are level objects). |
+| 6 | AuraProximity | Walks the nearby-entity list and classifies each — the native, crash-prone path. |
+| 7 | AuraEntities | Full recursive loaded-entity graph walk — the most crash-prone path. |
+
+**Key change (June 2026):** the direct-ECS source (#3) used to be considered unsafe and was gated off, so discovery fell back to the crash-prone proximity / graph walk (#6/#7), which randomly hit uncatchable native access-violations on **visiting other players' fields** (shared local coordinates, streaming entities). The AuraMono `GetComponents<T>` path was brought up and now works reliably (see [TYPE_RESOLUTION.md → AuraMono generic `GetComponents<T>`](./TYPE_RESOLUTION.md#auramono-generic-getcomponentst-direct-ecs-query)). When #3 succeeds, a `componentRadiusSucceeded` flag now **skips both #6 and #7 on every path**, removing the native-AV exposure. The proximity / graph walk only runs as a fallback if the direct query returns nothing (e.g. a field with no crop boxes, crops, or plants).
+
+Caps still apply as a safety bound on the fallback walk: the inspect cap and global entity/level-object enumeration caps are raised to 8192 for dense homelands.
 
 ---
 

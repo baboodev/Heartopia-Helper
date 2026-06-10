@@ -268,6 +268,12 @@ namespace HeartopiaMod
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoClassInflateGenericMethodDelegate(IntPtr method, ref MonoGenericContext context);
 
+        // mono_metadata_get_generic_inst(int type_argc, MonoType **type_argv) -> MonoGenericInst*
+        // Canonicalizes/interns a generic instantiation from an array of MonoType*. Required to
+        // build a valid MonoGenericContext.method_inst (a raw MonoType*[] is NOT a MonoGenericInst).
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate IntPtr MonoMetadataGetGenericInstDelegate(int typeArgc, IntPtr typeArgv);
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoTypeGetObjectDelegate(IntPtr domain, IntPtr type);
 
@@ -359,6 +365,7 @@ namespace HeartopiaMod
         private static MonoClassGetTypeDelegate auraMonoClassGetType;
         private static MonoClassBindGenericParametersDelegate auraMonoClassBindGenericParameters;
         private static MonoClassInflateGenericMethodDelegate auraMonoClassInflateGenericMethod;
+        private static MonoMetadataGetGenericInstDelegate auraMonoMetadataGetGenericInst;
         private static MonoTypeGetObjectDelegate auraMonoTypeGetObject;
         private static MonoClassGetParentDelegate auraMonoClassGetParent;
         private static MonoClassGetRankDelegate auraMonoClassGetRank;
@@ -4242,6 +4249,7 @@ namespace HeartopiaMod
             auraMonoClassGetType = this.GetAuraMonoExport<MonoClassGetTypeDelegate>(monoModule, "mono_class_get_type");
             auraMonoClassBindGenericParameters = this.GetAuraMonoExport<MonoClassBindGenericParametersDelegate>(monoModule, "mono_class_bind_generic_parameters");
             auraMonoClassInflateGenericMethod = this.GetAuraMonoExport<MonoClassInflateGenericMethodDelegate>(monoModule, "mono_class_inflate_generic_method");
+            auraMonoMetadataGetGenericInst = this.GetAuraMonoExport<MonoMetadataGetGenericInstDelegate>(monoModule, "mono_metadata_get_generic_inst");
             auraMonoTypeGetObject = this.GetAuraMonoExport<MonoTypeGetObjectDelegate>(monoModule, "mono_type_get_object");
             auraMonoClassGetParent = this.GetAuraMonoExport<MonoClassGetParentDelegate>(monoModule, "mono_class_get_parent");
             auraMonoClassGetRank = this.GetAuraMonoExport<MonoClassGetRankDelegate>(monoModule, "mono_class_get_rank");

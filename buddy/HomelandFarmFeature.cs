@@ -39,14 +39,12 @@ namespace HeartopiaMod
         private const int HomelandFarmHolderSystemHoldTool = 3; // EHolderSystem.HoldTool
         private const float HomelandFarmCommandDelaySeconds = 0.35f;
         private const float HomelandFarmWaterCommandDelaySeconds = 0.1f;
-        private const float HomelandFarmFertilizeCastWaitSeconds = 1.2f;
-        private const float HomelandFarmFertilizeAddManureDelaySeconds = 0.85f;
         private const int HomelandFarmFertilizationTypeCrop = 2;
         private const int HomelandFarmActionErrorSuccess = 0;
         private const int HomelandFarmActionErrorBusy = 1;
         private const float HomelandFarmActionCooldownSeconds = 1.5f;
         private const float HomelandFarmHarvestDelaySeconds = 0f;
-        private const float HomelandFarmCollectSeedDelaySeconds = 0.6f;
+        private const float HomelandFarmCollectSeedDelaySeconds = 0f;
         private const float HomelandFarmWeedDelaySeconds = 0f;
         // Auto farming (time-scheduled model):
         // - After each sow, rebuild the crop-netId cache once (one radius scan). Between sows we
@@ -61,6 +59,11 @@ namespace HeartopiaMod
         // Minimum gap between sow passes. The server takes a moment to register sown crops; sowing
         // again before that re-sows the same boxes → OnBuildSeedResult MaxPlantCountLimit.
         private const float HomelandFarmAutoSowCooldownSeconds = 15f;
+        // After a partial harvest (some crops ripe, others still growing) the freed boxes should be
+        // re-sown promptly instead of sleeping until the rest ripen. Only do this when the soonest
+        // remaining maturity is beyond this many seconds — otherwise the rest ripen so soon it's
+        // cheaper to harvest+re-sow them together on the next wake.
+        private const long HomelandFarmAutoPostHarvestResowThresholdSeconds = 5L;
         private const int HomelandFarmMaxTotalWaterLevel = 5;
         private const int HomelandFarmDefaultPlantWaterMode = 0;
         private const int HomelandFarmMaxSpatialLevelObjectEntries = 1024;
@@ -236,15 +239,6 @@ namespace HeartopiaMod
         private IntPtr homelandFarmAuraEntitiesFieldSystemGetterMethod = IntPtr.Zero;
         private IntPtr homelandFarmAuraFieldComponentSystemGetFieldMethod = IntPtr.Zero;
         private bool homelandFarmAuraSowCraftContextResolved = false;
-        private IntPtr homelandFarmAuraPlayerParameterFertilizationClass = IntPtr.Zero;
-        private IntPtr homelandFarmAuraPlayerParameterFertilizationStaticIdField = IntPtr.Zero;
-        private IntPtr homelandFarmAuraPlayerParameterFertilizationModeField = IntPtr.Zero;
-        private IntPtr homelandFarmAuraPlayerParameterFertilizationTypeField = IntPtr.Zero;
-        private IntPtr homelandFarmAuraPlayerParameterFertilizationLookAtField = IntPtr.Zero;
-        private IntPtr homelandFarmAuraPlayerParameterFertilizationTargetsField = IntPtr.Zero;
-        private IntPtr homelandFarmAuraLocalPlayerCastMethod = IntPtr.Zero;
-        private IntPtr homelandFarmAuraLocalPlayerActionGraphTryCastMethod = IntPtr.Zero;
-        private bool homelandFarmAuraFertilizationCastFieldsResolved = false;
 
         private struct HomelandFarmCropFertilizeSnapshot
         {
@@ -304,7 +298,10 @@ namespace HeartopiaMod
         private readonly Dictionary<IntPtr, IntPtr> homelandFarmAuraInflatedGetComponentsMethodByComponentClass = new Dictionary<IntPtr, IntPtr>();
         private readonly HashSet<IntPtr> homelandFarmAuraGetComponentsFailedComponentClasses = new HashSet<IntPtr>();
         private bool homelandFarmAuraGetComponentsUnavailableLogged = false;
-        private const bool HomelandFarmAllowUnsafeAuraMonoGetComponents = false;
+        // EXPERIMENT (Option 4): direct ECS Entities.GetComponents<T> to skip the crashy
+        // recursive entity-graph walk (TryEnumerateAuraMonoLoadedEntityObjects). Flip back to
+        // false if step4 INVOKE AVs on inflation/invoke on this build.
+        private const bool HomelandFarmAllowUnsafeAuraMonoGetComponents = true;
         private IntPtr homelandFarmAuraCropBindEffectEntityMethod = IntPtr.Zero;
         private IntPtr homelandFarmAuraRendererComponentClass = IntPtr.Zero;
         private IntPtr homelandFarmAuraRendererPlayAnimTransformMethod = IntPtr.Zero;
@@ -379,10 +376,6 @@ namespace HeartopiaMod
         private MethodInfo homelandFarmSendCommandMethodDef = null;
         private MethodInfo homelandFarmManuredSendCommandMethod = null;
         private object homelandFarmReliableChannelValue = null;
-        private Type homelandFarmPlayerParameterFertilizationType = null;
-        private Type homelandFarmFertilizationTypeEnum = null;
-        private MethodInfo homelandFarmPlayerCastMethod = null;
-        private bool homelandFarmFertilizationCastTypesResolved = false;
         private MethodInfo homelandFarmCropAddManureInteropMethod = null;
         private MethodInfo homelandFarmCropSeedingInteropMethod = null;
 
@@ -3934,115 +3927,6 @@ namespace HeartopiaMod
             return false;
         }
 
-        private int TryHomelandFarmResolveCastFertilizerStaticId(int fallbackStaticId)
-        {
-            if (this.TryHomelandFarmTryGetEquippedHandholdBagNetId(out _, out int equippedStaticId) && equippedStaticId > 0)
-            {
-                return equippedStaticId;
-            }
-
-            if (this.TryHomelandFarmTryGetAuraEquippedHandholdStaticId(out int auraStaticId) && auraStaticId > 0)
-            {
-                return auraStaticId;
-            }
-
-            return fallbackStaticId;
-        }
-
-        private unsafe bool TryHomelandFarmTryGetAuraEquippedHandholdStaticId(out int staticId)
-        {
-            staticId = 0;
-            if (!this.TryHomelandFarmTryGetAuraLocalPlayerObject(out IntPtr playerObj, out _)
-                || playerObj == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            if (!this.TryGetMonoObjectMember(playerObj, "equipComponent", out IntPtr equipObj) || equipObj == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            if (!this.TryGetMonoObjectMember(equipObj, "handhold", out IntPtr handholdObj) || handholdObj == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            return (this.TryGetMonoInt32Member(handholdObj, "staticId", out staticId) && staticId > 0)
-                || (this.TryGetMonoInt32Member(handholdObj, "StaticId", out staticId) && staticId > 0);
-        }
-
-        private unsafe bool TryHomelandFarmTryGetAuraActionGraphIsCasting(out bool isCasting)
-        {
-            isCasting = false;
-            if (!this.TryHomelandFarmTryGetAuraLocalPlayerObject(out IntPtr playerObj, out _)
-                || playerObj == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            if (!this.TryGetMonoObjectMember(playerObj, "actionGraph", out IntPtr actionGraphObj) || actionGraphObj == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            return this.TryGetMonoBoolMember(actionGraphObj, "isCasting", out isCasting)
-                || this.TryGetMonoBoolMember(actionGraphObj, "IsCasting", out isCasting);
-        }
-
-        private unsafe bool TryUnboxAuraInt32(IntPtr boxedObj, out int value)
-        {
-            value = 0;
-            if (boxedObj == IntPtr.Zero || auraMonoObjectUnbox == null)
-            {
-                return false;
-            }
-
-            IntPtr raw = auraMonoObjectUnbox(boxedObj);
-            if (raw == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            value = *(int*)raw;
-            return true;
-        }
-
-        private unsafe bool TryHomelandFarmInvokeAuraCastMethod(
-            IntPtr method,
-            IntPtr targetObj,
-            IntPtr paramObj,
-            out int castCode,
-            out string status)
-        {
-            castCode = -1;
-            status = "Cast invoke unavailable.";
-            if (method == IntPtr.Zero || targetObj == IntPtr.Zero || paramObj == IntPtr.Zero || auraMonoRuntimeInvoke == null)
-            {
-                return false;
-            }
-
-            IntPtr exc = IntPtr.Zero;
-            IntPtr* args = stackalloc IntPtr[1];
-            args[0] = paramObj;
-            IntPtr resultObj = auraMonoRuntimeInvoke(method, targetObj, (IntPtr)args, ref exc);
-            if (exc != IntPtr.Zero)
-            {
-                status = "Cast exc=0x" + exc.ToInt64().ToString("X") + ".";
-                return false;
-            }
-
-            if (resultObj != IntPtr.Zero && this.TryUnboxAuraInt32(resultObj, out castCode))
-            {
-                status = "Cast code=" + castCode + ".";
-                return castCode == HomelandFarmActionErrorSuccess;
-            }
-
-            castCode = HomelandFarmActionErrorSuccess;
-            status = "Cast ok (no return).";
-            return true;
-        }
-
         private bool TryHomelandFarmSendFertilizeAddManure(List<uint> cropNetIds, out string status)
         {
             status = "AddManure unavailable.";
@@ -6110,45 +5994,6 @@ namespace HeartopiaMod
             return false;
         }
 
-        private int TryHomelandFarmRefreshCropManureVisuals(List<uint> cropNetIds, int fertilizerStaticId, out string detail)
-        {
-            detail = string.Empty;
-            if (cropNetIds == null || cropNetIds.Count == 0)
-            {
-                detail = "empty batch";
-                return 0;
-            }
-
-            int refreshed = 0;
-            System.Text.StringBuilder summary = new System.Text.StringBuilder();
-            for (int i = 0; i < cropNetIds.Count; i++)
-            {
-                uint cropNetId = cropNetIds[i];
-                if (cropNetId == 0U)
-                {
-                    continue;
-                }
-
-                if (this.TryHomelandFarmRefreshCropManureVisual(cropNetId, fertilizerStaticId, out string cropStatus))
-                {
-                    refreshed++;
-                    if (summary.Length > 0)
-                    {
-                        summary.Append(';');
-                    }
-
-                    summary.Append(cropNetId).Append('=').Append(cropStatus);
-                }
-                else
-                {
-                    this.HomelandFarmLog("Fertilize visual refresh failed netId=" + cropNetId + ": " + cropStatus);
-                }
-            }
-
-            detail = refreshed > 0 ? summary.ToString() : "none refreshed";
-            return refreshed;
-        }
-
         private bool TryHomelandFarmTryGetTableModeCellCount(int mode, out int cellCount)
         {
             cellCount = 0;
@@ -6257,52 +6102,6 @@ namespace HeartopiaMod
             return result;
         }
 
-        private bool TryHomelandFarmEnsureFertilizationCastResolver(out string status)
-        {
-            status = string.Empty;
-            if (this.homelandFarmFertilizationCastTypesResolved)
-            {
-                return this.homelandFarmPlayerParameterFertilizationType != null
-                    && this.homelandFarmFertilizationTypeEnum != null
-                    && this.homelandFarmPlayerCastMethod != null;
-            }
-
-            this.TryEnsureHomelandFarmInteropAssembliesLoaded();
-            this.homelandFarmPlayerParameterFertilizationType = this.ResolveHomelandFarmManagedType(
-                "PlayerParameterFertilization",
-                "XDTLevelAndEntity.Gameplay.Action.PlayerParameterFertilization");
-            this.homelandFarmFertilizationTypeEnum = this.ResolveHomelandFarmManagedType(
-                "FertilizationType",
-                "XDTLevelAndEntity.Gameplay.Action.FertilizationType");
-            this.EnsureHomelandFarmLocalPlayerComponentType();
-
-            if (this.homelandFarmLocalPlayerComponentType != null)
-            {
-                this.homelandFarmPlayerCastMethod = this.homelandFarmLocalPlayerComponentType.GetMethod(
-                    "Cast",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                    null,
-                    new[] { this.ResolveHomelandFarmManagedType("ActionContext", "XDTLevelAndEntity.Gameplay.Playable.ActionContext") ?? typeof(object) },
-                    null);
-                if (this.homelandFarmPlayerCastMethod == null && this.homelandFarmPlayerParameterFertilizationType != null)
-                {
-                    this.homelandFarmPlayerCastMethod = this.homelandFarmLocalPlayerComponentType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                        .FirstOrDefault(m =>
-                            m.Name == "Cast"
-                            && m.GetParameters().Length == 1
-                            && m.GetParameters()[0].ParameterType.IsAssignableFrom(this.homelandFarmPlayerParameterFertilizationType));
-                }
-            }
-
-            this.homelandFarmFertilizationCastTypesResolved = true;
-            status = "CastTypes param=" + (this.homelandFarmPlayerParameterFertilizationType != null)
-                + " enum=" + (this.homelandFarmFertilizationTypeEnum != null)
-                + " method=" + (this.homelandFarmPlayerCastMethod != null);
-            return this.homelandFarmPlayerParameterFertilizationType != null
-                && this.homelandFarmFertilizationTypeEnum != null
-                && this.homelandFarmPlayerCastMethod != null;
-        }
-
         private bool TryHomelandFarmTryGetEquippedFertilizerMode(out int mode)
         {
             mode = 1;
@@ -6336,388 +6135,6 @@ namespace HeartopiaMod
             }
 
             return false;
-        }
-
-        private unsafe bool TryHomelandFarmResolveAuraFertilizationCastMembers(out string status)
-        {
-            status = string.Empty;
-            if (this.homelandFarmAuraFertilizationCastFieldsResolved
-                && this.homelandFarmAuraPlayerParameterFertilizationClass != IntPtr.Zero
-                && this.homelandFarmAuraPlayerParameterFertilizationStaticIdField != IntPtr.Zero
-                && this.homelandFarmAuraPlayerParameterFertilizationTargetsField != IntPtr.Zero)
-            {
-                return true;
-            }
-
-            if (auraMonoClassGetFieldFromName == null || auraMonoObjectNew == null)
-            {
-                status = "AuraMono fertilize cast field API unavailable.";
-                return false;
-            }
-
-            if (this.homelandFarmAuraPlayerParameterFertilizationClass == IntPtr.Zero)
-            {
-                this.homelandFarmAuraPlayerParameterFertilizationClass = this.FindAuraMonoClassByFullName(
-                    "XDTLevelAndEntity.Gameplay.Action.PlayerParameterFertilization");
-            }
-
-            if (this.homelandFarmAuraPlayerParameterFertilizationClass == IntPtr.Zero)
-            {
-                status = "AuraMono PlayerParameterFertilization class missing.";
-                return false;
-            }
-
-            IntPtr cls = this.homelandFarmAuraPlayerParameterFertilizationClass;
-            this.homelandFarmAuraPlayerParameterFertilizationStaticIdField = auraMonoClassGetFieldFromName(cls, "staticId");
-            if (this.homelandFarmAuraPlayerParameterFertilizationStaticIdField == IntPtr.Zero)
-            {
-                this.homelandFarmAuraPlayerParameterFertilizationStaticIdField = auraMonoClassGetFieldFromName(cls, "StaticId");
-            }
-
-            this.homelandFarmAuraPlayerParameterFertilizationModeField = auraMonoClassGetFieldFromName(cls, "mode");
-            if (this.homelandFarmAuraPlayerParameterFertilizationModeField == IntPtr.Zero)
-            {
-                this.homelandFarmAuraPlayerParameterFertilizationModeField = auraMonoClassGetFieldFromName(cls, "Mode");
-            }
-
-            this.homelandFarmAuraPlayerParameterFertilizationTypeField = auraMonoClassGetFieldFromName(cls, "fertilizationType");
-            if (this.homelandFarmAuraPlayerParameterFertilizationTypeField == IntPtr.Zero)
-            {
-                this.homelandFarmAuraPlayerParameterFertilizationTypeField = auraMonoClassGetFieldFromName(cls, "FertilizationType");
-            }
-
-            this.homelandFarmAuraPlayerParameterFertilizationLookAtField = auraMonoClassGetFieldFromName(cls, "lookAt");
-            if (this.homelandFarmAuraPlayerParameterFertilizationLookAtField == IntPtr.Zero)
-            {
-                this.homelandFarmAuraPlayerParameterFertilizationLookAtField = auraMonoClassGetFieldFromName(cls, "LookAt");
-            }
-
-            this.homelandFarmAuraPlayerParameterFertilizationTargetsField = auraMonoClassGetFieldFromName(cls, "targets");
-            if (this.homelandFarmAuraPlayerParameterFertilizationTargetsField == IntPtr.Zero)
-            {
-                this.homelandFarmAuraPlayerParameterFertilizationTargetsField = auraMonoClassGetFieldFromName(cls, "Targets");
-            }
-
-            this.homelandFarmAuraFertilizationCastFieldsResolved = true;
-            if (this.homelandFarmAuraPlayerParameterFertilizationStaticIdField == IntPtr.Zero
-                || this.homelandFarmAuraPlayerParameterFertilizationTargetsField == IntPtr.Zero)
-            {
-                status = "AuraMono fertilize cast fields missing staticId="
-                    + (this.homelandFarmAuraPlayerParameterFertilizationStaticIdField != IntPtr.Zero)
-                    + " targets=" + (this.homelandFarmAuraPlayerParameterFertilizationTargetsField != IntPtr.Zero)
-                    + " lookAt=" + (this.homelandFarmAuraPlayerParameterFertilizationLookAtField != IntPtr.Zero) + ".";
-                return false;
-            }
-
-            return true;
-        }
-
-        private unsafe bool TryHomelandFarmCastFertilizationActionNative(
-            List<uint> cropNetIds,
-            int fertilizerStaticId,
-            out string status,
-            out bool actionGraphCasting)
-        {
-            status = "Native fertilize cast unavailable.";
-            actionGraphCasting = false;
-            if (cropNetIds == null || cropNetIds.Count == 0 || fertilizerStaticId <= 0)
-            {
-                status = "Native fertilize cast missing targets or fertilizer.";
-                return false;
-            }
-
-            if (!this.TryHomelandFarmResolveAuraFertilizationCastMembers(out status))
-            {
-                return false;
-            }
-
-            if (!this.EnsureAuraMonoApiReady()
-                || !this.AttachAuraMonoThread()
-                || auraMonoRuntimeInvoke == null
-                || auraMonoObjectNew == null
-                || auraMonoFieldSetValue == null
-                || auraMonoObjectGetClass == null)
-            {
-                status = "Native fertilize cast prerequisites unavailable.";
-                return false;
-            }
-
-            if (!this.TryHomelandFarmTryGetAuraLocalPlayerObject(out IntPtr localPlayerObj, out string playerSource)
-                || localPlayerObj == IntPtr.Zero)
-            {
-                status = "Native fertilize cast player unavailable.";
-                return false;
-            }
-
-            if (this.homelandFarmAuraLocalPlayerCastMethod == IntPtr.Zero)
-            {
-                IntPtr playerClass = auraMonoObjectGetClass(localPlayerObj);
-                if (playerClass != IntPtr.Zero)
-                {
-                    this.homelandFarmAuraLocalPlayerCastMethod = this.FindAuraMonoMethodOnHierarchy(playerClass, "Cast", 1);
-                }
-            }
-
-            if (!this.TryGetMonoObjectMember(localPlayerObj, "actionGraph", out IntPtr actionGraphObj) || actionGraphObj == IntPtr.Zero)
-            {
-                status = "Native fertilize cast actionGraph missing on " + playerSource + ".";
-                return false;
-            }
-
-            if (this.homelandFarmAuraLocalPlayerActionGraphTryCastMethod == IntPtr.Zero)
-            {
-                IntPtr actionGraphClass = auraMonoObjectGetClass(actionGraphObj);
-                if (actionGraphClass != IntPtr.Zero)
-                {
-                    this.homelandFarmAuraLocalPlayerActionGraphTryCastMethod = this.FindAuraMonoMethodOnHierarchy(actionGraphClass, "TryCast", 1);
-                }
-            }
-
-            if (this.homelandFarmAuraLocalPlayerCastMethod == IntPtr.Zero
-                && this.homelandFarmAuraLocalPlayerActionGraphTryCastMethod == IntPtr.Zero)
-            {
-                status = "Native fertilize cast methods missing on " + playerSource + ".";
-                return false;
-            }
-
-            if (!this.TryCreatePetFeedAuraUIntList(cropNetIds, out IntPtr listObj, out status)
-                || listObj == IntPtr.Zero)
-            {
-                status = "Native fertilize cast list failed: " + status;
-                return false;
-            }
-
-            IntPtr paramObj = auraMonoObjectNew(this.auraMonoRootDomain, this.homelandFarmAuraPlayerParameterFertilizationClass);
-            if (paramObj == IntPtr.Zero)
-            {
-                status = "Native fertilize cast parameter alloc failed.";
-                return false;
-            }
-
-            int staticId = this.TryHomelandFarmResolveCastFertilizerStaticId(fertilizerStaticId);
-            auraMonoFieldSetValue(paramObj, this.homelandFarmAuraPlayerParameterFertilizationStaticIdField, (IntPtr)(&staticId));
-
-            this.TryHomelandFarmTryGetEquippedFertilizerMode(out int mode);
-            if (this.homelandFarmAuraPlayerParameterFertilizationModeField != IntPtr.Zero)
-            {
-                auraMonoFieldSetValue(paramObj, this.homelandFarmAuraPlayerParameterFertilizationModeField, (IntPtr)(&mode));
-            }
-
-            if (this.homelandFarmAuraPlayerParameterFertilizationTypeField != IntPtr.Zero)
-            {
-                int fertType = HomelandFarmFertilizationTypeCrop;
-                auraMonoFieldSetValue(paramObj, this.homelandFarmAuraPlayerParameterFertilizationTypeField, (IntPtr)(&fertType));
-            }
-
-            Vector3 playerPos = Vector3.zero;
-            if (!this.TryGetHomelandFarmPlayerPosition(out playerPos))
-            {
-                playerPos = Vector3.zero;
-            }
-
-            Vector3 center = Vector3.zero;
-            int posCount = 0;
-            for (int i = 0; i < cropNetIds.Count; i++)
-            {
-                if (this.TryHomelandFarmResolveFarmEntityPosition(cropNetIds[i], out Vector3 cropPos)
-                    && cropPos != Vector3.zero)
-                {
-                    center += cropPos;
-                    posCount++;
-                }
-            }
-
-            if (posCount > 0)
-            {
-                center /= posCount;
-            }
-
-            Vector2 lookAt = new Vector2(center.x - playerPos.x, center.z - playerPos.z);
-            if (lookAt.sqrMagnitude < 0.0001f)
-            {
-                lookAt = Vector2.up;
-            }
-
-            if (this.homelandFarmAuraPlayerParameterFertilizationLookAtField != IntPtr.Zero)
-            {
-                auraMonoFieldSetValue(paramObj, this.homelandFarmAuraPlayerParameterFertilizationLookAtField, (IntPtr)(&lookAt));
-            }
-
-            auraMonoFieldSetValue(paramObj, this.homelandFarmAuraPlayerParameterFertilizationTargetsField, listObj);
-
-            int castCode = -1;
-            string invokeStatus = string.Empty;
-            bool invokeOk = false;
-            if (this.homelandFarmAuraLocalPlayerActionGraphTryCastMethod != IntPtr.Zero)
-            {
-                invokeOk = this.TryHomelandFarmInvokeAuraCastMethod(
-                    this.homelandFarmAuraLocalPlayerActionGraphTryCastMethod,
-                    actionGraphObj,
-                    paramObj,
-                    out castCode,
-                    out invokeStatus);
-            }
-            else if (this.homelandFarmAuraLocalPlayerCastMethod != IntPtr.Zero)
-            {
-                invokeOk = this.TryHomelandFarmInvokeAuraCastMethod(
-                    this.homelandFarmAuraLocalPlayerCastMethod,
-                    localPlayerObj,
-                    paramObj,
-                    out castCode,
-                    out invokeStatus);
-            }
-
-            if (!invokeOk && castCode == HomelandFarmActionErrorBusy)
-            {
-                status = "Native fertilize cast busy.";
-                this.HomelandFarmLog(status + " player=" + playerSource);
-                return false;
-            }
-
-            this.TryHomelandFarmTryGetAuraActionGraphIsCasting(out actionGraphCasting);
-            bool castStarted = actionGraphCasting || (invokeOk && castCode == HomelandFarmActionErrorSuccess);
-            if (!castStarted)
-            {
-                status = "Native fertilize cast rejected code=" + castCode + " casting=" + actionGraphCasting + ".";
-                this.HomelandFarmLog(status + " player=" + playerSource + " " + invokeStatus);
-                return false;
-            }
-
-            status = "Native fertilize cast ok count=" + cropNetIds.Count
-                + " mode=" + mode
-                + " staticId=" + staticId
-                + " casting=" + actionGraphCasting
-                + " code=" + castCode + ".";
-            if (!actionGraphCasting && invokeOk)
-            {
-                status += " (cast returned success but actionGraph not casting; will AddManure manually)";
-            }
-
-            this.HomelandFarmLog(status + " player=" + playerSource);
-            return true;
-        }
-
-        private bool TryHomelandFarmCastFertilizationAction(
-            List<uint> cropNetIds,
-            int fertilizerStaticId,
-            out string status,
-            out bool actionGraphCasting)
-        {
-            status = "Fertilize cast unavailable.";
-            actionGraphCasting = false;
-            if (cropNetIds == null || cropNetIds.Count == 0 || fertilizerStaticId <= 0)
-            {
-                status = "Fertilize cast missing targets or fertilizer.";
-                return false;
-            }
-
-            if (this.TryHomelandFarmCastFertilizationActionNative(cropNetIds, fertilizerStaticId, out status, out actionGraphCasting))
-            {
-                return true;
-            }
-
-            this.HomelandFarmLog("Native fertilize cast fallback: " + status);
-
-            if (!this.TryHomelandFarmEnsureFertilizationCastResolver(out string resolverStatus)
-                || !this.TryHomelandFarmResolveLocalPlayerComponent(out object localPlayer, out _))
-            {
-                status = resolverStatus;
-                return false;
-            }
-
-            try
-            {
-                object parameter = Activator.CreateInstance(this.homelandFarmPlayerParameterFertilizationType);
-                if (parameter == null)
-                {
-                    status = "Fertilize cast parameter create failed.";
-                    return false;
-                }
-
-                int castStaticId = this.TryHomelandFarmResolveCastFertilizerStaticId(fertilizerStaticId);
-                object parameterRef = parameter;
-                this.TrySetFieldValue(this.homelandFarmPlayerParameterFertilizationType, ref parameterRef, "staticId", castStaticId);
-                this.TryHomelandFarmTryGetEquippedFertilizerMode(out int mode);
-                this.TrySetFieldValue(this.homelandFarmPlayerParameterFertilizationType, ref parameterRef, "mode", mode);
-
-                object cropFertilizationType = Enum.Parse(this.homelandFarmFertilizationTypeEnum, "Crop");
-                FieldInfo fertTypeField = this.homelandFarmPlayerParameterFertilizationType.GetField(
-                    "fertilizationType",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (fertTypeField != null)
-                {
-                    fertTypeField.SetValue(parameterRef, cropFertilizationType);
-                }
-
-                FieldInfo targetsField = this.homelandFarmPlayerParameterFertilizationType.GetField(
-                    "targets",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (targetsField != null)
-                {
-                    targetsField.SetValue(
-                        parameterRef,
-                        this.CreateHomelandFarmUintList(cropNetIds, targetsField.FieldType));
-                }
-
-                Vector3 playerPos = Vector3.zero;
-                if (!this.TryGetHomelandFarmPlayerPosition(out playerPos)
-                    && localPlayer != null
-                    && this.TryGetObjectMember(localPlayer, "transform", out object transformObj)
-                    && transformObj is Transform playerTransform)
-                {
-                    playerPos = playerTransform.position;
-                }
-
-                Vector3 center = Vector3.zero;
-                int posCount = 0;
-                for (int i = 0; i < cropNetIds.Count; i++)
-                {
-                    if (this.TryHomelandFarmResolveFarmEntityPosition(cropNetIds[i], out Vector3 cropPos)
-                        && cropPos != Vector3.zero)
-                    {
-                        center += cropPos;
-                        posCount++;
-                    }
-                }
-
-                if (posCount > 0)
-                {
-                    center /= posCount;
-                }
-
-                Vector2 lookAt = new Vector2(center.x - playerPos.x, center.z - playerPos.z);
-                if (lookAt.sqrMagnitude < 0.0001f)
-                {
-                    lookAt = Vector2.up;
-                }
-
-                this.TrySetFieldValue(this.homelandFarmPlayerParameterFertilizationType, ref parameterRef, "lookAt", lookAt);
-
-                object castResult = this.homelandFarmPlayerCastMethod.Invoke(localPlayer, new[] { parameterRef });
-                int castCode = castResult is int code ? code : (castResult != null ? Convert.ToInt32(castResult) : -1);
-                if (castCode == HomelandFarmActionErrorBusy)
-                {
-                    status = "Fertilize cast busy.";
-                    return false;
-                }
-
-                this.TryHomelandFarmTryGetAuraActionGraphIsCasting(out actionGraphCasting);
-                if (!actionGraphCasting && castCode != HomelandFarmActionErrorSuccess)
-                {
-                    status = "Fertilize cast rejected code=" + castCode + ".";
-                    return false;
-                }
-
-                status = "Fertilize cast ok count=" + cropNetIds.Count + " mode=" + mode + " staticId=" + castStaticId + " casting=" + actionGraphCasting + ".";
-                this.HomelandFarmLog(status);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                status = "Fertilize cast exception: " + (ex.InnerException ?? ex).Message;
-                this.HomelandFarmLog(status);
-                return false;
-            }
         }
 
         private bool TryHomelandFarmInvokeCropSeedingInterop(uint seedNetId, List<object> plantPoints, out string status)
@@ -8471,6 +7888,11 @@ namespace HeartopiaMod
         // class resolves regardless of which build is loaded.
         private static readonly string[] HomelandFarmAuraPlantComponentNamespaces =
         {
+            // PlantComponent actually lives in the Homeland namespace (same as CropBox/Crop), not
+            // a ".Plant" namespace — confirmed via ilspy dump. Keep .Plant as fallback.
+            "XDTLevelAndEntity.Gameplay.Component.Homeland",
+            "XDTLevelAndEntity.GamePlay.Component.Homeland",
+            "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Homeland",
             "XDTLevelAndEntity.Gameplay.Component.Plant",
             "XDTLevelAndEntity.GamePlay.Component.Plant",
             "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Plant",
@@ -8479,6 +7901,9 @@ namespace HeartopiaMod
 
         private static readonly string[] HomelandFarmAuraPlantComponentFullNames =
         {
+            "XDTLevelAndEntity.Gameplay.Component.Homeland.PlantComponent",
+            "XDTLevelAndEntity.GamePlay.Component.Homeland.PlantComponent",
+            "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Homeland.PlantComponent",
             "XDTLevelAndEntity.Gameplay.Component.Plant.PlantComponent",
             "XDTLevelAndEntity.GamePlay.Component.Plant.PlantComponent",
             "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Plant.PlantComponent",
@@ -9558,8 +8983,8 @@ namespace HeartopiaMod
             {
                 this.homelandFarmPlantComponentType = this.ResolveHomelandFarmManagedType(
                     "PlantComponent",
-                    "XDTLevelAndEntity.Gameplay.Component.Plant.PlantComponent",
-                    "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Plant.PlantComponent");
+                    "XDTLevelAndEntity.Gameplay.Component.Homeland.PlantComponent",
+                    "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Homeland.PlantComponent");
             }
 
             if (this.homelandFarmEcsServiceType == null)
@@ -9675,7 +9100,9 @@ namespace HeartopiaMod
                 out source,
                 scanCenter,
                 scanRadius,
-                allowUnsafeAuraMonoGetComponents: false,
+                // EXPERIMENT (Option 4): route the default scan path through the AuraMono
+                // Entities.GetComponents source so hotkey/capture/auto-farm all exercise it.
+                allowUnsafeAuraMonoGetComponents: HomelandFarmAllowUnsafeAuraMonoGetComponents,
                 proximityBudgetSeconds: HomelandFarmAuraProximityComponentScanBudgetSeconds,
                 allowAuraEntityFunnel: true,
                 useAutoFarmCollectShortcuts: useAutoFarmCollectShortcuts);
@@ -9721,6 +9148,13 @@ namespace HeartopiaMod
             }
 
             int before = output.Count;
+            // When the direct ECS Entities.GetComponents<T> source (ComponentRadius) succeeds it
+            // returns the authoritative crop-box / crop / plant set without walking the entity graph.
+            // It is the safe source — record success so we can skip the crash-prone AuraProximity /
+            // AuraEntities loaded-entity walk below on EVERY path (hotkey, capture, auto-farm), not
+            // just the shortcut path. That walk dereferences arbitrary mono pointers and is what
+            // randomly AV-crashes on visiting/streaming fields.
+            bool componentRadiusSucceeded = false;
             if (spatialScan
                 && (allowUnsafeAuraMonoGetComponents || this.homelandFarmEntitiesGetComponentsMethod != null)
                 && this.TryHomelandFarmCollectFarmNetIdsByComponentRadius(
@@ -9731,6 +9165,7 @@ namespace HeartopiaMod
                     allowUnsafeAuraMonoGetComponents)
                 && componentRadiusAdded > 0)
             {
+                componentRadiusSucceeded = true;
                 sources.Add("ComponentRadius(" + componentRadiusAdded + ")");
             }
 
@@ -9768,7 +9203,10 @@ namespace HeartopiaMod
             // Crop boxes are live entities — ComponentRadius (GetComponents) and proximity scan
             // above are the fast paths. Skip duplicate ComponentRadius call here.
             before = output.Count;
+            // If the direct ECS source already returned the farm components, never run the
+            // graph-walking proximity scan — it is redundant and is the native-AV crash source.
             bool runAuraProximity = spatialScan
+                && !componentRadiusSucceeded
                 && (!useAutoFarmCollectShortcuts || this.homelandFarmLastScanCropBoxNetIds.Count == 0);
             int proximityAdded = 0;
             int proximityInspected = 0;
@@ -9793,6 +9231,8 @@ namespace HeartopiaMod
             // funnel immediately after water (water+weed crash on visiting fields).
             before = output.Count;
             bool skipAuraEntityFunnel = !allowAuraEntityFunnel
+                // Direct ECS source already returned the authoritative set — skip the graph walk.
+                || componentRadiusSucceeded
                 || (useAutoFarmCollectShortcuts
                     && spatialScan
                     && (this.homelandFarmLastScanCropBoxNetIds.Count > 0 || output.Count > 0))
@@ -10510,16 +9950,17 @@ namespace HeartopiaMod
                     return false;
                 }
 
-                if (!this.TryEnsureHomelandFarmEntitiesGetComponentsReady(out string resolveStatus))
+                // EXPERIMENT (Option 4): managed Entities.GetComponents is absent on this build
+                // (entitiesType=False). On the unsafe path require only AuraMono readiness — do
+                // NOT gate on the managed resolver, which always fails here and used to bail out
+                // before the AuraMono GetComponents branch below ever ran.
+                if (!this.TryHomelandFarmIsAuraMonoGetComponentsReady(out string auraResolveStatus))
                 {
-                    if (!this.homelandFarmComponentRadiusWarned)
-                    {
-                        this.homelandFarmComponentRadiusWarned = true;
-                        this.HomelandFarmLog("ComponentRadius unavailable: " + resolveStatus + " Suppressing further notices.");
-                    }
-
+                    this.HomelandFarmLog("ComponentRadius[AuraMono] not ready: " + auraResolveStatus);
                     return false;
                 }
+
+                this.HomelandFarmVerboseLog("ComponentRadius[AuraMono] ready, using AuraMono GetComponents (managed absent).");
             }
             else if (!this.TryEnsureHomelandFarmEntitiesGetComponentsReady(out _))
             {
@@ -10666,7 +10107,9 @@ namespace HeartopiaMod
                 return false;
             }
 
-            if (!this.TryHomelandFarmIsAuraMonoGetComponentsReady(out _))
+            bool getCompReady = this.TryHomelandFarmIsAuraMonoGetComponentsReady(out string getCompReadyStatus);
+            this.HomelandFarmVerboseLog("ComponentRadius[AuraMono]: " + label + " getCompReady=" + getCompReady + " (" + getCompReadyStatus + ")");
+            if (!getCompReady)
             {
                 return false;
             }
@@ -10674,12 +10117,17 @@ namespace HeartopiaMod
             if (!this.TryResolveHomelandFarmAuraMonoComponentClassForManagedType(componentType, label, out IntPtr componentClass)
                 || componentClass == IntPtr.Zero)
             {
+                this.HomelandFarmVerboseLog("ComponentRadius[AuraMono]: " + label + " component class unresolved, skipping.");
                 return false;
             }
 
             bool isCropBox = componentType == this.homelandFarmCropBoxComponentType
                 || (!string.IsNullOrEmpty(label) && label.IndexOf("CropBox", StringComparison.OrdinalIgnoreCase) >= 0);
-            return this.TryHomelandFarmCollectComponentsNetIdsViaAuraMono(componentClass, output, label, isCropBox);
+            this.HomelandFarmVerboseLog("ComponentRadius[AuraMono]: GetComponents<" + label + "> START class=0x" + componentClass.ToInt64().ToString("X") + " isCropBox=" + isCropBox);
+            int beforeCount = output.Count;
+            bool ok = this.TryHomelandFarmCollectComponentsNetIdsViaAuraMono(componentClass, output, label, isCropBox);
+            this.HomelandFarmVerboseLog("ComponentRadius[AuraMono]: GetComponents<" + label + "> DONE ok=" + ok + " got " + (output.Count - beforeCount) + " new netId(s).");
+            return ok;
         }
 
         private bool TryHomelandFarmIsAuraMonoGetComponentsReady(out string status)
@@ -10898,20 +10346,41 @@ namespace HeartopiaMod
                 return false;
             }
 
-            IntPtr* typeArgs = stackalloc IntPtr[1];
-            typeArgs[0] = componentType;
-            MonoGenericContext context = new MonoGenericContext
+            // mono_class_inflate_generic_method expects context.method_inst to be a MonoGenericInst*,
+            // NOT a raw MonoType*[]. Passing the bare array made inflate read type_argc from the wrong
+            // offset (garbage size) and walk out of bounds -> native AV during inflation. Build a real
+            // interned MonoGenericInst via mono_metadata_get_generic_inst(argc, MonoType**).
+            if (auraMonoMetadataGetGenericInst == null)
             {
-                class_inst = IntPtr.Zero,
-                method_inst = (IntPtr)typeArgs
-            };
-
-            inflatedMethod = auraMonoClassInflateGenericMethod(this.homelandFarmAuraEntitiesGetComponentsMethod, ref context);
-            if (inflatedMethod == IntPtr.Zero)
-            {
+                this.HomelandFarmLog("AuraMono inflate: mono_metadata_get_generic_inst export missing; cannot build generic inst safely.");
                 return false;
             }
 
+            IntPtr* typeArgs = stackalloc IntPtr[1];
+            typeArgs[0] = componentType;
+            this.HomelandFarmVerboseLog("AuraMono inflate step3a: building generic inst (argc=1).");
+            IntPtr genericInst = auraMonoMetadataGetGenericInst(1, (IntPtr)typeArgs);
+            if (genericInst == IntPtr.Zero)
+            {
+                this.HomelandFarmLog("AuraMono inflate: get_generic_inst returned null.");
+                return false;
+            }
+
+            MonoGenericContext context = new MonoGenericContext
+            {
+                class_inst = IntPtr.Zero,
+                method_inst = genericInst
+            };
+
+            this.HomelandFarmVerboseLog("AuraMono inflate step3b: inst=0x" + genericInst.ToInt64().ToString("X") + ", calling inflate_generic_method (AV risk here).");
+            inflatedMethod = auraMonoClassInflateGenericMethod(this.homelandFarmAuraEntitiesGetComponentsMethod, ref context);
+            if (inflatedMethod == IntPtr.Zero)
+            {
+                this.HomelandFarmLog("AuraMono inflate: inflate_generic_method returned null.");
+                return false;
+            }
+
+            this.HomelandFarmVerboseLog("AuraMono inflate step3c: inflated=0x" + inflatedMethod.ToInt64().ToString("X") + ", compiling (AV risk here).");
             if (auraMonoCompileMethod != null)
             {
                 try
@@ -10922,6 +10391,8 @@ namespace HeartopiaMod
                 {
                 }
             }
+
+            this.HomelandFarmVerboseLog("AuraMono inflate step3d: inflate+compile OK.");
 
             this.homelandFarmAuraInflatedGetComponentsMethodByComponentClass[componentClass] = inflatedMethod;
             return true;
@@ -10940,9 +10411,11 @@ namespace HeartopiaMod
 
             if (this.homelandFarmAuraGetComponentsFailedComponentClasses.Contains(componentClass))
             {
+                this.HomelandFarmVerboseLog(label + " AuraMono GetComponents: class previously failed, skipping.");
                 return false;
             }
 
+            this.HomelandFarmVerboseLog(label + " ViaAuraMono step1: ready check.");
             if (!this.TryHomelandFarmIsAuraMonoGetComponentsReady(out string readyStatus))
             {
                 if (!this.homelandFarmAuraGetComponentsUnavailableLogged)
@@ -10954,6 +10427,7 @@ namespace HeartopiaMod
                 return false;
             }
 
+            this.HomelandFarmVerboseLog(label + " ViaAuraMono step2: creating List<T>.");
             if (!this.TryHomelandFarmCreateAuraMonoComponentList(componentClass, out IntPtr listObj, out string listStatus)
                 || listObj == IntPtr.Zero)
             {
@@ -10962,6 +10436,7 @@ namespace HeartopiaMod
                 return false;
             }
 
+            this.HomelandFarmVerboseLog(label + " ViaAuraMono step3: inflating generic method.");
             if (!this.TryHomelandFarmTryResolveInflatedAuraEntitiesGetComponentsMethod(componentClass, out IntPtr inflatedGetComponentsMethod)
                 || inflatedGetComponentsMethod == IntPtr.Zero)
             {
@@ -10975,8 +10450,15 @@ namespace HeartopiaMod
                 return false;
             }
 
+            // The managed signature is `static void GetComponents<T>(ref List<T> outList)` — the
+            // parameter is BY-REF. mono_runtime_invoke therefore expects params[0] to be a pointer
+            // to the list pointer (List**), not the list object itself. Passing the bare object
+            // pointer made mono treat the object header as the ref slot address -> native AV.
+            this.HomelandFarmVerboseLog(label + " ViaAuraMono step4: INVOKE inflated method=0x" + inflatedGetComponentsMethod.ToInt64().ToString("X") + " list=0x" + listObj.ToInt64().ToString("X") + " (ref param) (AV risk here).");
+            IntPtr* listSlot = stackalloc IntPtr[1];
+            listSlot[0] = listObj;
             IntPtr* invokeArgs = stackalloc IntPtr[1];
-            invokeArgs[0] = listObj;
+            invokeArgs[0] = (IntPtr)listSlot;
             IntPtr exc = IntPtr.Zero;
             auraMonoRuntimeInvoke(inflatedGetComponentsMethod, IntPtr.Zero, (IntPtr)invokeArgs, ref exc);
             if (exc != IntPtr.Zero)
@@ -10986,11 +10468,18 @@ namespace HeartopiaMod
                 return false;
             }
 
+            // GetAllComponents fills the same list in place, but a ref param may also reassign it,
+            // so read the slot back and enumerate whatever the method left there.
+            IntPtr resultList = listSlot[0] != IntPtr.Zero ? listSlot[0] : listObj;
+            this.HomelandFarmVerboseLog(label + " ViaAuraMono step5: invoke OK, enumerating list=0x" + resultList.ToInt64().ToString("X") + ".");
             List<IntPtr> components = new List<IntPtr>();
-            if (!this.TryEnumerateAuraMonoCollectionItems(listObj, components) || components.Count == 0)
+            if (!this.TryEnumerateAuraMonoCollectionItems(resultList, components) || components.Count == 0)
             {
+                this.HomelandFarmVerboseLog(label + " ViaAuraMono: list empty (0 components).");
                 return false;
             }
+
+            this.HomelandFarmVerboseLog(label + " ViaAuraMono step6: list has " + components.Count + " component(s), reading netIds.");
 
             int added = 0;
             for (int i = 0; i < components.Count; i++)
@@ -14940,11 +14429,11 @@ namespace HeartopiaMod
             bool needDiscovery = true;   // discover current crops first (so we never sow occupied planters)
             bool discoveryDelay = false; // wait before discovery only after an actual sow
             float nextSowAllowedAt = 0f; // post-sow cooldown (server registration of sown crops)
-            // Generation lock: once we sow, do NOT sow again until this generation has actually been
-            // harvested. Freshly sown crops are invisible to the crop scan for tens of seconds (early
-            // stage isn't CropItemData yet), so a "cache empty → sow" rule alone re-sows the same boxes
-            // → MaxPlantCountLimit. A real harvest is the ground-truth signal that a generation ended.
-            bool awaitingHarvest = false;
+            // Re-sow safety no longer relies on a generation lock: every sow pass goes through
+            // FindEmptyCropPlanterSlotsRoutine, which fills ONLY genuinely-empty boxes — occupied
+            // ones are excluded by link + world-position match, and just-sown boxes are excluded via
+            // homelandFarmAutoPendingSowBoxNetIds until the server registers their crops. This lets us
+            // top up free planters every tick instead of waiting for the whole generation to ripen.
 
             try
             {
@@ -15021,8 +14510,7 @@ namespace HeartopiaMod
                     if (haveOccupiedPlanters
                         && occupiedPlanters.Count == 0
                         && this.homelandFarmAutoCropNetIds.Count > 0
-                        && this.homelandFarmAutoPendingSowBoxNetIds.Count == 0
-                        && !awaitingHarvest)
+                        && this.homelandFarmAutoPendingSowBoxNetIds.Count == 0)
                     {
                         prunedThisTick = this.homelandFarmAutoCropNetIds.Count;
                         this.homelandFarmAutoCropNetIds.Clear();
@@ -15080,15 +14568,10 @@ namespace HeartopiaMod
                         }
                     }
 
-                    if (harvestedThisTick > 0)
+                    if (harvestedThisTick > 0 && this.homelandFarmAutoCropNetIds.Count == 0)
                     {
-                        // A real harvest happened → this generation is being collected; re-sow is
-                        // allowed once the cache empties.
-                        awaitingHarvest = false;
-                        if (this.homelandFarmAutoCropNetIds.Count == 0)
-                        {
-                            this.homelandFarmAutoPendingSowBoxNetIds.Clear();
-                        }
+                        // Whole tracked generation collected → clear the just-sown guard set.
+                        this.homelandFarmAutoPendingSowBoxNetIds.Clear();
                     }
 
                     if (weededThisTick > 0 || harvestedThisTick > 0 || prunedThisTick > 0)
@@ -15097,59 +14580,62 @@ namespace HeartopiaMod
                             + " pruned=" + prunedThisTick + " remaining=" + this.homelandFarmAutoCropNetIds.Count);
                     }
 
-                    // 3. SOW — only when the zone holds no tracked crops AND we are not still waiting
-                    //    for the previous generation to be harvested. The generation lock (awaitingHarvest)
-                    //    is the key fix: a freshly sown crop is invisible to the crop scan for tens of
-                    //    seconds, so "cache empty" right after a sow does NOT mean the zone is free — only
-                    //    an actual harvest does. Without this, the loop re-sows the same boxes →
-                    //    OnBuildSeedResult MaxPlantCountLimit.
+                    // 3. SOW free planters — always top up genuinely-empty boxes, even while other
+                    //    crops are still growing. FindEmptyCropPlanterSlotsRoutine fills ONLY free
+                    //    boxes (occupied excluded by link + world-position match; just-sown boxes
+                    //    excluded via homelandFarmAutoPendingSowBoxNetIds), so this never re-sows an
+                    //    un-registered box (MaxPlantCountLimit). Cooldown-gated so the heavy empty-slot
+                    //    scan runs at most once per interval, even when nothing was free.
+                    if (!seedsExhausted && Time.realtimeSinceStartup >= nextSowAllowedAt)
+                    {
+                        this.RefreshHomelandFarmSeeds();
+                        HomelandFarmInventoryItem seed = this.FindHomelandFarmSeedByStaticId(seedStaticId);
+                        if (seed == null)
+                        {
+                            seedsExhausted = true;
+                            this.HomelandFarmLog("Auto: selected seed exhausted.");
+                        }
+                        else
+                        {
+                            this.homelandFarmLastStatus = "Auto: sowing " + seed.Label + "...";
+                            this.homelandFarmAutoSowCount = 0;
+                            IEnumerator sowPass = this.HomelandFarmAutoSowPassRoutine(seed);
+                            while (sowPass.MoveNext())
+                            {
+                                yield return sowPass.Current;
+                            }
+
+                            if (this.homelandFarmAutoSowCount > 0)
+                            {
+                                totalSown += this.homelandFarmAutoSowCount;
+                                // Full registration wait: just-sown crops are invisible for a beat.
+                                nextSowAllowedAt = Time.realtimeSinceStartup + HomelandFarmAutoSowCooldownSeconds;
+                                needDiscovery = true;
+                                discoveryDelay = true; // server needs a beat to create the new crops
+                                this.HomelandFarmLog("Auto: sowed " + this.homelandFarmAutoSowCount
+                                    + " free planter(s); re-discovering.");
+                                continue; // pick up the new crops before the next decision
+                            }
+
+                            // Nothing was free to sow right now (e.g. boxes just harvested aren't
+                            // server-free yet). Use a SHORT retry gap, not the long registration
+                            // cooldown, so freed boxes get filled within seconds.
+                            nextSowAllowedAt = Time.realtimeSinceStartup + HomelandFarmAutoEmptyRetrySeconds;
+                        }
+                    }
+
+                    // 4. DONE / WAIT when no tracked crops remain.
                     if (this.homelandFarmAutoCropNetIds.Count == 0)
                     {
-                        // Done only when seeds are gone AND the final generation has been harvested.
-                        if (seedsExhausted && !awaitingHarvest)
+                        // Finished only when seeds are gone AND nothing is still registering/growing.
+                        if (seedsExhausted && this.homelandFarmAutoPendingSowBoxNetIds.Count == 0)
                         {
                             break;
                         }
 
-                        if (!awaitingHarvest && !seedsExhausted && Time.realtimeSinceStartup >= nextSowAllowedAt)
-                        {
-                            this.RefreshHomelandFarmSeeds();
-                            HomelandFarmInventoryItem seed = this.FindHomelandFarmSeedByStaticId(seedStaticId);
-                            if (seed == null)
-                            {
-                                seedsExhausted = true;
-                                this.HomelandFarmLog("Auto: selected seed exhausted.");
-                            }
-                            else
-                            {
-                                this.homelandFarmLastStatus = "Auto: sowing " + seed.Label + "...";
-                                this.homelandFarmAutoSowCount = 0;
-                                IEnumerator sowPass = this.HomelandFarmAutoSowPassRoutine(seed);
-                                while (sowPass.MoveNext())
-                                {
-                                    yield return sowPass.Current;
-                                }
-
-                                if (this.homelandFarmAutoSowCount > 0)
-                                {
-                                    totalSown += this.homelandFarmAutoSowCount;
-                                    awaitingHarvest = true; // lock until this generation is harvested
-                                    nextSowAllowedAt = Time.realtimeSinceStartup + HomelandFarmAutoSowCooldownSeconds;
-                                    needDiscovery = true;
-                                    discoveryDelay = true; // server needs a beat to create the new crops
-                                    this.HomelandFarmLog("Auto: sowed " + this.homelandFarmAutoSowCount
-                                        + " point(s); waiting for crop registration.");
-                                    continue; // re-discover the new crops before the next decision
-                                }
-                            }
-                        }
-
-                        // Either waiting for the sown generation to grow into view / be harvested, or the
-                        // cooldown hasn't elapsed / no empty planters were found. Wait, then re-discover
-                        // (picks up crops once they register) before deciding again.
-                        this.homelandFarmLastStatus = awaitingHarvest
-                            ? "Auto: waiting for crops to grow..."
-                            : "Auto: waiting for empty planters...";
+                        // Waiting for just-sown crops to register/grow, or for the sow cooldown to
+                        // elapse. Re-discover (picks up crops once they register) before deciding again.
+                        this.homelandFarmLastStatus = "Auto: waiting for crops...";
                         yield return new WaitForSecondsRealtime(HomelandFarmAutoEmptyRetrySeconds);
                         needDiscovery = true;
                         continue;
@@ -15172,6 +14658,17 @@ namespace HeartopiaMod
                             HomelandFarmAutoCoarseWeedIntervalSeconds,
                             (float)(minRemaining - HomelandFarmAutoFinalMinuteSeconds));
                         sleep = Mathf.Max(sleep, HomelandFarmAutoFinalWeedIntervalSeconds);
+                    }
+
+                    // Just harvested some crops while others still grow with > threshold seconds to
+                    // ripen: the freed boxes likely aren't server-free yet, so don't sleep all the way
+                    // to the next ripe. Wake within the short retry window to re-sow the freed boxes.
+                    if (harvestedThisTick > 0
+                        && minRemaining != long.MaxValue
+                        && minRemaining > HomelandFarmAutoPostHarvestResowThresholdSeconds)
+                    {
+                        sleep = Mathf.Min(sleep, HomelandFarmAutoEmptyRetrySeconds);
+                        needDiscovery = true;
                     }
 
                     string remainLabel = minRemaining == long.MaxValue
@@ -15795,7 +15292,14 @@ namespace HeartopiaMod
                         this.HomelandFarmLog("Collect seed fail netId=" + plantNetId + " " + collectStatus);
                     }
 
-                    yield return new WaitForSecondsRealtime(HomelandFarmCollectSeedDelaySeconds);
+                    if (HomelandFarmCollectSeedDelaySeconds > 0f)
+                    {
+                        yield return new WaitForSecondsRealtime(HomelandFarmCollectSeedDelaySeconds);
+                    }
+                    else
+                    {
+                        yield return null;
+                    }
                 }
 
                 this.homelandFarmLastStatus = "Collected " + collected + "/" + plantNetIds.Count + " plant seed(s)"
@@ -19494,13 +18998,13 @@ namespace HeartopiaMod
                 return false;
             }
 
-            if ((!this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, cropNetId, out object cropData, out _, "CropItemData")
-                    || cropData == null)
-                // This build's growing crop data is PlantItemData, not CropItemData.
-                && (!this.TryHomelandFarmGetComponentData(this.homelandFarmPlantItemDataType, cropNetId, out cropData, out _, "PlantItemData")
-                    || cropData == null))
+            // Fertilize must apply to CROPS only. A crop has CropItemData; flowers / trees have
+            // PlantItemData. Require CropItemData and reject anything else (a PlantItemData-only
+            // entity is a flower/tree and must never be fertilized here).
+            if (!this.TryHomelandFarmGetComponentData(this.homelandFarmCropItemDataType, cropNetId, out object cropData, out _, "CropItemData")
+                || cropData == null)
             {
-                reason = "Crop data missing.";
+                reason = "Not a crop (no CropItemData).";
                 return false;
             }
 
@@ -19508,17 +19012,9 @@ namespace HeartopiaMod
             // crops are still fertilizable (confirmed: they can be fertilized manually). Let the
             // server be the authority on maturity; do not pre-reject by stage here.
 
-            bool hasTableRow = this.TryHomelandFarmTryGetCropFertilizerTableRow(
-                fertilizerStaticId,
-                out _,
-                out int selectedEffectType,
-                out int selectedEffectLevel);
-            if (!hasTableRow)
-            {
-                // Aura-only builds may not expose managed TableData; server validates compatibility.
-                return true;
-            }
-
+            // Read the crop's current fertilizer slots up front (works via AuraMono even without the
+            // managed/aura fertilizer table) so we can ALWAYS skip crops already carrying the
+            // selected fertilizer — i.e. fertilize only crops that are not yet fertilized with it.
             int manureId = 0;
             int breedingPowderId = 0;
             if (!this.TryHomelandFarmReadComponentInt(cropData, out manureId, "manureId", "ManureId"))
@@ -19531,10 +19027,22 @@ namespace HeartopiaMod
                 breedingPowderId = 0;
             }
 
-            if (manureId == fertilizerStaticId)
+            if (fertilizerStaticId > 0 && (manureId == fertilizerStaticId || breedingPowderId == fertilizerStaticId))
             {
-                reason = "Already fertilized (same manureId).";
+                reason = "Already fertilized (same fertilizer).";
                 return false;
+            }
+
+            bool hasTableRow = this.TryHomelandFarmTryGetCropFertilizerTableRow(
+                fertilizerStaticId,
+                out _,
+                out int selectedEffectType,
+                out int selectedEffectLevel);
+            if (!hasTableRow)
+            {
+                // No fertilizer table (managed or AuraMono). The crop doesn't already carry this
+                // exact fertilizer; let the server validate effect-slot compatibility for the rest.
+                return true;
             }
 
             bool valid = this.TryHomelandFarmCheckFertilizerEffectValid(manureId, selectedEffectType, selectedEffectLevel, HomelandFarmFertilizerEffectGrowthValue)
@@ -19779,12 +19287,14 @@ namespace HeartopiaMod
 
                 yield return null;
 
+                // Fertilize targets CROPS only (CropItemData). Do NOT include PlantItemData
+                // (flowers / trees) — those are a separate system and must never be fertilized here.
                 List<uint> ownCrops = this.ScanHomelandFarmCropsByRadius(
                     cropData => cropData != null,
                     "Fertilizable crops",
                     requireOwn: true,
                     preCollectedNetIds: scanNetIds,
-                    includePlantData: true);
+                    includePlantData: false);
                 Dictionary<string, int> rejectReasons = new Dictionary<string, int>(StringComparer.Ordinal);
                 int maxTargets = Math.Max(1, fertilizer.Count);
                 for (int i = 0; i < ownCrops.Count; i++)
@@ -19863,75 +19373,31 @@ namespace HeartopiaMod
                     this.HomelandFarmLog("Fertilize warning: fertilizer backpack netId missing; server may reject.");
                 }
 
-                int castBatchSize = Mathf.Clamp(this.TryHomelandFarmGetFertilizerCastCellCount(), 1, HomelandFarmBatchLimit);
-                this.HomelandFarmLog("Fertilize cast batch size=" + castBatchSize + " (TableMode.num for equipped fertilizer mode)");
+                // Fertilize uses the direct AddManure command path (no casting animation). The
+                // batch size is the equipped fertilizer's per-command cell cap (server rejects a
+                // larger ManuredNetworkCommand).
+                int fertilizeBatchSize = Mathf.Clamp(this.TryHomelandFarmGetFertilizerCastCellCount(), 1, HomelandFarmBatchLimit);
+                this.HomelandFarmLog("Fertilize batch size=" + fertilizeBatchSize + " (TableMode.num for equipped fertilizer mode)");
 
-                int castStaticId = this.TryHomelandFarmResolveCastFertilizerStaticId(fertilizer.StaticId);
-                this.HomelandFarmLog("Fertilize cast staticId=" + castStaticId + " (inventory=" + fertilizer.StaticId + ")");
-
-                for (int offset = 0; offset < targets.Count; offset += castBatchSize)
+                for (int offset = 0; offset < targets.Count; offset += fertilizeBatchSize)
                 {
-                    int batchSize = Math.Min(castBatchSize, targets.Count - offset);
+                    int batchSize = Math.Min(fertilizeBatchSize, targets.Count - offset);
                     List<uint> batch = targets.GetRange(offset, batchSize);
                     Dictionary<uint, HomelandFarmCropFertilizeSnapshot> beforeSnapshots =
                         this.TryHomelandFarmSnapshotCropFertilizeStates(batch);
 
-                    float readyDeadline = Time.realtimeSinceStartup + 2f;
-                    while (Time.realtimeSinceStartup < readyDeadline)
-                    {
-                        if (this.TryHomelandFarmTryGetAuraActionGraphIsCasting(out bool currentlyCasting) && !currentlyCasting)
-                        {
-                            break;
-                        }
-
-                        yield return null;
-                    }
-
                     this.HomelandFarmLog("Fertilize netIds=" + string.Join(",", batch.ToArray()));
 
-                    bool castStarted = false;
-                    bool actionGraphCasting = false;
-                    string castStatus = "Cast skipped.";
-                    if (castStaticId > 0)
+                    if (this.TryHomelandFarmSendFertilizeAddManure(batch, out string manureStatus))
                     {
-                        castStarted = this.TryHomelandFarmCastFertilizationAction(
-                            batch,
-                            castStaticId,
-                            out castStatus,
-                            out actionGraphCasting);
-                    }
-
-                    if (castStarted && actionGraphCasting)
-                    {
-                        yield return new WaitForSecondsRealtime(HomelandFarmFertilizeCastWaitSeconds);
-                    }
-                    else if (castStarted)
-                    {
-                        yield return new WaitForSecondsRealtime(HomelandFarmFertilizeAddManureDelaySeconds);
-                        if (this.TryHomelandFarmSendFertilizeAddManure(batch, out string manureStatus))
-                        {
-                            this.HomelandFarmLog("Fertilize post-cast AddManure: " + manureStatus);
-                        }
-                        else
-                        {
-                            this.HomelandFarmLog("Fertilize post-cast AddManure failed: " + manureStatus);
-                        }
-
-                        yield return new WaitForSecondsRealtime(HomelandFarmCommandDelaySeconds);
+                        this.HomelandFarmLog("Fertilize AddManure: " + manureStatus);
                     }
                     else
                     {
-                        if (this.TryHomelandFarmSendFertilizeAddManure(batch, out string manureStatus))
-                        {
-                            this.HomelandFarmLog("Fertilize AddManure fallback: " + manureStatus + " (cast=" + castStatus + ")");
-                        }
-                        else
-                        {
-                            this.HomelandFarmLog("Fertilize cast+AddManure failed: cast=" + castStatus + "; AddManure=" + manureStatus);
-                        }
-
-                        yield return new WaitForSecondsRealtime(HomelandFarmCommandDelaySeconds);
+                        this.HomelandFarmLog("Fertilize AddManure failed: " + manureStatus);
                     }
+
+                    yield return new WaitForSecondsRealtime(HomelandFarmCommandDelaySeconds);
 
                     int applied = this.CountHomelandFarmFertilizeApplied(
                         batch,
@@ -19943,18 +19409,12 @@ namespace HeartopiaMod
                     {
                         fertilized += applied;
                         batchCount++;
-                        int visualRefreshed = this.TryHomelandFarmRefreshCropManureVisuals(
-                            batch,
-                            fertilizer.StaticId,
-                            out string visualDetail);
-                        this.HomelandFarmLog("Fertilize batch ok applied=" + applied + "/" + batch.Count + " " + verifyDetail
-                            + " visualRefreshed=" + visualRefreshed + "/" + batch.Count
-                            + (visualRefreshed > 0 ? " " + visualDetail : string.Empty));
+                        this.HomelandFarmLog("Fertilize batch ok applied=" + applied + "/" + batch.Count + " " + verifyDetail);
                     }
                     else
                     {
                         failCount++;
-                        this.HomelandFarmLog("Fertilize batch fail count=" + batch.Count + " cast=" + castStatus + " verify=" + verifyDetail);
+                        this.HomelandFarmLog("Fertilize batch fail count=" + batch.Count + " verify=" + verifyDetail);
                     }
                 }
 
@@ -20243,13 +19703,20 @@ namespace HeartopiaMod
             // Resolve + log the farm component classes (Plant / CropBox / Crop) up front so the
             // first scan never pays the resolution cost and we can see what resolved in the log.
             this.HomelandFarmResolveFarmComponentClassesInternal(logResults: true);
+            // EXPERIMENT (Option 4): probe the AuraMono Entities.GetComponents path readiness up
+            // front so the log shows whether the direct-ECS source can run before any scan.
+            if (HomelandFarmAllowUnsafeAuraMonoGetComponents)
+            {
+                bool auraGetCompReady = this.TryHomelandFarmIsAuraMonoGetComponentsReady(out string auraGetCompStatus);
+                this.HomelandFarmLog("Warmup GetComponents[AuraMono]: ready=" + auraGetCompReady + " (" + auraGetCompStatus + ").");
+            }
+
             yield return null;
             this.EnsureHomelandFarmSowManagedReflection();
             this.TryHomelandFarmWarmupPrefetchInteropMethods();
             yield return null;
             this.TryHomelandFarmEnsureToolEquipTypes();
             this.TryHomelandFarmEnsureNetworkCommandTypes(out _);
-            this.TryHomelandFarmEnsureFertilizationCastResolver(out _);
             yield return null;
             this.EnsureHomelandFarmInventoryReflection();
             this.EnsureHomelandFarmTableDataReflection();
@@ -20516,6 +19983,22 @@ namespace HeartopiaMod
             }
 
             ModLogger.Msg("[HomelandFarm] " + msg);
+        }
+
+        // Verbose per-call AuraMono GetComponents diagnostics (step1..step6 / step3a..3d). These
+        // were invaluable while bringing up the direct-ECS scan path but are far too noisy for
+        // normal runs (printed per component type per scan). Flip on only when re-debugging the
+        // AuraMono inflate/invoke path. Failures still log via the normal HomelandFarmLog.
+        private const bool HomelandFarmVerboseAuraGetComponentsLogs = false;
+
+        private void HomelandFarmVerboseLog(string msg)
+        {
+            if (!HomelandFarmVerboseAuraGetComponentsLogs)
+            {
+                return;
+            }
+
+            this.HomelandFarmLog(msg);
         }
     }
 }

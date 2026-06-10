@@ -112,6 +112,7 @@ Pattern for new features:
 | **Bubble service (GM API)** | `FindLoadedBubbleServiceType` | Looks for `IBubbleService` / `BubbleClientService` with `GmGetAllBubble`. |
 | **Bird farm** | `TryResolveBirdPhotoCommandRuntimeTypes` + cached `SendCommand` | Shape validation on command struct. |
 | **Net cook** | `EnsureNetCookProtocolMethods`, AuraMono `CookingSystem` | Protocol types + optional Mono invoke. |
+| **Homeland Farm** (`HomelandFarmFeature.cs`) | `ResolveHomelandFarmManagedType`, `HomelandFarmResolveAuraComponentClassRobust` | Managed-first, AuraMono fallback; see [worked example](#worked-example-homeland-farm-type-resolution). |
 | **Pet / puzzle partials** | `FindLoadedType` in `PetFeedFeature.cs`, `PetPlayFeature.cs`, `PuzzleNetFeature.cs` | Same core API. |
 
 ---
@@ -143,8 +144,158 @@ Used for:
 - Sending pick bush / attack tree / hit stone when IL2CPP stubs are incomplete.
 - Net cook `PrepareCooking` via `CookingSystem` in some builds.
 - Reading interact targets and entity lists when managed reflection fails.
+- **Homeland-farm entity discovery** — inflating and invoking `Entities.GetComponents<T>` through Mono because the managed `Entities` method is absent (see [AuraMono generic `GetComponents<T>`](#auramono-generic-getcomponentst-direct-ecs-query)).
 
 Other features (bubble, bird direct command, etc.) **do not** use Mono unless explicitly wired. Prefer `WebRequestUtility.SendCommand` for network actions.
+
+---
+
+## AuraMono generic `GetComponents<T>` (direct ECS query)
+
+The homeland-farm scan needs the live set of `CropBoxComponent` / `CropComponent` / `PlantComponent` entities. The clean way is the game's own ECS query:
+
+```csharp
+// XDTLevelAndEntity.BaseSystem.EntitiesManager.Entities
+public static void GetComponents<T>(ref List<T> outList) where T : ViewComponent
+    => EntityWorld.GetAllComponents(outList);
+```
+
+But on this BepInEx build **the managed `Entities` type and its `GetComponents` `MethodInfo` are absent** (interop never stubbed them), so `FindLoadedType("…Entities")` resolves a shape but the generic method can't be reflected/invoked managed-side. The mod instead **inflates and invokes the generic method through the embedded Mono API** (`HomelandFarmFeature.cs` / `AuraFarm.cs`). This is the only fully-working farm discovery source on this build and replaces the crash-prone entity-graph walk.
+
+### Required Mono exports
+
+Bound in `AuraFarm.cs` (`ResolveAuraMonoRuntimeMethods`) via `GetAuraMonoExport<…>`:
+
+| Export | Use |
+|--------|-----|
+| `mono_class_from_name`, `mono_class_get_methods`, `mono_method_get_name` | Find the open generic `GetComponents` method on the `Entities` class. |
+| `mono_class_get_type` | Component **class** → its `MonoType*` (the generic type argument). |
+| **`mono_metadata_get_generic_inst`** | Build a valid `MonoGenericInst*` from `(argc, MonoType**)`. **Without this the inflate AVs** (see gotcha 2). |
+| `mono_class_inflate_generic_method` | `GetComponents<T>` (open) + generic context → the closed method. |
+| `mono_compile_method` | JIT the inflated method (also done lazily by `runtime_invoke`). |
+| `mono_object_new`, `mono_runtime_object_init` / `Activator.CreateInstance` | Create the `List<T>` argument. |
+| `mono_runtime_invoke` | Call the closed method. |
+| `mono_array_addr_with_size`, `mono_array_length` | Read the resulting `List<T>` backing array. |
+
+If any export is missing the path bails **gracefully** (logs and returns `false`) — it never dereferences a null delegate.
+
+### Call sequence
+
+1. **Readiness** (`TryHomelandFarmIsAuraMonoGetComponentsReady`) — Aura API attached, `Entities` class + open `GetComponents` method found, component classes resolved. Gate on **this**, not on the managed resolver (gotcha 1).
+2. **Resolve component class** — `TryResolveAuraMonoFarmComponentClasses` returns the `CropBox` / `Crop` / `Plant` mono classes (`XDTLevelAndEntity.Gameplay.Component.Homeland.*`).
+3. **Build generic inst** — `mono_class_get_type(componentClass)` → `MonoType*`; `mono_metadata_get_generic_inst(1, &type)` → `MonoGenericInst*`; put it in `MonoGenericContext.method_inst` (gotcha 2).
+4. **Inflate + compile** — `mono_class_inflate_generic_method(openMethod, &context)` then `mono_compile_method`. Cached per component class.
+5. **Create `List<T>`** and invoke `GetComponents<T>(ref list)` (gotcha 3).
+6. **Enumerate** the list's backing array, read each component's `netId`.
+
+### Three native-AV gotchas (each cost a crash to find)
+
+These are uncatchable by C# `try/catch` — a native access-violation kills the process before BepInEx flushes the file log. They were isolated with per-step breadcrumb logs (`step1..step6`, `step3a..step3d`), now gated behind `HomelandFarmVerboseAuraGetComponentsLogs`.
+
+1. **Wrong readiness gate.** The collector bailed at the top via the *managed* `TryEnsureHomelandFarmEntitiesGetComponentsReady` (always fails — managed types absent) **before** reaching the AuraMono branch. Fix: on the unsafe path gate on `TryHomelandFarmIsAuraMonoGetComponentsReady`.
+2. **Malformed `MonoGenericInst` → AV in inflate.** `MonoGenericContext.method_inst` was set to a raw `MonoType*[]`. Mono expects a **`MonoGenericInst*`** (`{ bitfield id/argc; MonoType* type_argv[] }`), so it read `type_argc` from the wrong offset → huge garbage count → out-of-bounds walk → AV. Fix: build the inst with `mono_metadata_get_generic_inst(argc, MonoType**)` and use **its** pointer.
+3. **By-ref parameter → AV in invoke.** The signature is `GetComponents<T>(ref List<T>)`. For a `ref` parameter `mono_runtime_invoke` expects `params[0]` to be a **pointer to the list pointer** (`List**`), not the list object. Passing the bare `MonoObject*` made Mono treat the object header as the ref-slot address → AV. Fix: `listSlot[0] = listObj; invokeArgs[0] = &listSlot;` then read the slot back to enumerate.
+
+> **Rule for inflating any IL2CPP/embedded-mono generic method by raw pointer:** the generic context `method_inst` must be a real interned `MonoGenericInst*` (via `mono_metadata_get_generic_inst`), and a `ref`/`out` parameter takes a pointer-to-pointer, not the object. Get either wrong and you get a silent native crash, not an exception.
+
+### `ViewComponent` constraint & component namespaces
+
+`GetComponents<T> where T : ViewComponent` — the three farm component classes all derive from `ViewComponent` and live in **`XDTLevelAndEntity.Gameplay.Component.Homeland`**:
+
+| Component | Full name |
+|-----------|-----------|
+| `CropBoxComponent` | `XDTLevelAndEntity.Gameplay.Component.Homeland.CropBoxComponent` |
+| `CropComponent` | `XDTLevelAndEntity.Gameplay.Component.Homeland.CropComponent` |
+| `PlantComponent` | `XDTLevelAndEntity.Gameplay.Component.Homeland.PlantComponent` |
+
+**Gotcha:** `PlantComponent` is in the `.Homeland` namespace like the others, **not** a `.Plant` namespace. The resolver originally searched only `…Component.Plant.PlantComponent` → logged `PlantComponent=missing` and plants were never queried (they leaked back into the proximity walk). Adding the `.Homeland` candidate fixed it. Always confirm the real namespace from `ilspy-dumps/` — sibling components do not guarantee a shared namespace, but here all three share `.Homeland`.
+
+### Non-fatal `icall.c:1622`
+
+`D:\…\mono\metadata\icall.c:1622:` (= `ves_icall_System_Array_GetValue`) lines appear in the **native console** during these scans and sometimes leak into the file log. They are **non-fatal** — the scan completes. They come from a value-array `Array.GetValue` path used elsewhere (dictionary-backed discovery, water batches) and are **not** the crash. Do not chase them when diagnosing an AV; look at the last breadcrumb step instead.
+
+---
+
+## Worked example: Homeland Farm type resolution
+
+The farm (`HomelandFarmFeature.cs`) needs three families of types, each resolved differently. All resolution is centralized so the rest of the feature just reads cached `Type`/`IntPtr` fields.
+
+### 1. Managed / protocol / command types — `ResolveHomelandFarmManagedType`
+
+A thin wrapper over the host `FindLoadedType` that adds the Aura loader and the `Il2Cpp` prefix automatically. Signature: `ResolveHomelandFarmManagedType(string shortName, params string[] fullNames)`. Order: each full name via `FindLoadedTypeByFullName` → `FindLoadedType(fullName, shortName)`; then the Aura loader (`FindTypeByName`, also trying an `Il2Cpp`-prefixed name); finally `FindHomelandFarmRuntimeType(shortName)`.
+
+Always pass **both namespace variants** — the game ships duplicated types under `XDTDataAndProtocol.*` and `ScriptsRefactory.DataAndProtocol.*`, and command structs additionally appear with an `EcsClient.` prefix:
+
+```csharp
+// Component data (crop vs crop-box vs plant/flower are three distinct types)
+this.homelandFarmCropItemDataType = this.ResolveHomelandFarmManagedType(
+    "CropItemData",
+    "XDTDataAndProtocol.ComponentsData.CropItemData",
+    "ScriptsRefactory.DataAndProtocol.ComponentsData.CropItemData");
+
+// Protocol manager (sends the actual server commands: AddManure, WaterPlant, …)
+this.homelandFarmCropProtocolManagerType = this.ResolveHomelandFarmManagedType(
+    "CropProtocolManager",
+    "XDTDataAndProtocol.ProtocolService.Plant.CropProtocolManager");
+
+// Network command struct — note the EcsClient-prefixed fallback
+this.homelandFarmManuredNetworkCommandType = this.ResolveHomelandFarmManagedType(
+    "ManuredNetworkCommand",
+    "XDT.Scene.Shared.Modules.Farm.ManuredNetworkCommand",
+    "EcsClient.XDT.Scene.Shared.Modules.Farm.ManuredNetworkCommand");
+```
+
+Each resolved type is null-checked into a `missingTypes` list and logged once, so a single startup line tells you exactly what failed to resolve on the current build.
+
+### 2. ECS component classes (`CropBoxComponent` / `CropComponent` / `PlantComponent`) — AuraMono
+
+These managed types are **absent** under BepInEx on the current build, so they are resolved as native **Mono classes** (`IntPtr`) via `HomelandFarmResolveAuraComponentClassRobust(fullNames, shortName, namespaceCandidates, validator)`:
+
+1. each full name → `FindAuraMonoClassByFullName`,
+2. else `FindAuraMonoClassAcrossLoadedAssemblies(namespace, shortName)` for each namespace candidate,
+3. else `FindHomelandFarmAuraClassByScanningAllImages(shortName, namespaces, validator)`.
+
+The `validator` (e.g. `HomelandFarmAuraClassDisplayNameContains(candidate, "PlantComponent")`) disambiguates short-name collisions across images. The candidate lists must carry the **exact** namespace — all three farm components live in `XDTLevelAndEntity.Gameplay.Component.Homeland` (note: `PlantComponent` is here too, **not** in a `.Plant` namespace — getting this wrong logs `PlantComponent=missing` and silently drops flowers from the scan):
+
+```csharp
+private static readonly string[] HomelandFarmAuraPlantComponentFullNames =
+{
+    "XDTLevelAndEntity.Gameplay.Component.Homeland.PlantComponent",
+    "XDTLevelAndEntity.GamePlay.Component.Homeland.PlantComponent",        // Gameplay/GamePlay casing
+    "ScriptsRefactory.LevelAndEntity.Gameplay.Component.Homeland.PlantComponent",
+    // …legacy ".Plant" namespace kept only as a last-resort fallback
+};
+```
+
+These class pointers feed the [AuraMono generic `GetComponents<T>`](#auramono-generic-getcomponentst-direct-ecs-query) query above.
+
+### 3. Protocol methods — managed first, AuraMono fallback
+
+Once the protocol-manager `Type` (or Mono class) is known, the specific method is resolved by name + parameter count, with a native fallback:
+
+```csharp
+// Managed: static method taking a single List<uint>
+this.homelandFarmCropAddManureMethod =
+    this.ResolveHomelandFarmListOnlyStaticMethod(this.homelandFarmCropProtocolManagerType, "AddManure");
+this.homelandFarmPlantCollectSeedMethod =
+    this.GetMethodByNameAndParamCountQuiet(this.homelandFarmPlantProtocolManagerType, "SendCollectSeedCommand", 1);
+
+// AuraMono fallback when the managed method is absent
+this.homelandFarmAuraCropAddManureMethod =
+    this.FindAuraMonoMethodOnHierarchy(cropProtocolClass, "AddManure", 1);
+```
+
+### Two-tier pattern & where the names come from
+
+The farm follows a consistent **managed-first, AuraMono-fallback** policy: `EnsureHomelandFarmReflectionReady` resolves the managed types; when they are missing (`HomelandFarmPrefersAuraComponentData()` returns true), the AuraMono path takes over for component data, component classes, the fertilizer table (`TryHomelandFarmTryGetCropFertilizerTableRowAuraMono`), and protocol invokes. Every full name above is copied verbatim from `ilspy-dumps/` for this build — re-verify after a game patch (see the workflow below).
+
+| Farm type | shortName | Full name(s) | How resolved |
+|-----------|-----------|--------------|--------------|
+| `CropItemData` / `CropBoxItemData` / `PlantItemData` | same | `XDTDataAndProtocol.ComponentsData.*` (+ `ScriptsRefactory.*`) | `ResolveHomelandFarmManagedType` → AuraMono component-data read |
+| `CropProtocolManager` / `PlantProtocolManager` | same | `XDTDataAndProtocol.ProtocolService.Plant.*` | `ResolveHomelandFarmManagedType` |
+| `ManuredNetworkCommand` / `WaterCropNetworkCommand` / `HarvestNetworkCommand` / `WeedingNetworkCommand` / `GrowCropNetworkCommand` | same | `XDT.Scene.Shared.Modules.Farm.*` (+ `EcsClient.` prefix) | `ResolveHomelandFarmManagedType` |
+| `CropBoxComponent` / `CropComponent` / `PlantComponent` | same | `XDTLevelAndEntity.Gameplay.Component.Homeland.*` | `HomelandFarmResolveAuraComponentClassRobust` (Mono `IntPtr`) |
+| `Entities.GetComponents<T>` | `Entities` | `XDTLevelAndEntity.BaseSystem.EntitiesManager.Entities` | AuraMono generic inflate/invoke (section above) |
 
 ---
 
@@ -175,7 +326,7 @@ Same pattern: bird photo (`TakingBirdPhotoCommand`), net cook prepare commands, 
 
 `MethodInfo.Invoke` / `Activator.CreateInstance` on resolved types:
 
-- `Entities.GetComponents<T>()`
+- `Entities.GetComponents<T>()` — **only where the managed method exists**; absent on the current homeland build, which uses the [AuraMono generic invoke](#auramono-generic-getcomponentst-direct-ecs-query) instead.
 - `EntityUtil`, `InteractSystem`, `GameplayApi`
 - UI/HUD components
 
@@ -225,6 +376,9 @@ Features should **not** call `FindLoadedType` every frame without cache; use mis
 | Harmony never runs | Type null → patch skipped | Fix resolution first; check BepInEx log for `[ERR]` |
 | Miss cache hides new type | Failed lookup cached 30 s | Wait or call `loadedTypeMissCacheUntil.Remove` in feature init (bubble clears per lookup) |
 | Only `Assembly-CSharp` searched | Narrow probe | Scan **all** non-System assemblies (default in `FindLoadedType`) |
+| Silent native crash (no log) inflating a generic method via Mono | `MonoGenericContext.method_inst` was a raw `MonoType*[]` | Build a real `MonoGenericInst*` with `mono_metadata_get_generic_inst` ([detail](#three-native-av-gotchas-each-cost-a-crash-to-find)) |
+| Silent native crash invoking a Mono method taking `ref`/`out` | Passed the object pointer for a by-ref param | Pass a pointer-to-pointer (`List**`); read the slot back after invoke |
+| `…Component=missing` though sibling components resolve | Wrong namespace assumed (e.g. `.Plant` vs `.Homeland`) | Confirm exact namespace per type in `ilspy-dumps/` |
 
 ---
 
