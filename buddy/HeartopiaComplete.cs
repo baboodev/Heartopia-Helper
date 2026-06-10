@@ -18056,6 +18056,9 @@ namespace HeartopiaMod
                 case 16:
                     if (this.TryOpenShopPanelByStoreId(7, 0, "Showroom")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
+                case 17:
+                    if (this.TryOpenMeteorWeatherExchangeShop()) { status = this.forceOpenShopStatus; return true; }
+                    status = this.forceOpenShopStatus; return false;
                 default:
                     status = "Unsupported shop selection.";
                     this.LogForceOpenShop("Unsupported shop selection index: " + this.forceOpenShopSelectedIndex);
@@ -20901,6 +20904,42 @@ namespace HeartopiaMod
                 storeId,
                 slotId,
                 "Opened " + label + ".");
+        }
+
+        private const int MeteorStarfallExchangeStoreId = 140;
+
+        private bool TryOpenWeatherExchangeShopPanelByStoreId(int storeId, int slotId, string label)
+        {
+            if (storeId <= 0)
+            {
+                this.forceOpenShopStatus = "Invalid store id for " + label + ".";
+                this.LogForceOpenShop(this.forceOpenShopStatus);
+                return false;
+            }
+
+            this.LogForceOpenShop("Opening " + label + " via WeatherExchange storeId=" + storeId + " slotId=" + slotId);
+            if (this.TryInvokeAuraMonoStaticIntIntMethod(
+                "XDTGame.UI.Panel.WeatherExchangeShopPanel",
+                "OpenWeatherExchangePanel",
+                storeId,
+                slotId,
+                "Opened " + label + "."))
+            {
+                return true;
+            }
+
+            return this.TryInvokeAuraMonoStaticIntIntMethod(
+                "XDTGame.UI.Panel.WeatherExchangeShopPanel",
+                "OpenWeatherExchangePanel",
+                storeId,
+                0,
+                "Opened " + label + ".");
+        }
+
+        private bool TryOpenMeteorWeatherExchangeShop()
+        {
+            const string label = "Meteor / Starfall Exchange";
+            return this.TryOpenWeatherExchangeShopPanelByStoreId(MeteorStarfallExchangeStoreId, 0, label);
         }
 
         private bool TryOpenResolvedStorePanel(string label, string[] keywords)
@@ -63588,7 +63627,8 @@ namespace HeartopiaMod
             "Insect Catching Store",
             "Pet Store",
             "Special Home Decor Store",
-            "Showroom"
+            "Showroom",
+            "Meteor / Starfall Exchange"
         };
 
         // Hardcoded resource position arrays (ported from decompiled map data)
