@@ -450,7 +450,7 @@ Missing file does **not** block the build.
 |--------------|----------------|----------|
 | Daily quest item submit | `IL2CPP.GetIl2CppClass` + `Il2CppSystem` list (v10) | Interop `FindLoadedType`, `ClientSubmitNpcTaskItem`, AuraMono list pointer |
 | Wild animal / pet feed | `List<uint>` (mscorlib / Il2Cpp) | AuraMono `List<uint>` |
-| Aura Farm (bush, tree) | AuraMono + optional managed | `FindTypeBySignature` |
+| Aura Farm (bush, tree, stone, meteor) | AuraMono AxeChecker + `ResourceProtocolManager` invoke; optional managed reflection | `FindTypeBySignature`; meteor parent via `Entities.GetEntity` + component scan |
 | Bubble / birds / net commands | `WebRequestUtility.SendCommand` + interop command types | Harmony on `SendCommand` generic |
 | Backpack / warehouse scan | `BackPackSystem` reflection | AuraMono table/backpack classes |
 | NPC teleport / tables | `TableData` — `EcsClient` image (Aura) + `FindLoadedType` | `TryFindIl2CppClass("TableData", "EcsClient", …)` |

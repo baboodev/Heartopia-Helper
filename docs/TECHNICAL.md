@@ -261,20 +261,40 @@ Preferred assembly name fragments: `Assembly-CSharp`, `Il2CppAssembly-CSharp`, `
 
 Caches `MethodInfo` / `FieldInfo` for:
 
-- `SendPickBush`, `SendAttackTree`, `SendHitStone`
+- `SendPickBushCommand`, `SendAttackTreeCommand`, `SendHitStoneCommand`
 - `InteractSystem` instance / player / target list
-- `EntityHelper`, `EntityUtil`, `Entities.SphereQueryEntities`
+- `EntityHelper`, `Entities.GetEntity` (preferred over `EntityUtil.GetEntity` for meteor entity lookup)
 - Collectable / bush / level object components
+
+Managed spatial fallbacks (`AuraUseManagedSpatialFallbackScans`) and generic mono target fallbacks (`AuraUseMonoTargetFallbacks`) are **off** by default; AxeChecker + throttled mono fallback paths are the active discovery pipeline.
 
 ### Tick
 
 `UpdateAuraFarm()` when enabled:
 
-1. Throttled scan interval 80 ms.
-2. Sphere/cylinder overlap queries for resources.
-3. Issues server-side pick/attack commands with per-owner cooldown 20 ms.
+1. Throttled scan interval **80 ms** (`AuraScanInterval`).
+2. `CollectAuraOwnerTargets` — managed select priority, throttled mono fallbacks, **Mono AxeChecker** (`HandholdCylinderChecker.PhysicalSelect`).
+3. Per tick: `RefreshAuraMeteorObjectPositionsThrottled` when mining meteors.
+4. For each `ownerNetId`: classify target → `InvokeAuraCommandForAllResources` or meteor-specific `InvokeAuraHitStone`.
+5. Per-owner cooldown **20 ms** (`AuraPerTargetCooldown`).
 
-Failure sets `auraLastError`; UI can surface via status helpers.
+Failure sets `auraLastError`; UI can surface via status helpers. Verbose trace: `MasterLogAuraFarm` on `HeartopiaComplete`.
+
+### Meteorite pipeline
+
+| Step | Implementation |
+|------|----------------|
+| Live rock detection | `GameObject.FindObjectsOfType` filter `name.StartsWith("p_rock_meteorite")` → `auraMeteorObjectPositions` (1 s scan) |
+| Classify as meteor | `IsAuraPositionNearLiveMeteor` / `IsAuraTargetMeteor` — position within 3 m of a live prop |
+| Register target | `TryRegisterAuraTargetFromMonoLevelObjectShape` from AxeChecker shape (`ownerNetId`, optional `resourceID`) |
+| Resolve hit netId | `TryGetAuraMeteorHitNetId` → `LevelResourceId` / `ResourceNetId` / `TryResolveAuraMeteorParentNetId` |
+| Parent resolution | View→parent cache (`auraMeteorViewToParentCache`); scan `MeteoriteLogic` components for `_viewEntity` link; mono component walk; optional `DataCenter.TryGetComponentData` (`CollectableMeteoriteComponentData`, …) |
+| Command | `InvokeAuraHitStone(parentNetId, isCombo: false)` after `TryEnsureAuraMeteorAxeEquipped` |
+| Multi-meteor | `RefreshAuraMeteorTargetsNearPlayer` — force AxeChecker refresh, prune dead owners, invalidate stale caches; meteor targets skip rock node cooldown stamps |
+
+**Entity lookup safety:** UInt32 scalar reads use `TrySafeGetMonoUInt32ScalarMember` (value-type unbox only). Reference-type members (`*Entity`, `parentEntity`) use `TryGetAuraMonoEntityNetId` — never unbox managed entity objects as scalars.
+
+**Foraging mutex:** `ShouldRunMeteorAutoInteract()` returns `false` when `auraFarmEnabled`. `SetAuraFarmEnabled(true)` calls `StopMeteorAutoInteractSequence()`.
 
 ---
 

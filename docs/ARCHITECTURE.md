@@ -692,11 +692,25 @@ buddy/
 
 ```
 UpdateAuraFarm (80ms throttle)
-  → sphere/cylinder query (Entities / EntityHelper — reflection or Mono)
-  → for each resource ownerNetId
-      → ResourceProtocolManager.SendPickBushCommand (managed Invoke OR AuraMono)
-  → interact target list optional path via InteractSystem fields
+  → CollectAuraOwnerTargets
+      → InteractSystem select priority (managed)
+      → Mono AxeChecker PhysicalSelect → level object shapes → ownerNetId
+      → optional throttled mono fallbacks (current target, managed lists)
+      → if player near live meteor: RefreshAuraMeteorTargetsNearPlayer
+  → RefreshAuraMeteorObjectPositions (p_rock_meteorite* props, 1s)
+  → for each ownerNetId in range
+      → if meteor (position near live prop):
+          → TryEnsureAuraMeteorAxeEquipped (tool id 1)
+          → resolve parentNetId from view ownerNetId
+          → ResourceProtocolManager.SendHitStoneCommand(parentNetId)
+      → else bush/tree/stone:
+          → SendPickBushCommand / SendAttackTreeCommand / SendHitStoneCommand
+  → managed Invoke OR AuraMono mono_runtime_invoke on ResourceProtocolManager
 ```
+
+Meteor **view** entities (`ownerNetId` on AxeChecker shape) differ from **logic parent** entities used for `HitStone`. Parent resolution uses component scan + `Entities.GetEntity`, not `EntityUtil.GetEntity`.
+
+When Aura Farm is on, teleport foraging meteor F-key auto-interact is suppressed (`ShouldRunMeteorAutoInteract`).
 
 ### 7.2 Auto fishing
 

@@ -144,6 +144,8 @@ When managed `Type` / `MethodInfo` is missing, Aura Farm can call the game’s *
 Used for:
 
 - Sending pick bush / attack tree / hit stone when IL2CPP stubs are incomplete.
+- **Aura Farm AxeChecker** — `HandholdCylinderChecker.PhysicalSelect` and level-object shape field reads (`ownerEntity.netId`, `_data.resourceID`).
+- **Meteor entity lookup** — `TryGetAuraMonoEntityObjectByNetId` prefers `Entities.GetEntity` / managed `Entities.GetEntity`; avoid `EntityUtil.GetEntity` for meteor parent walks (stale or missing on view entities).
 - Net cook `PrepareCooking` via `CookingSystem` in some builds.
 - Reading interact targets and entity lists when managed reflection fails.
 - **Homeland-farm entity discovery** — inflating and invoking `Entities.GetComponents<T>` through Mono because the managed `Entities` method is absent (see [AuraMono generic `GetComponents<T>`](#auramono-generic-getcomponentst-direct-ecs-query)).

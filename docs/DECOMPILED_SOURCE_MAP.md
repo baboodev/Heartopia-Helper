@@ -352,15 +352,23 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
   - **R:** `FindTypeByName` / `FindTypeBySignature` → static methods:
     - `SendPickBushCommand(uint ownerNetId)`
     - `SendAttackTreeCommand(uint ownerNetId, bool isCombo)`
-    - `SendHitStoneCommand(uint ownerNetId, bool isCombo)`
+    - `SendHitStoneCommand(uint ownerNetId, bool isCombo)` — stones and **meteor logic parents** (not view `ownerNetId`)
   - **A:** `mono_class_get_method_from_name(resourceClass, "SendPickBushCommand", 1)` → `mono_runtime_invoke(null, args)`
-- **Flow:** scan entities → resolve owner netId → 20ms cooldown → send command (server authoritative)
+- **Flow:** AxeChecker / interact lists → resolve owner netId → classify (bush/tree/stone/meteor) → 20ms cooldown → send command (server authoritative)
 - **File:** `AuraFarm.cs`
 
 #### `AxeChecker` / `HandholdCylinderChecker`
 - **Dump:** `Gameplay/Component/Equip/`
-- **Features:** Aura — axe range check
+- **Features:** Aura — axe range check, primary target discovery (`PhysicalSelect` → level object shapes)
 - **Access:** **A** (Mono class resolve)
+- **File:** `AuraFarm.cs` — `TryCollectAuraOwnerTargetsViaMonoAxeChecker`
+
+#### `CollectableMeteoriteViewComponent` / `CollectableMeteoriteLogicComponent` / `MeteoriteLogic`
+- **Dump:** `Gameplay/Component/Gather/`
+- **Features:** Aura farm — meteor parent resolution (`parentEntity`, `_viewEntity` links)
+- **Access:** **A** (Mono entity/component walk), partial **R** (`DataCenter.TryGetComponentData` for `CollectableMeteoriteComponentData`)
+- **Protocol:** `ResourceProtocolManager.SendHitStoneCommand(parentNetId)` — not pick bush / not F-interact
+- **Scene props:** `p_rock_meteorite*` GameObjects — live position scan for classification
 
 #### `LocalPlayerComponent` / `LocalPlayerLookInteractTarget`
 - **Dump:** `Gameplay/Component/Player/`
@@ -845,7 +853,7 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 
 | Feature | Key game types | Mod file(s) | Dominant access |
 |---------|----------------|-------------|-----------------|
-| Aura farm | ResourceProtocolManager, InteractSystem, Entities, EntityHelper, gather components | AuraFarm.cs | R + A |
+| Aura farm | ResourceProtocolManager, InteractSystem, Entities, EntityHelper, HandholdCylinderChecker, CollectableMeteorite*, MeteoriteLogic, gather components | AuraFarm.cs | R + A |
 | Auto fishing | HandHoldFishingRod, FishingSubState, ToolSystem, fish shadow GOs | AutoFishingFarm.cs, HC | R + A + G |
 | Insect farm | LevelInscetManager, InsectProtocolManager, ServerInsectComponent | InsectNetFarm.cs, HC | R + A + G |
 | Bird farm | BirdScannableComponent, TakingBirdPhotoCommand, BirdProtocolManager, ScannerStatusPanel | BirdNetFarm.cs, HC | R + A + S |

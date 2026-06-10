@@ -139,7 +139,7 @@ Classic **radar-driven teleport farm**:
 
 1. Requires **Radar enabled** with at least one loot category selected.
 2. Teleports player to radar markers for mushrooms, berries, stones, etc.
-3. Clicks interact / collects resources.
+3. Clicks interact / collects resources (including meteors via F-key auto-interact when **Aura Farm is off** and meteor radar category is active).
 4. Configurable:
    - Area load delay after teleport
    - Resource click duration
@@ -152,14 +152,30 @@ Status strings: `IDLE`, `TELEPORTING...`, `GATHERING...`, etc.
 
 ### Aura Farm
 
-Server-command style farming without teleporting to each node:
+Server-command style farming **without teleporting** to each node:
 
-- Resolves game types at runtime via reflection (`ResourceProtocolManager`, `InteractSystem`, `EntityHelper`, etc.). Details: [TYPE_RESOLUTION.md](./TYPE_RESOLUTION.md).
-- Sends pick/attack/hit commands for bushes, trees, and stones in radius (~8 m direct scan).
-- Throttled per-target cooldown; merged target cap (32).
+- Resolves game types at runtime via reflection (`ResourceProtocolManager`, `InteractSystem`, `EntityHelper`, `Entities`, etc.). Details: [TYPE_RESOLUTION.md](./TYPE_RESOLUTION.md).
+- Primary target discovery: **AxeChecker** (`HandholdCylinderChecker.PhysicalSelect`) → level-object shapes with `ownerNetId`.
+- Sends protocol commands in range:
+  - **Bushes** — `SendPickBushCommand`
+  - **Trees** — `SendAttackTreeCommand`
+  - **Stones** — `SendHitStoneCommand`
+- Throttled scan (80 ms tick, 20 ms per-owner cooldown); merged target cap (32).
 - Toggle independent of teleport foraging; both can conflict — UI warns when radar/foraging preconditions fail.
 
-**Requirements:** Radar on + compatible resource toggles; internal method resolution must succeed (logged if `MasterLogAuraFarm` enabled in source).
+#### Meteorites (starfall rocks)
+
+When live meteor props (`p_rock_meteorite*`) are near the player, Aura Farm treats matching AxeChecker targets as meteorites:
+
+1. Scans scene for meteor GameObject positions (~1 s interval, 3 m match radius).
+2. **Auto-equips axe** (hand tool id **1**) before mining.
+3. Resolves **logic parent** `netId` from the view `ownerNetId` (`CollectableMeteoriteViewComponent` → `CollectableMeteoriteLogic` / `MeteoriteLogic`). `HitStone` must target the **parent**, not the view entity.
+4. Sends `SendHitStoneCommand(parentNetId)` — same server path as `PlayerAxeAttackStoneAction`, not bush pick or F-key interact.
+5. Refreshes target list and invalidates stale caches when moving between meteors (no toggle restart needed).
+
+**Interaction with teleport foraging:** While Aura Farm is enabled, **meteor auto-interact** (F + UI click during START FORAGING) is disabled — meteors are handled only via Aura Farm API. Enabling Aura Farm also stops any in-progress meteor interact sequence.
+
+**Requirements:** Player within axe range of the meteor; `ResourceProtocolManager.SendHitStoneCommand` (managed or Mono) must resolve. Debug: set `MasterLogAuraFarm = true` in `HeartopiaComplete.cs` and rebuild.
 
 ### Chop & Mine
 

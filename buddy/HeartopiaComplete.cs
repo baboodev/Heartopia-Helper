@@ -42688,6 +42688,11 @@ namespace HeartopiaMod
 
         private bool ShouldRunMeteorAutoInteract()
         {
+            if (this.auraFarmEnabled)
+            {
+                return false;
+            }
+
             if (!this.autoFarmActive || !this.isRadarActive || !this.showMeteorRadar)
             {
                 return false;

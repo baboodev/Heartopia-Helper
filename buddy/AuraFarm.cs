@@ -49,9 +49,26 @@ namespace HeartopiaMod
         private string auraLastError = string.Empty;
         private readonly HashSet<uint> auraOwnerTargetBuffer = new HashSet<uint>();
         private readonly HashSet<uint> auraMonoFallbackTargetBuffer = new HashSet<uint>();
+        private readonly Dictionary<uint, AuraTargetInfo> auraMonoFallbackInfoCache = new Dictionary<uint, AuraTargetInfo>(32);
         private readonly Dictionary<uint, AuraTargetInfo> auraTargetInfoByOwnerId = new Dictionary<uint, AuraTargetInfo>();
+        private readonly HashSet<uint> auraMeteorHitParentsThisTick = new HashSet<uint>(4);
+        private readonly HashSet<uint> auraMeteorFreshOwnerBuffer = new HashSet<uint>(4);
+        private readonly Dictionary<uint, uint> auraMeteorViewToParentCache = new Dictionary<uint, uint>(8);
+        private readonly List<IntPtr> auraFarmComponentBuffer = new List<IntPtr>(16);
+        private float auraNextMeteorParentScanAt = 0f;
+        private string auraLastMeteorProbeKey = string.Empty;
+        private float auraLastMeteorProbeAt = 0f;
+        private float auraNextMeteorAxeEquipAt = 0f;
+        private const int AuraMeteorAxeToolId = 1;
+        private const float AuraMeteorAxeEquipInterval = 0.35f;
         private readonly Dictionary<uint, float> auraNextAllowedByOwnerId = new Dictionary<uint, float>();
         private readonly List<uint> auraExpiredOwnerBuffer = new List<uint>(64);
+        // Live meteor GameObject positions (p_rock_meteorite*), refreshed periodically. A registered target whose
+        // world position sits on one of these is a meteorite and must be mined with HitStone(parentEntity.netId).
+        private readonly List<Vector3> auraMeteorObjectPositions = new List<Vector3>(8);
+        private float auraNextMeteorObjectScanAt = 0f;
+        private static readonly float AuraMeteorObjectScanInterval = 1f;
+        private const float AuraMeteorMatchRadius = 3f;
         private const float AuraDirectScanRadius = 8f;
         private static readonly string[] auraPreferredAssemblyNameFragments = new string[]
         {
@@ -171,6 +188,7 @@ namespace HeartopiaMod
         private IntPtr auraMonoLocalPlayerLookTargetListFieldPtr = IntPtr.Zero;
         private IntPtr auraMonoSelectPriorityInfoShapeFieldPtr = IntPtr.Zero;
         private IntPtr auraMonoDynamicLevelObjectGetUniqueIdMethodPtr = IntPtr.Zero;
+        private const uint AuraLikelyEntityNetIdMax = 0x40000000U;
 
         private enum AuraTargetKind
         {
@@ -323,6 +341,12 @@ namespace HeartopiaMod
         private delegate IntPtr MonoArrayNewDelegate(IntPtr domain, IntPtr eclass, UIntPtr n);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate int MonoArrayElementSizeDelegate(IntPtr arrayClass);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate uint MonoFieldGetOffsetDelegate(IntPtr field);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoClassVtableDelegate(IntPtr domain, IntPtr klass);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -383,6 +407,8 @@ namespace HeartopiaMod
         private static MonoArrayLengthDelegate auraMonoArrayLength;
         private static MonoArrayAddrWithSizeDelegate auraMonoArrayAddrWithSize;
         private static MonoArrayNewDelegate auraMonoArrayNew;
+        private static MonoArrayElementSizeDelegate auraMonoArrayElementSize;
+        private static MonoFieldGetOffsetDelegate auraMonoFieldGetOffset;
         private static MonoClassVtableDelegate auraMonoClassVtable;
         private static MonoFieldStaticGetValueDelegate auraMonoFieldStaticGetValue;
         private static MonoObjectNewDelegate auraMonoObjectNew;
@@ -424,6 +450,11 @@ namespace HeartopiaMod
             }
 
             this.auraFarmEnabled = enabled;
+            if (enabled)
+            {
+                this.StopMeteorAutoInteractSequence();
+            }
+
             this.auraEnabledAt = Time.unscaledTime;
             this.auraLastScanAt = 0f;
             this.auraNextMonoFallbackScanAt = 0f;
@@ -452,6 +483,11 @@ namespace HeartopiaMod
             this.auraLastError = string.Empty;
             this.auraOwnerTargetBuffer.Clear();
             this.auraMonoFallbackTargetBuffer.Clear();
+            this.auraMonoFallbackInfoCache.Clear();
+            this.auraMeteorHitParentsThisTick.Clear();
+            this.auraMeteorViewToParentCache.Clear();
+            this.auraMeteorObjectPositions.Clear();
+            this.auraNextMeteorObjectScanAt = 0f;
             this.auraTargetInfoByOwnerId.Clear();
             this.auraNextAllowedByOwnerId.Clear();
 
@@ -524,8 +560,20 @@ namespace HeartopiaMod
             int stoneHits = 0;
             int bushPicks = 0;
 
+            this.RefreshAuraMeteorObjectPositionsThrottled();
+            this.auraMeteorHitParentsThisTick.Clear();
+            if (this.IsPlayerNearLiveMeteor())
+            {
+                this.TryEnsureAuraMeteorAxeEquipped();
+            }
+
             foreach (uint ownerNetId in this.auraOwnerTargetBuffer)
             {
+                if (!this.IsLikelyAuraEntityNetId(ownerNetId))
+                {
+                    continue;
+                }
+
                 float nextAllowed;
                 if (this.auraNextAllowedByOwnerId.TryGetValue(ownerNetId, out nextAllowed) && now < nextAllowed)
                 {
@@ -543,16 +591,66 @@ namespace HeartopiaMod
                     continue;
                 }
 
-                if (this.InvokeAuraCommandForAllResources(resourceNetId))
+                // Meteorites use HitStone on parentEntity.netId (PlayerAxeAttackStoneAction), not hand-pick.
+                bool isMeteor = this.IsAuraTargetMeteor(targetInfo, ownerNetId);
+                bool sent;
+                if (isMeteor)
+                {
+                    uint hitNetId = 0U;
+                    if (!this.TryGetAuraMeteorHitNetId(targetInfo, ownerNetId, out hitNetId)
+                        || this.auraMeteorHitParentsThisTick.Contains(hitNetId))
+                    {
+                        if (AuraFarmDebugLogs)
+                        {
+                            this.TryLogAuraMeteorEntityProbe(ownerNetId);
+                            IntPtr probeEntity;
+                            bool hasEntity = this.TryGetAuraMonoEntityObjectByNetId(ownerNetId, out probeEntity) && probeEntity != IntPtr.Zero;
+                            ModLogger.Msg("[AuraFarm] Meteor skip ownerNetId=" + ownerNetId
+                                + " hitNetId=" + hitNetId
+                                + " entitiesGet=" + hasEntity
+                                + (targetInfo != null
+                                    ? " levelResourceId=" + targetInfo.LevelResourceId
+                                        + " resourceNetId=" + targetInfo.ResourceNetId
+                                        + " source=" + targetInfo.Source
+                                    : string.Empty));
+                        }
+
+                        continue;
+                    }
+
+                    if (!this.TryEnsureAuraMeteorAxeEquipped())
+                    {
+                        this.auraNextAllowedByOwnerId[ownerNetId] = now + Math.Max(0.12f, AuraPerTargetCooldown);
+                        continue;
+                    }
+
+                    if (AuraFarmDebugLogs)
+                    {
+                        ModLogger.Msg("[AuraFarm] Meteor HitStone parentNetId=" + hitNetId + " ownerNetId=" + ownerNetId
+                            + (targetInfo != null ? " levelResourceId=" + targetInfo.LevelResourceId : string.Empty));
+                    }
+
+                    sent = this.InvokeAuraHitStone(hitNetId, false);
+                    if (sent)
+                    {
+                        this.auraMeteorHitParentsThisTick.Add(hitNetId);
+                    }
+                }
+                else
+                {
+                    sent = this.InvokeAuraCommandForAllResources(resourceNetId);
+                }
+
+                if (sent)
                 {
                     sentAny = true;
-                    if (targetKind == AuraTargetKind.Tree)
-                    {
-                        treeHits++;
-                    }
-                    else if (targetKind == AuraTargetKind.Stone)
+                    if (isMeteor || targetKind == AuraTargetKind.Stone)
                     {
                         stoneHits++;
+                    }
+                    else if (targetKind == AuraTargetKind.Tree)
+                    {
+                        treeHits++;
                     }
                     else
                     {
@@ -564,7 +662,11 @@ namespace HeartopiaMod
                 {
                     this.autoCollectClickedSinceArrival = true;
                     this.auraLastSuccessfulCommandAt = now;
-                    this.StampAuraFallbackNodeCooldown(ownerNetId, targetKind);
+                    if (!isMeteor)
+                    {
+                        this.StampAuraFallbackNodeCooldown(ownerNetId, targetKind);
+                    }
+
                     this.auraNextAllowedByOwnerId[ownerNetId] = now + AuraPerTargetCooldown;
                 }
             }
@@ -628,6 +730,58 @@ namespace HeartopiaMod
         private bool InvokeAuraCommandForAllResources(uint resourceNetId)
         {
             return this.InvokeAuraPickBush(resourceNetId);
+        }
+
+        // Throttled scan of live meteorite GameObjects by name (same signal the radar uses). Cheap enough at 1s
+        // and only while AuraFarm is active. No managed entity reflection -- works on the IL2CPP/AuraMono build.
+        private void RefreshAuraMeteorObjectPositionsThrottled()
+        {
+            float now = Time.unscaledTime;
+            if (now < this.auraNextMeteorObjectScanAt)
+            {
+                return;
+            }
+            this.auraNextMeteorObjectScanAt = now + AuraMeteorObjectScanInterval;
+            this.auraMeteorObjectPositions.Clear();
+
+            try
+            {
+                GameObject[] all = UnityEngine.Object.FindObjectsOfType<GameObject>();
+                for (int i = 0; i < all.Length; i++)
+                {
+                    GameObject go = all[i];
+                    if (go == null || !go.activeInHierarchy)
+                    {
+                        continue;
+                    }
+                    string n = go.name;
+                    if (!string.IsNullOrEmpty(n) && n.StartsWith("p_rock_meteorite", StringComparison.Ordinal))
+                    {
+                        this.auraMeteorObjectPositions.Add(go.transform.position);
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            if (AuraFarmDebugLogs && this.auraMeteorObjectPositions.Count > 0)
+            {
+                ModLogger.Msg("[AuraFarm] Live meteor objects=" + this.auraMeteorObjectPositions.Count);
+            }
+        }
+
+        private bool IsAuraPositionNearLiveMeteor(Vector3 position)
+        {
+            float matchSqr = AuraMeteorMatchRadius * AuraMeteorMatchRadius;
+            for (int i = 0; i < this.auraMeteorObjectPositions.Count; i++)
+            {
+                if ((this.auraMeteorObjectPositions[i] - position).sqrMagnitude <= matchSqr)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private bool TryPrepareAuraTargetForCommand(uint ownerNetId, ref uint resourceNetId, ref AuraTargetKind targetKind)
@@ -1642,6 +1796,11 @@ namespace HeartopiaMod
                 this.TryCollectAuraOwnerTargetsViaCylinderScan(interactSystem, output);
             }
 
+            if (this.IsPlayerNearLiveMeteor())
+            {
+                this.RefreshAuraMeteorTargetsNearPlayer(interactSystem, output);
+            }
+
             if (output.Count == 0 && interactSystem == null)
             {
                 this.auraLastError = "No aura targets found (InteractSystem/EntityHelper/Mono current target).";
@@ -1736,6 +1895,11 @@ namespace HeartopiaMod
         private void TryCollectAuraOwnerTargetsViaThrottledMonoFallbacks(object interactSystem, HashSet<uint> output)
         {
             float now = Time.unscaledTime;
+            if (this.IsPlayerNearLiveMeteor())
+            {
+                this.auraNextMonoFallbackScanAt = 0f;
+            }
+
             if (now >= this.auraNextMonoFallbackScanAt)
             {
                 this.auraNextMonoFallbackScanAt = now + AuraMonoFallbackScanInterval;
@@ -1753,6 +1917,15 @@ namespace HeartopiaMod
                 if (this.auraMonoFallbackTargetBuffer.Count == 0)
                 {
                     this.TryCollectAuraOwnerTargetsViaMonoAdvancedFallbacks(this.auraMonoFallbackTargetBuffer);
+                }
+
+                this.auraMonoFallbackInfoCache.Clear();
+                foreach (uint cachedOwnerId in this.auraMonoFallbackTargetBuffer)
+                {
+                    if (this.auraTargetInfoByOwnerId.TryGetValue(cachedOwnerId, out AuraTargetInfo cachedInfo) && cachedInfo != null)
+                    {
+                        this.auraMonoFallbackInfoCache[cachedOwnerId] = cachedInfo;
+                    }
                 }
 
                 if (AuraFarmDebugLogs)
@@ -1775,6 +1948,10 @@ namespace HeartopiaMod
             foreach (uint ownerNetId in this.auraMonoFallbackTargetBuffer)
             {
                 output.Add(ownerNetId);
+                if (this.auraMonoFallbackInfoCache.TryGetValue(ownerNetId, out AuraTargetInfo cachedInfo) && cachedInfo != null)
+                {
+                    this.auraTargetInfoByOwnerId[ownerNetId] = cachedInfo;
+                }
                 if (output.Count >= AuraMergedTargetSoftCap)
                 {
                     break;
@@ -2027,19 +2204,53 @@ namespace HeartopiaMod
 
         private object TryGetAuraOwnerEntity(uint ownerNetId)
         {
-            if (ownerNetId == 0U || this.auraEntityUtilGetEntityMethod == null)
+            if (ownerNetId == 0U)
             {
                 return null;
             }
 
-            try
+            if (this.auraEntityUtilGetEntityMethod != null)
             {
-                return this.auraEntityUtilGetEntityMethod.Invoke(null, new object[] { ownerNetId });
+                try
+                {
+                    object entity = this.auraEntityUtilGetEntityMethod.Invoke(null, new object[] { ownerNetId });
+                    if (entity != null)
+                    {
+                        return entity;
+                    }
+                }
+                catch
+                {
+                }
             }
-            catch
+
+            if (this.auraEntitiesType != null)
             {
-                return null;
+                try
+                {
+                    MethodInfo getEntityMethod = this.GetMethodByNameAndParamCountQuiet(this.auraEntitiesType, "GetEntity", 1)
+                        ?? this.GetMethodByNameAndParamCountQuiet(this.auraEntitiesType, "GetAnyEntity", 1);
+                    if (getEntityMethod != null)
+                    {
+                        object entity = getEntityMethod.Invoke(null, new object[] { ownerNetId });
+                        if (entity != null)
+                        {
+                            return entity;
+                        }
+                    }
+                }
+                catch
+                {
+                }
             }
+
+            object entityRef;
+            if (this.TryGetEntityObjectByNetId(ownerNetId, out entityRef))
+            {
+                return entityRef;
+            }
+
+            return null;
         }
 
         private AuraTargetInfo GetAuraTargetInfo(uint ownerNetId)
@@ -2060,7 +2271,7 @@ namespace HeartopiaMod
 
         private void RegisterAuraOwnerOnlyTarget(HashSet<uint> output, uint ownerNetId, string source, bool hasPosition, Vector3 position)
         {
-            if (ownerNetId == 0U)
+            if (!this.IsLikelyAuraEntityNetId(ownerNetId))
             {
                 return;
             }
@@ -2151,7 +2362,11 @@ namespace HeartopiaMod
 
             if (levelObjectId <= uint.MaxValue)
             {
-                this.RegisterAuraOwnerOnlyTarget(output, (uint)levelObjectId, source + ":rawFallback", hasPosition, position);
+                uint rawOwner = (uint)levelObjectId;
+                if (this.IsLikelyAuraEntityNetId(rawOwner) && !output.Contains(rawOwner))
+                {
+                    this.RegisterAuraOwnerOnlyTarget(output, rawOwner, source + ":rawFallback", hasPosition, position);
+                }
             }
         }
 
@@ -2216,11 +2431,16 @@ namespace HeartopiaMod
 
             uint levelResourceId = 0U;
             this.TryGetAuraLevelObjectResourceId(levelObject, out levelResourceId);
+            uint resourceNetId = ownerNetId;
+            if (this.IsLikelyAuraEntityNetId(levelResourceId) && levelResourceId != ownerNetId)
+            {
+                resourceNetId = levelResourceId;
+            }
 
             info = new AuraTargetInfo
             {
                 OwnerNetId = ownerNetId,
-                ResourceNetId = ownerNetId,
+                ResourceNetId = resourceNetId,
                 TargetNetId = targetNetId,
                 LevelResourceId = levelResourceId,
                 Kind = this.GetAuraTargetKind(ownerNetId)
@@ -2328,7 +2548,36 @@ namespace HeartopiaMod
                     raw = this.auraLevelObjectResourceIdProperty.GetValue(levelObject, null);
                 }
 
-                return this.TryConvertAuraOwnerId(raw, out resourceId);
+                if (this.TryConvertAuraOwnerId(raw, out resourceId) && this.IsLikelyAuraEntityNetId(resourceId))
+                {
+                    return true;
+                }
+
+                string[] resourceMembers = { "resourceID", "ResourceID", "resourceId", "ResourceId", "mapResourceNetId", "MapResourceNetId" };
+                for (int i = 0; i < resourceMembers.Length; i++)
+                {
+                    if (this.TryGetUIntMember(levelObject, resourceMembers[i], out resourceId)
+                        && this.IsLikelyAuraEntityNetId(resourceId))
+                    {
+                        return true;
+                    }
+                }
+
+                object data = this.TryGetManagedMemberValue(levelObject, "_data");
+                if (data != null)
+                {
+                    for (int i = 0; i < resourceMembers.Length; i++)
+                    {
+                        if (this.TryGetUIntMember(data, resourceMembers[i], out resourceId)
+                            && this.IsLikelyAuraEntityNetId(resourceId))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                resourceId = 0U;
+                return false;
             }
             catch
             {
@@ -2783,33 +3032,39 @@ namespace HeartopiaMod
                     continue;
                 }
 
-                if (this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr == IntPtr.Zero && auraMonoObjectGetClass != null && auraMonoClassGetMethodFromName != null)
+                Vector3 shapePosition;
+                bool hasShapePosition = this.TryGetAuraMonoObjectPosition(shapeObj, out shapePosition);
+                bool isMeteorShape = hasShapePosition && this.IsAuraPositionNearLiveMeteor(shapePosition);
+                this.TryRegisterAuraTargetFromMonoLevelObjectShape(shapeObj, output, "AxeChecker");
+                if (isMeteorShape)
                 {
-                    IntPtr shapeClass = auraMonoObjectGetClass(shapeObj);
-                    if (shapeClass != IntPtr.Zero)
+                    continue;
+                }
+
+                ulong levelObjectId;
+                AuraTargetInfo levelInfo;
+                if (this.TryGetAuraMonoShapeLevelObjectId(shapeObj, out levelObjectId) && levelObjectId != 0UL
+                    && this.TryResolveAuraTargetInfoFromLevelObjectId(levelObjectId, out levelInfo) && levelInfo != null)
+                {
+                    if (hasShapePosition)
                     {
-                        this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr = auraMonoClassGetMethodFromName(shapeClass, "GetUniqueId", 0);
+                        levelInfo.Position = shapePosition;
+                        levelInfo.HasPosition = true;
+                        if (levelInfo.Kind == AuraTargetKind.Unknown)
+                        {
+                            levelInfo.Kind = this.GetAuraTargetKindFromPosition(shapePosition);
+                        }
                     }
-                }
 
-                if (this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr == IntPtr.Zero)
-                {
-                    continue;
-                }
-
-                exc = IntPtr.Zero;
-                IntPtr boxedId = auraMonoRuntimeInvoke(this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr, shapeObj, IntPtr.Zero, ref exc);
-                if (exc != IntPtr.Zero || boxedId == IntPtr.Zero)
-                {
-                    continue;
-                }
-
-                ulong levelObjectId = this.TryReadMonoUnsignedIntegral(boxedId);
-                if (levelObjectId != 0UL)
-                {
-                    Vector3 shapePosition;
-                    bool hasShapePosition = this.TryGetAuraMonoObjectPosition(shapeObj, out shapePosition);
-                    this.RegisterAuraTargetFromLevelObjectId(output, levelObjectId, "AxeChecker", hasShapePosition, shapePosition);
+                    this.auraTargetInfoByOwnerId[levelInfo.OwnerNetId] = levelInfo;
+                    this.auraLastDetectedResourceNetId = levelInfo.ResourceNetId;
+                    this.auraLastDetectedOwnerNetId = levelInfo.OwnerNetId;
+                    this.auraLastDetectedTargetNetId = levelInfo.TargetNetId;
+                    output.Add(levelInfo.OwnerNetId);
+                    if (AuraFarmDebugLogs)
+                    {
+                        this.LogAuraTargetDetail("AxeChecker:levelObject", levelInfo);
+                    }
                 }
             }
 
@@ -2822,6 +3077,1152 @@ namespace HeartopiaMod
                     ModLogger.Msg("[AuraFarm] AxeChecker path produced " + output.Count + " targets.");
                 }
             }
+        }
+
+        private bool IsLikelyAuraEntityNetId(uint netId)
+        {
+            return netId > 0U && netId < AuraLikelyEntityNetIdMax;
+        }
+
+        private bool TryGetMonoLevelObjectResourceNetId(IntPtr shapeObj, out uint resourceNetId)
+        {
+            resourceNetId = 0U;
+            if (shapeObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            string[] resourceMembers = { "resourceID", "resourceId", "ResourceID", "ResourceId", "mapResourceNetId", "MapResourceNetId" };
+            for (int i = 0; i < resourceMembers.Length; i++)
+            {
+                if (this.TrySafeGetMonoUInt32ScalarMember(shapeObj, resourceMembers[i], out resourceNetId) && this.IsLikelyAuraEntityNetId(resourceNetId))
+                {
+                    return true;
+                }
+            }
+
+            IntPtr dataObj;
+            if (this.TryGetMonoObjectMember(shapeObj, "_data", out dataObj) && dataObj != IntPtr.Zero)
+            {
+                for (int i = 0; i < resourceMembers.Length; i++)
+                {
+                    if (this.TrySafeGetMonoUInt32ScalarMember(dataObj, resourceMembers[i], out resourceNetId) && this.IsLikelyAuraEntityNetId(resourceNetId))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            ulong levelObjectId;
+            if (this.TryGetAuraMonoShapeLevelObjectId(shapeObj, out levelObjectId) && levelObjectId != 0UL)
+            {
+                object levelObject = this.TryGetAuraLevelObject(levelObjectId);
+                if (levelObject != null && this.TryGetAuraLevelObjectResourceId(levelObject, out resourceNetId))
+                {
+                    return true;
+                }
+            }
+
+            resourceNetId = 0U;
+            return false;
+        }
+
+        private unsafe bool TryGetAuraMonoShapeLevelObjectId(IntPtr shapeObj, out ulong levelObjectId)
+        {
+            levelObjectId = 0UL;
+            if (shapeObj == IntPtr.Zero || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            if (this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr == IntPtr.Zero && auraMonoObjectGetClass != null && auraMonoClassGetMethodFromName != null)
+            {
+                IntPtr shapeClass = auraMonoObjectGetClass(shapeObj);
+                if (shapeClass != IntPtr.Zero)
+                {
+                    this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr = auraMonoClassGetMethodFromName(shapeClass, "GetUniqueId", 0);
+                }
+            }
+
+            if (this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.AttachAuraMonoThread())
+            {
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr boxedId = auraMonoRuntimeInvoke(this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr, shapeObj, IntPtr.Zero, ref exc);
+            if (exc != IntPtr.Zero || boxedId == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            levelObjectId = this.TryReadMonoUnsignedIntegral(boxedId);
+            return levelObjectId != 0UL;
+        }
+
+        private bool TryGetAuraMeteorHitNetId(AuraTargetInfo targetInfo, uint ownerNetId, out uint hitNetId)
+        {
+            hitNetId = 0U;
+            if (!this.IsLikelyAuraEntityNetId(ownerNetId))
+            {
+                return false;
+            }
+
+            if (targetInfo != null)
+            {
+                if (this.IsLikelyAuraEntityNetId(targetInfo.LevelResourceId) && targetInfo.LevelResourceId != ownerNetId)
+                {
+                    hitNetId = targetInfo.LevelResourceId;
+                    return true;
+                }
+
+                if (this.IsLikelyAuraEntityNetId(targetInfo.ResourceNetId) && targetInfo.ResourceNetId != ownerNetId)
+                {
+                    hitNetId = targetInfo.ResourceNetId;
+                    return true;
+                }
+
+                if (targetInfo.TargetNetId != 0UL)
+                {
+                    if (this.TryResolveAuraTargetInfoFromLevelObjectId(targetInfo.TargetNetId, out AuraTargetInfo levelInfo)
+                        && levelInfo != null)
+                    {
+                        if (this.IsLikelyAuraEntityNetId(levelInfo.LevelResourceId) && levelInfo.LevelResourceId != ownerNetId)
+                        {
+                            hitNetId = levelInfo.LevelResourceId;
+                            return true;
+                        }
+
+                        if (this.IsLikelyAuraEntityNetId(levelInfo.ResourceNetId) && levelInfo.ResourceNetId != ownerNetId)
+                        {
+                            hitNetId = levelInfo.ResourceNetId;
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            if (this.TryResolveAuraMeteorParentNetId(ownerNetId, out hitNetId)
+                && this.IsLikelyAuraEntityNetId(hitNetId))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryRegisterAuraTargetFromMonoLevelObjectShape(IntPtr shapeObj, HashSet<uint> output, string source)
+        {
+            if (shapeObj == IntPtr.Zero || output == null)
+            {
+                return false;
+            }
+
+            IntPtr ownerEntityObj = IntPtr.Zero;
+            uint ownerNetId = 0U;
+            if (this.TryGetMonoObjectMember(shapeObj, "ownerEntity", out ownerEntityObj) && ownerEntityObj != IntPtr.Zero)
+            {
+                this.TryGetMonoUInt32Member(ownerEntityObj, "netId", out ownerNetId);
+            }
+
+            if (!this.IsLikelyAuraEntityNetId(ownerNetId))
+            {
+                ownerNetId = 0U;
+                uint levelOwnerNetId = 0U;
+                if (this.TryGetMonoUInt32Member(shapeObj, "ownerNetId", out levelOwnerNetId) && this.IsLikelyAuraEntityNetId(levelOwnerNetId))
+                {
+                    ownerNetId = levelOwnerNetId;
+                }
+            }
+
+            if (!this.IsLikelyAuraEntityNetId(ownerNetId))
+            {
+                return false;
+            }
+
+            Vector3 shapePosition;
+            bool hasShapePosition = this.TryGetAuraMonoObjectPosition(shapeObj, out shapePosition);
+            bool isMeteor = hasShapePosition && this.IsAuraPositionNearLiveMeteor(shapePosition);
+            uint mapResourceNetId = 0U;
+            bool hasMapResourceNetId = this.TryGetMonoLevelObjectResourceNetId(shapeObj, out mapResourceNetId);
+            uint resourceNetId = ownerNetId;
+            AuraTargetKind kind = AuraTargetKind.Unknown;
+            if (isMeteor)
+            {
+                kind = AuraTargetKind.Stone;
+                if (hasMapResourceNetId && mapResourceNetId != ownerNetId)
+                {
+                    resourceNetId = mapResourceNetId;
+                }
+                else if (!this.TryResolveAuraMeteorParentNetId(ownerNetId, out resourceNetId) || resourceNetId == ownerNetId)
+                {
+                    resourceNetId = hasMapResourceNetId ? mapResourceNetId : ownerNetId;
+                }
+
+                if (AuraFarmDebugLogs)
+                {
+                    ModLogger.Msg("[AuraFarm] Meteor levelObject ownerNetId=" + ownerNetId
+                        + " resourceID=" + (hasMapResourceNetId ? mapResourceNetId.ToString() : "n/a")
+                        + " hitNetId=" + resourceNetId);
+                }
+            }
+
+            AuraTargetInfo info = new AuraTargetInfo
+            {
+                OwnerNetId = ownerNetId,
+                ResourceNetId = resourceNetId,
+                LevelResourceId = hasMapResourceNetId ? mapResourceNetId : 0U,
+                Kind = kind,
+                Source = source ?? string.Empty
+            };
+            if (hasShapePosition)
+            {
+                info.Position = shapePosition;
+                info.HasPosition = true;
+            }
+
+            this.auraTargetInfoByOwnerId[ownerNetId] = info;
+            this.auraLastDetectedResourceNetId = info.ResourceNetId;
+            this.auraLastDetectedOwnerNetId = info.OwnerNetId;
+            this.auraLastDetectedTargetNetId = info.TargetNetId;
+            output.Add(ownerNetId);
+
+            if (AuraFarmDebugLogs)
+            {
+                this.LogAuraTargetDetail(source, info);
+            }
+
+            return true;
+        }
+
+        private bool TryResolveAuraMeteorParentNetId(uint candidateNetId, out uint parentNetId)
+        {
+            parentNetId = 0U;
+            if (!this.IsLikelyAuraEntityNetId(candidateNetId))
+            {
+                return false;
+            }
+
+            if (this.auraMeteorViewToParentCache.TryGetValue(candidateNetId, out parentNetId)
+                && this.IsLikelyAuraEntityNetId(parentNetId)
+                && this.TryIsAuraLiveMeteorTarget(candidateNetId, this.GetAuraTargetInfo(candidateNetId)))
+            {
+                return true;
+            }
+
+            if (this.auraMeteorViewToParentCache.ContainsKey(candidateNetId))
+            {
+                this.auraMeteorViewToParentCache.Remove(candidateNetId);
+            }
+
+            if (this.TryResolveAuraMeteorHitNetId(candidateNetId, out parentNetId)
+                && this.IsLikelyAuraEntityNetId(parentNetId)
+                && parentNetId != candidateNetId)
+            {
+                this.auraMeteorViewToParentCache[candidateNetId] = parentNetId;
+                return true;
+            }
+
+            if (this.TryScanAuraMeteorLogicParentForViewNetId(candidateNetId, out parentNetId) && this.IsLikelyAuraEntityNetId(parentNetId))
+            {
+                this.auraMeteorViewToParentCache[candidateNetId] = parentNetId;
+                if (AuraFarmDebugLogs)
+                {
+                    ModLogger.Msg("[AuraFarm] Meteor logic parent scan viewNetId=" + candidateNetId + " parentNetId=" + parentNetId);
+                }
+                return true;
+            }
+
+            IntPtr viewEntityObj;
+            if (this.TryGetAuraMonoEntityObjectByNetId(candidateNetId, out viewEntityObj) && viewEntityObj != IntPtr.Zero)
+            {
+                if (this.TryResolveAuraMonoMeteorParentNetIdFromEntity(viewEntityObj, out parentNetId)
+                    && this.IsLikelyAuraEntityNetId(parentNetId))
+                {
+                    this.auraMeteorViewToParentCache[candidateNetId] = parentNetId;
+                    return true;
+                }
+            }
+
+            if (this.TryResolveAuraMeteorParentViaDataCenter(candidateNetId, out parentNetId) && this.IsLikelyAuraEntityNetId(parentNetId))
+            {
+                this.auraMeteorViewToParentCache[candidateNetId] = parentNetId;
+                return true;
+            }
+
+            parentNetId = 0U;
+            return false;
+        }
+
+        private bool TryResolveAuraMeteorParentViaDataCenter(uint candidateNetId, out uint parentNetId)
+        {
+            parentNetId = 0U;
+            if (!this.IsLikelyAuraEntityNetId(candidateNetId))
+            {
+                return false;
+            }
+
+            try
+            {
+                Type dataCenterType = this.FindTypeByName("XDTDataAndProtocol.ComponentsData.DataCenter", "XDTDataAndProtocol.ComponentsData", "DataCenter");
+                Type netIdType = this.FindTypeByName("EcsClient.XDT.Scene.Shared.Data.SharedData.NetId", "XDT.Scene.Shared.NetId", "NetId");
+                if (dataCenterType == null || netIdType == null)
+                {
+                    return false;
+                }
+
+                string[] componentTypeNames =
+                {
+                    "MeteoriteComponentData",
+                    "CollectableMeteoriteComponentData",
+                    "MapResourceComponentData"
+                };
+
+                MethodInfo tryGetMethodDef = null;
+                foreach (MethodInfo method in dataCenterType.GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    if (method == null || method.Name != "TryGetComponentData" || !method.IsGenericMethodDefinition)
+                    {
+                        continue;
+                    }
+
+                    ParameterInfo[] parameters = method.GetParameters();
+                    if (parameters.Length == 2 && parameters[0].ParameterType == netIdType)
+                    {
+                        tryGetMethodDef = method;
+                        break;
+                    }
+                }
+
+                if (tryGetMethodDef == null)
+                {
+                    return false;
+                }
+
+                object netIdArg = this.CreateNetCookNetIdArgument(netIdType, candidateNetId);
+                for (int i = 0; i < componentTypeNames.Length; i++)
+                {
+                    Type componentDataType = this.FindTypeByName(
+                        "XDTDataAndProtocol.ComponentsData." + componentTypeNames[i],
+                        "XDTDataAndProtocol.ComponentsData",
+                        componentTypeNames[i]);
+                    if (componentDataType == null)
+                    {
+                        continue;
+                    }
+
+                    object dataBox = Activator.CreateInstance(componentDataType);
+                    MethodInfo tryGetMethod = tryGetMethodDef.MakeGenericMethod(componentDataType);
+                    object[] args = new object[] { netIdArg, dataBox };
+                    if (!(tryGetMethod.Invoke(null, args) is bool found) || !found)
+                    {
+                        continue;
+                    }
+
+                    object componentData = args[1] ?? dataBox;
+                    if (componentData == null)
+                    {
+                        continue;
+                    }
+
+                    string[] netIdMembers = { "netId", "NetId", "ownerNetId", "OwnerNetId", "resourceNetId", "ResourceNetId", "entityNetId", "EntityNetId" };
+                    for (int m = 0; m < netIdMembers.Length; m++)
+                    {
+                        if (this.TryGetUIntMember(componentData, netIdMembers[m], out parentNetId)
+                            && this.IsLikelyAuraEntityNetId(parentNetId)
+                            && parentNetId != candidateNetId)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            parentNetId = 0U;
+            return false;
+        }
+
+        private bool TryCollectAuraMonoEntityComponents(IntPtr entityObj, List<IntPtr> output)
+        {
+            output.Clear();
+            if (entityObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr componentsObj;
+            if (this.TryInvokeAuraMonoZeroArg(entityObj, out componentsObj, "GetAllComponents") && componentsObj != IntPtr.Zero
+                && this.TryEnumerateAuraMonoCollectionItems(componentsObj, output) && output.Count > 0)
+            {
+                return true;
+            }
+
+            IntPtr sortedComponentsObj;
+            if (this.TryGetMonoObjectMember(entityObj, "_sortedComponents", out sortedComponentsObj) && sortedComponentsObj != IntPtr.Zero
+                && this.TryEnumerateAuraMonoCollectionItems(sortedComponentsObj, output) && output.Count > 0)
+            {
+                return true;
+            }
+
+            output.Clear();
+            return false;
+        }
+
+        private bool TryAuraMonoComponentNameContains(IntPtr componentObj, string fragment)
+        {
+            if (componentObj == IntPtr.Zero || string.IsNullOrEmpty(fragment) || auraMonoObjectGetClass == null)
+            {
+                return false;
+            }
+
+            string className = this.GetAuraMonoClassDisplayName(auraMonoObjectGetClass(componentObj));
+            return className.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private bool TryAuraMonoEntityHasMeteoriteLogicComponent(IntPtr entityObj)
+        {
+            this.auraFarmComponentBuffer.Clear();
+            if (!this.TryCollectAuraMonoEntityComponents(entityObj, this.auraFarmComponentBuffer))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < this.auraFarmComponentBuffer.Count && i < 32; i++)
+            {
+                if (this.TryAuraMonoComponentNameContains(this.auraFarmComponentBuffer[i], "MeteoriteLogic"))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool TryReadAuraMeteorUIntLinkFromMember(IntPtr ownerObj, string memberName, out uint linkedNetId)
+        {
+            linkedNetId = 0U;
+            if (ownerObj == IntPtr.Zero || string.IsNullOrEmpty(memberName))
+            {
+                return false;
+            }
+
+            if (!IsAuraMeteorEntityLikeMemberName(memberName)
+                && this.TrySafeGetMonoUInt32ScalarMember(ownerObj, memberName, out linkedNetId)
+                && this.IsLikelyAuraEntityNetId(linkedNetId))
+            {
+                return true;
+            }
+
+            IntPtr nestedObj;
+            if (this.TryGetMonoObjectMember(ownerObj, memberName, out nestedObj) && nestedObj != IntPtr.Zero)
+            {
+                if (this.TryGetAuraMonoEntityNetId(nestedObj, out linkedNetId) && this.IsLikelyAuraEntityNetId(linkedNetId))
+                {
+                    return true;
+                }
+
+                string[] nestedMembers = { "netId", "NetId", "value", "Value", "id", "Id" };
+                for (int i = 0; i < nestedMembers.Length; i++)
+                {
+                    if (this.TrySafeGetMonoUInt32ScalarMember(nestedObj, nestedMembers[i], out linkedNetId) && this.IsLikelyAuraEntityNetId(linkedNetId))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            if (IsAuraMeteorEntityLikeMemberName(memberName))
+            {
+                string[] nestedFieldMembers = { "netId", "NetId", "value", "Value", "id", "Id" };
+                for (int i = 0; i < nestedFieldMembers.Length; i++)
+                {
+                    IntPtr parentObj;
+                    if (!this.TryGetMonoObjectMember(ownerObj, memberName, out parentObj) || parentObj == IntPtr.Zero)
+                    {
+                        continue;
+                    }
+
+                    if (this.TrySafeGetMonoUInt32ScalarMember(parentObj, nestedFieldMembers[i], out linkedNetId)
+                        && this.IsLikelyAuraEntityNetId(linkedNetId))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            linkedNetId = 0U;
+            return false;
+        }
+
+        private bool TryReadAuraMeteorViewNetIdFromLogicComponent(IntPtr logicComponentObj, out uint viewNetId)
+        {
+            viewNetId = 0U;
+            if (logicComponentObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            string[] viewMembers =
+            {
+                "_viewEntity", "viewEntity", "ViewEntity", "_viewEntityNetId", "viewEntityNetId", "viewNetId", "ViewNetId"
+            };
+            for (int i = 0; i < viewMembers.Length; i++)
+            {
+                if (this.TryReadAuraMeteorUIntLinkFromMember(logicComponentObj, viewMembers[i], out viewNetId))
+                {
+                    return true;
+                }
+            }
+
+            viewNetId = 0U;
+            return false;
+        }
+
+        private bool TryReadAuraMeteorParentNetIdFromComponent(IntPtr componentObj, uint selfNetId, out uint parentNetId)
+        {
+            parentNetId = 0U;
+            if (componentObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            string[] parentMembers =
+            {
+                "parentEntity", "ParentEntity", "parentNetId", "ParentNetId", "logicEntity", "LogicEntity",
+                "logicNetId", "LogicNetId", "resourceNetId", "ResourceNetId", "mapResourceNetId", "MapResourceNetId",
+                "ownerEntity", "OwnerEntity"
+            };
+            for (int i = 0; i < parentMembers.Length; i++)
+            {
+                if (!this.TryReadAuraMeteorUIntLinkFromMember(componentObj, parentMembers[i], out parentNetId))
+                {
+                    continue;
+                }
+
+                if (parentNetId != 0U && parentNetId != selfNetId && this.IsLikelyAuraEntityNetId(parentNetId))
+                {
+                    return true;
+                }
+            }
+
+            parentNetId = 0U;
+            return false;
+        }
+
+        private bool TryResolveAuraMeteorParentFromManagedEntity(object entity, uint selfNetId, out uint parentNetId)
+        {
+            parentNetId = 0U;
+            if (entity == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!this.TryInvokeZeroArgMember(entity, out object componentsObj, "GetAllComponents") || componentsObj == null)
+                {
+                    return false;
+                }
+
+                IEnumerable components = componentsObj as IEnumerable;
+                if (components == null)
+                {
+                    return false;
+                }
+
+                foreach (object component in components)
+                {
+                    if (component == null)
+                    {
+                        continue;
+                    }
+
+                    string typeName = component.GetType().FullName ?? component.GetType().Name;
+                    if (typeName.IndexOf("Meteorite", StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        continue;
+                    }
+
+                    object parentEntity = this.TryGetManagedMemberValue(component, "parentEntity")
+                        ?? this.TryGetManagedMemberValue(component, "ParentEntity");
+                    if (parentEntity != null
+                        && this.TryGetAuraEntityNetId(parentEntity, out parentNetId)
+                        && parentNetId != 0U
+                        && parentNetId != selfNetId)
+                    {
+                        return true;
+                    }
+
+                    string[] uintMembers =
+                    {
+                        "parentNetId", "ParentNetId", "logicNetId", "LogicNetId", "resourceNetId", "ResourceNetId", "mapResourceNetId", "MapResourceNetId"
+                    };
+                    for (int i = 0; i < uintMembers.Length; i++)
+                    {
+                        if (this.TryGetUIntMember(component, uintMembers[i], out parentNetId)
+                            && parentNetId != 0U
+                            && parentNetId != selfNetId
+                            && this.IsLikelyAuraEntityNetId(parentNetId))
+                        {
+                            return true;
+                        }
+                    }
+
+                    if (typeName.IndexOf("MeteoriteLogic", StringComparison.OrdinalIgnoreCase) >= 0
+                        && this.TryGetAuraEntityNetId(entity, out parentNetId)
+                        && parentNetId != 0U
+                        && parentNetId != selfNetId)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            parentNetId = 0U;
+            return false;
+        }
+
+        private void TryLogAuraMeteorEntityProbe(uint ownerNetId)
+        {
+            if (!AuraFarmDebugLogs)
+            {
+                return;
+            }
+
+            float now = Time.unscaledTime;
+            string key = ownerNetId.ToString();
+            if (string.Equals(this.auraLastMeteorProbeKey, key, StringComparison.Ordinal) && now - this.auraLastMeteorProbeAt < 2f)
+            {
+                return;
+            }
+
+            this.auraLastMeteorProbeKey = key;
+            this.auraLastMeteorProbeAt = now;
+
+            IntPtr entityObj;
+            if (!this.TryGetAuraMonoEntityObjectByNetId(ownerNetId, out entityObj) || entityObj == IntPtr.Zero)
+            {
+                ModLogger.Msg("[AuraFarm] Meteor probe ownerNetId=" + ownerNetId + " entity=missing");
+                return;
+            }
+
+            this.auraFarmComponentBuffer.Clear();
+            int componentCount = this.TryCollectAuraMonoEntityComponents(entityObj, this.auraFarmComponentBuffer)
+                ? this.auraFarmComponentBuffer.Count
+                : 0;
+            string names = string.Empty;
+            int limit = Math.Min(componentCount, 8);
+            for (int i = 0; i < limit; i++)
+            {
+                if (this.auraFarmComponentBuffer[i] == IntPtr.Zero || auraMonoObjectGetClass == null)
+                {
+                    continue;
+                }
+
+                string className = this.GetAuraMonoClassDisplayName(auraMonoObjectGetClass(this.auraFarmComponentBuffer[i]));
+                names = string.IsNullOrEmpty(names) ? className : names + "|" + className;
+            }
+
+            ModLogger.Msg("[AuraFarm] Meteor probe ownerNetId=" + ownerNetId + " components=" + componentCount + " names=" + names);
+        }
+
+        private bool TryGetAuraMeteorAnchorPosition(uint entityNetId, out Vector3 position)
+        {
+            position = Vector3.zero;
+            if (!this.IsLikelyAuraEntityNetId(entityNetId))
+            {
+                return false;
+            }
+
+            AuraTargetInfo info = this.GetAuraTargetInfo(entityNetId);
+            if (info != null && info.HasPosition && info.Position != Vector3.zero)
+            {
+                position = info.Position;
+                return true;
+            }
+
+            IntPtr entityObj;
+            if (!this.TryGetAuraMonoEntityObjectByNetId(entityNetId, out entityObj) || entityObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return this.TryGetAuraMonoObjectPosition(entityObj, out position) && position != Vector3.zero;
+        }
+
+        private bool TryScanAuraMeteorLogicParentForViewNetId(uint viewNetId, out uint logicNetId)
+        {
+            logicNetId = 0U;
+            if (!this.IsLikelyAuraEntityNetId(viewNetId))
+            {
+                return false;
+            }
+
+            float now = Time.unscaledTime;
+            if (now < this.auraNextMeteorParentScanAt && this.auraMeteorViewToParentCache.TryGetValue(viewNetId, out logicNetId))
+            {
+                return this.IsLikelyAuraEntityNetId(logicNetId);
+            }
+
+            this.auraNextMeteorParentScanAt = now + 0.35f;
+
+            List<IntPtr> entityObjects;
+            string status;
+            if (!this.TryEnumerateAuraMonoLoadedEntityObjects(out entityObjects, out status) || entityObjects == null || entityObjects.Count == 0)
+            {
+                return false;
+            }
+
+            int limit = Math.Min(entityObjects.Count, 512);
+            for (int i = 0; i < limit; i++)
+            {
+                IntPtr logicEntityObj = entityObjects[i];
+                if (logicEntityObj == IntPtr.Zero || !this.TryAuraMonoEntityHasMeteoriteLogicComponent(logicEntityObj))
+                {
+                    continue;
+                }
+
+                this.auraFarmComponentBuffer.Clear();
+                if (!this.TryCollectAuraMonoEntityComponents(logicEntityObj, this.auraFarmComponentBuffer))
+                {
+                    continue;
+                }
+
+                for (int c = 0; c < this.auraFarmComponentBuffer.Count && c < 32; c++)
+                {
+                    IntPtr logicComponentObj = this.auraFarmComponentBuffer[c];
+                    if (logicComponentObj == IntPtr.Zero || !this.TryAuraMonoComponentNameContains(logicComponentObj, "MeteoriteLogic"))
+                    {
+                        continue;
+                    }
+
+                    uint linkedViewNetId = 0U;
+                    if (!this.TryReadAuraMeteorViewNetIdFromLogicComponent(logicComponentObj, out linkedViewNetId) || linkedViewNetId != viewNetId)
+                    {
+                        continue;
+                    }
+
+                    if (this.TryGetAuraMonoEntityNetId(logicEntityObj, out logicNetId) && this.IsLikelyAuraEntityNetId(logicNetId))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            logicNetId = 0U;
+            return false;
+        }
+
+        private bool TryResolveAuraMeteorHitNetId(uint candidateNetId, out uint hitNetId)
+        {
+            hitNetId = 0U;
+            if (candidateNetId == 0U)
+            {
+                return false;
+            }
+
+            object entity = this.TryGetAuraOwnerEntity(candidateNetId);
+            if (entity != null
+                && this.TryResolveAuraMeteorParentFromManagedEntity(entity, candidateNetId, out hitNetId)
+                && this.IsLikelyAuraEntityNetId(hitNetId))
+            {
+                return true;
+            }
+
+            if (this.TryResolveAuraMonoMeteorParentNetIdFromEntityNetId(candidateNetId, out hitNetId)
+                && this.IsLikelyAuraEntityNetId(hitNetId))
+            {
+                return true;
+            }
+
+            hitNetId = 0U;
+            return false;
+        }
+
+        private unsafe bool TryAuraMonoEntityGetComponent(IntPtr entityObj, IntPtr componentClassPtr, out IntPtr componentObj)
+        {
+            componentObj = IntPtr.Zero;
+            if (entityObj == IntPtr.Zero || componentClassPtr == IntPtr.Zero || auraMonoObjectGetClass == null
+                || auraMonoRuntimeInvoke == null || auraMonoClassGetType == null || auraMonoTypeGetObject == null)
+            {
+                return false;
+            }
+
+            if (!this.AttachAuraMonoThread())
+            {
+                return false;
+            }
+
+            IntPtr entityClass = auraMonoObjectGetClass(entityObj);
+            if (entityClass == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr componentType = auraMonoClassGetType(componentClassPtr);
+            if (componentType == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr typeObj = auraMonoTypeGetObject(this.auraMonoRootDomain, componentType);
+            if (typeObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr getComponentMethod = this.FindAuraMonoMethodOnHierarchy(entityClass, "GetComponent", 2);
+            if (getComponentMethod != IntPtr.Zero)
+            {
+                if (auraMonoCompileMethod != null)
+                {
+                    try
+                    {
+                        auraMonoCompileMethod(getComponentMethod);
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                IntPtr exc = IntPtr.Zero;
+                int includeInherited = 1;
+                IntPtr* args = stackalloc IntPtr[2];
+                args[0] = typeObj;
+                args[1] = (IntPtr)(&includeInherited);
+                componentObj = auraMonoRuntimeInvoke(getComponentMethod, entityObj, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero && componentObj != IntPtr.Zero)
+                {
+                    return true;
+                }
+
+                componentObj = IntPtr.Zero;
+                exc = IntPtr.Zero;
+                bool includeInheritedBool = true;
+                args[1] = (IntPtr)(&includeInheritedBool);
+                componentObj = auraMonoRuntimeInvoke(getComponentMethod, entityObj, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero && componentObj != IntPtr.Zero)
+                {
+                    return true;
+                }
+            }
+
+            getComponentMethod = this.FindAuraMonoMethodOnHierarchy(entityClass, "GetComponent", 1);
+            if (getComponentMethod != IntPtr.Zero)
+            {
+                IntPtr exc = IntPtr.Zero;
+                IntPtr* args = stackalloc IntPtr[1];
+                args[0] = typeObj;
+                componentObj = auraMonoRuntimeInvoke(getComponentMethod, entityObj, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero && componentObj != IntPtr.Zero)
+                {
+                    return true;
+                }
+            }
+
+            getComponentMethod = this.FindAuraMonoMethodOnHierarchy(entityClass, "TryGetComponent", 2);
+            if (getComponentMethod != IntPtr.Zero)
+            {
+                IntPtr exc = IntPtr.Zero;
+                IntPtr* componentSlot = stackalloc IntPtr[1];
+                componentSlot[0] = IntPtr.Zero;
+                IntPtr* args = stackalloc IntPtr[2];
+                args[0] = typeObj;
+                args[1] = (IntPtr)componentSlot;
+                auraMonoRuntimeInvoke(getComponentMethod, entityObj, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero && componentSlot[0] != IntPtr.Zero)
+                {
+                    componentObj = componentSlot[0];
+                    return true;
+                }
+            }
+
+            componentObj = IntPtr.Zero;
+            return false;
+        }
+
+        private bool TryResolveAuraMonoMeteorParentNetIdFromEntityNetId(uint entityNetId, out uint parentNetId)
+        {
+            parentNetId = 0U;
+            if (entityNetId == 0U)
+            {
+                return false;
+            }
+
+            IntPtr entityObj;
+            if (!this.TryGetAuraMonoEntityObjectByNetId(entityNetId, out entityObj) || entityObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return this.TryResolveAuraMonoMeteorParentNetIdFromEntity(entityObj, out parentNetId);
+        }
+
+        private bool TryResolveAuraMonoMeteorParentNetIdFromEntity(IntPtr entityObj, out uint parentNetId)
+        {
+            parentNetId = 0U;
+            if (entityObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            uint selfNetId = 0U;
+            this.TryGetAuraMonoEntityNetId(entityObj, out selfNetId);
+
+            this.auraFarmComponentBuffer.Clear();
+            if (!this.TryCollectAuraMonoEntityComponents(entityObj, this.auraFarmComponentBuffer))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < this.auraFarmComponentBuffer.Count && i < 48; i++)
+            {
+                IntPtr componentObj = this.auraFarmComponentBuffer[i];
+                if (componentObj == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                if (this.TryAuraMonoComponentNameContains(componentObj, "MeteoriteLogic")
+                    && selfNetId != 0U
+                    && this.IsLikelyAuraEntityNetId(selfNetId))
+                {
+                    parentNetId = selfNetId;
+                    return true;
+                }
+
+                if (this.TryReadAuraMeteorParentNetIdFromComponent(componentObj, selfNetId, out parentNetId))
+                {
+                    return true;
+                }
+            }
+
+            parentNetId = 0U;
+            return false;
+        }
+
+        private bool TryIsAuraLiveMeteorTarget(uint ownerNetId, AuraTargetInfo targetInfo)
+        {
+            if (!this.IsLikelyAuraEntityNetId(ownerNetId))
+            {
+                return false;
+            }
+
+            Vector3 position = Vector3.zero;
+            if (targetInfo != null && targetInfo.HasPosition)
+            {
+                position = targetInfo.Position;
+            }
+            else if (!this.TryGetAuraMeteorAnchorPosition(ownerNetId, out position))
+            {
+                return false;
+            }
+
+            if (!this.IsAuraPositionNearLiveMeteor(position))
+            {
+                return false;
+            }
+
+            IntPtr entityObj;
+            if (this.TryGetAuraMonoEntityObjectByNetId(ownerNetId, out entityObj) && entityObj != IntPtr.Zero)
+            {
+                return true;
+            }
+
+            return this.TryGetAuraOwnerEntity(ownerNetId) != null;
+        }
+
+        private void InvalidateAuraMeteorCachesForOwner(uint ownerNetId)
+        {
+            if (ownerNetId == 0U)
+            {
+                return;
+            }
+
+            this.auraMeteorViewToParentCache.Remove(ownerNetId);
+            this.auraMonoFallbackInfoCache.Remove(ownerNetId);
+            this.auraMonoFallbackTargetBuffer.Remove(ownerNetId);
+            this.auraTargetInfoByOwnerId.Remove(ownerNetId);
+            this.auraNextAllowedByOwnerId.Remove(ownerNetId);
+        }
+
+        private void RefreshAuraMeteorTargetsNearPlayer(object interactSystem, HashSet<uint> output)
+        {
+            if (output == null)
+            {
+                return;
+            }
+
+            this.auraNextMeteorObjectScanAt = 0f;
+            this.RefreshAuraMeteorObjectPositionsThrottled();
+            this.auraNextMonoFallbackScanAt = 0f;
+
+            this.auraMeteorFreshOwnerBuffer.Clear();
+            this.TryCollectAuraOwnerTargetsViaMonoAxeChecker(interactSystem, this.auraMeteorFreshOwnerBuffer);
+
+            this.auraExpiredOwnerBuffer.Clear();
+            foreach (uint ownerNetId in output)
+            {
+                AuraTargetInfo info = this.GetAuraTargetInfo(ownerNetId);
+                if (!this.IsAuraTargetMeteor(info, ownerNetId))
+                {
+                    continue;
+                }
+
+                if (!this.TryIsAuraLiveMeteorTarget(ownerNetId, info))
+                {
+                    this.auraExpiredOwnerBuffer.Add(ownerNetId);
+                }
+            }
+
+            for (int i = 0; i < this.auraExpiredOwnerBuffer.Count; i++)
+            {
+                uint staleOwnerNetId = this.auraExpiredOwnerBuffer[i];
+                output.Remove(staleOwnerNetId);
+                this.InvalidateAuraMeteorCachesForOwner(staleOwnerNetId);
+            }
+
+            this.auraMonoFallbackTargetBuffer.Clear();
+            foreach (uint freshOwnerNetId in this.auraMeteorFreshOwnerBuffer)
+            {
+                if (!this.TryIsAuraLiveMeteorTarget(freshOwnerNetId, this.GetAuraTargetInfo(freshOwnerNetId)))
+                {
+                    continue;
+                }
+
+                output.Add(freshOwnerNetId);
+                AuraTargetInfo freshInfo = this.GetAuraTargetInfo(freshOwnerNetId);
+                if (freshInfo != null)
+                {
+                    this.auraMonoFallbackInfoCache[freshOwnerNetId] = freshInfo;
+                }
+
+                this.auraMonoFallbackTargetBuffer.Add(freshOwnerNetId);
+            }
+        }
+
+        private bool TryEnsureAuraMeteorAxeEquipped()
+        {
+            int toolId;
+            if (this.TryGetCurrentToolInfo(out toolId, out _, out _) && toolId == AuraMeteorAxeToolId)
+            {
+                return true;
+            }
+
+            float now = Time.unscaledTime;
+            if (now < this.auraNextMeteorAxeEquipAt)
+            {
+                return false;
+            }
+
+            this.auraNextMeteorAxeEquipAt = now + AuraMeteorAxeEquipInterval;
+            this.EquipHandTool(AuraMeteorAxeToolId);
+            if (AuraFarmDebugLogs)
+            {
+                ModLogger.Msg("[AuraFarm] Meteor auto-equip axe");
+            }
+
+            return false;
+        }
+
+        private bool IsAuraTargetMeteor(AuraTargetInfo targetInfo, uint ownerNetId)
+        {
+            if (this.auraMeteorObjectPositions.Count == 0)
+            {
+                return false;
+            }
+
+            if (targetInfo != null && targetInfo.HasPosition && this.IsAuraPositionNearLiveMeteor(targetInfo.Position))
+            {
+                return true;
+            }
+
+            if (!this.IsPlayerNearLiveMeteor())
+            {
+                return false;
+            }
+
+            if (targetInfo != null && targetInfo.HasPosition)
+            {
+                Vector3 playerPos = this.GetAuraFarmPlayerPosition();
+                if (playerPos != Vector3.zero && (targetInfo.Position - playerPos).sqrMagnitude <= 36f)
+                {
+                    return this.IsAuraPositionNearLiveMeteor(targetInfo.Position);
+                }
+            }
+
+            return false;
+        }
+
+        private bool IsPlayerNearLiveMeteor()
+        {
+            if (this.auraMeteorObjectPositions.Count == 0)
+            {
+                return false;
+            }
+
+            Vector3 playerPos = this.GetAuraFarmPlayerPosition();
+            if (playerPos == Vector3.zero)
+            {
+                return false;
+            }
+
+            float matchSqr = AuraMeteorMatchRadius * AuraMeteorMatchRadius;
+            for (int i = 0; i < this.auraMeteorObjectPositions.Count; i++)
+            {
+                if ((this.auraMeteorObjectPositions[i] - playerPos).sqrMagnitude <= matchSqr)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private Vector3 GetAuraFarmPlayerPosition()
+        {
+            if (!this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null || this.auraMonoInteractGetInstanceMethodPtr == IntPtr.Zero || this.auraMonoInteractGetPlayerMethodPtr == IntPtr.Zero)
+            {
+                return Vector3.zero;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr interactObj = auraMonoRuntimeInvoke(this.auraMonoInteractGetInstanceMethodPtr, IntPtr.Zero, IntPtr.Zero, ref exc);
+            if (exc != IntPtr.Zero || interactObj == IntPtr.Zero)
+            {
+                return Vector3.zero;
+            }
+
+            IntPtr playerObj = auraMonoRuntimeInvoke(this.auraMonoInteractGetPlayerMethodPtr, interactObj, IntPtr.Zero, ref exc);
+            if (exc != IntPtr.Zero || playerObj == IntPtr.Zero)
+            {
+                return Vector3.zero;
+            }
+
+            Vector3 position;
+            if (this.TryGetAuraMonoObjectPosition(playerObj, out position))
+            {
+                return position;
+            }
+
+            IntPtr entityObj;
+            if (this.TryGetMonoObjectMember(playerObj, "entity", out entityObj) && entityObj != IntPtr.Zero && this.TryGetAuraMonoObjectPosition(entityObj, out position))
+            {
+                return position;
+            }
+
+            return Vector3.zero;
         }
 
         private unsafe bool TryGetAuraMonoObjectPosition(IntPtr obj, out Vector3 position)
@@ -3433,9 +4834,37 @@ namespace HeartopiaMod
             return value != 0U;
         }
 
+        private bool TrySafeGetMonoUInt32ScalarMember(IntPtr obj, string memberName, out uint value)
+        {
+            value = 0U;
+            if (obj == IntPtr.Zero || string.IsNullOrEmpty(memberName))
+            {
+                return false;
+            }
+
+            IntPtr boxed;
+            if (!this.TryGetMonoObjectMember(obj, memberName, out boxed) || boxed == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (!this.TryAuraMonoBoxedIsValueType(boxed))
+            {
+                return false;
+            }
+
+            return this.TryUnboxMonoUInt32(boxed, out value);
+        }
+
+        private static bool IsAuraMeteorEntityLikeMemberName(string memberName)
+        {
+            return !string.IsNullOrEmpty(memberName)
+                && memberName.IndexOf("Entity", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         private unsafe ulong TryReadMonoUnsignedIntegral(IntPtr boxed)
         {
-            if (boxed == IntPtr.Zero || auraMonoObjectUnbox == null)
+            if (boxed == IntPtr.Zero || auraMonoObjectUnbox == null || !this.TryAuraMonoBoxedIsValueType(boxed))
             {
                 return 0UL;
             }
@@ -4266,6 +5695,8 @@ namespace HeartopiaMod
             auraMonoSignatureGetParamCount = this.GetAuraMonoExport<MonoSignatureGetParamCountDelegate>(monoModule, "mono_signature_get_param_count");
             auraMonoArrayLength = this.GetAuraMonoExport<MonoArrayLengthDelegate>(monoModule, "mono_array_length");
             auraMonoArrayAddrWithSize = this.GetAuraMonoExport<MonoArrayAddrWithSizeDelegate>(monoModule, "mono_array_addr_with_size");
+            auraMonoArrayElementSize = this.GetAuraMonoExport<MonoArrayElementSizeDelegate>(monoModule, "mono_array_element_size");
+            auraMonoFieldGetOffset = this.GetAuraMonoExport<MonoFieldGetOffsetDelegate>(monoModule, "mono_field_get_offset");
             auraMonoArrayNew = this.GetAuraMonoExport<MonoArrayNewDelegate>(monoModule, "mono_array_new");
             auraMonoClassVtable = this.GetAuraMonoExport<MonoClassVtableDelegate>(monoModule, "mono_class_vtable");
             auraMonoFieldStaticGetValue = this.GetAuraMonoExport<MonoFieldStaticGetValueDelegate>(monoModule, "mono_field_static_get_value");
@@ -4685,81 +6116,76 @@ namespace HeartopiaMod
                     ModLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray length=" + arrayLength);
                 }
 
+                // SelectPriorityInfo is a value-type struct, so _selectPriorityInfoArray stores elements inline
+                // (no per-element object header). Array.GetValue boxing returns null on this build; instead resolve
+                // the element class and read the first field (LevelObject shape) directly from each element address.
+                IntPtr arrayClass = auraMonoObjectGetClass != null ? auraMonoObjectGetClass(infoArrayObj) : IntPtr.Zero;
+                IntPtr elemClass = (arrayClass != IntPtr.Zero && auraMonoClassGetElementClass != null)
+                    ? auraMonoClassGetElementClass(arrayClass)
+                    : IntPtr.Zero;
+                if (this.auraMonoSelectPriorityInfoShapeFieldPtr == IntPtr.Zero && elemClass != IntPtr.Zero && auraMonoClassGetFieldFromName != null)
+                {
+                    this.auraMonoSelectPriorityInfoShapeFieldPtr = auraMonoClassGetFieldFromName(elemClass, "shape");
+                }
+                if (this.auraMonoSelectPriorityInfoShapeFieldPtr == IntPtr.Zero || auraMonoArrayAddrWithSize == null)
+                {
+                    return false;
+                }
+
+                int elementSize = (arrayClass != IntPtr.Zero && auraMonoArrayElementSize != null) ? auraMonoArrayElementSize(arrayClass) : 0;
+                // mono_field_get_offset includes the MonoObject header; inline (unboxed) elements have no header.
+                int shapeOffset = auraMonoFieldGetOffset != null
+                    ? (int)auraMonoFieldGetOffset(this.auraMonoSelectPriorityInfoShapeFieldPtr) - 2 * IntPtr.Size
+                    : 0;
+                if (shapeOffset < 0)
+                {
+                    shapeOffset = 0;
+                }
+                if (elementSize <= 0)
+                {
+                    // Without a real element size only index 0 (offset 0) can be addressed safely.
+                    count = Math.Min(count, 1);
+                    elementSize = 1;
+                }
+
                 for (int i = 0; i < count; i++)
                 {
-                    IntPtr infoObj = this.GetAuraMonoArrayValue(infoArrayObj, i);
-                    if (infoObj == IntPtr.Zero)
-                    {
-                        if (AuraFarmDebugLogs && i < 3)
-                        {
-                            ModLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray[" + i + "] GetValue returned null.");
-                        }
-                        continue;
-                    }
-
-                    if (this.auraMonoSelectPriorityInfoShapeFieldPtr == IntPtr.Zero && auraMonoObjectGetClass != null && auraMonoClassGetFieldFromName != null)
-                    {
-                        IntPtr infoClass = auraMonoObjectGetClass(infoObj);
-                        if (infoClass != IntPtr.Zero)
-                        {
-                            this.auraMonoSelectPriorityInfoShapeFieldPtr = auraMonoClassGetFieldFromName(infoClass, "shape");
-                        }
-                    }
-
-                    if (this.auraMonoSelectPriorityInfoShapeFieldPtr == IntPtr.Zero)
+                    IntPtr elemAddr = auraMonoArrayAddrWithSize(infoArrayObj, elementSize, (UIntPtr)i);
+                    if (elemAddr == IntPtr.Zero)
                     {
                         continue;
                     }
 
-                    IntPtr shapeObj = IntPtr.Zero;
-                    auraMonoFieldGetValue(infoObj, this.auraMonoSelectPriorityInfoShapeFieldPtr, (IntPtr)(&shapeObj));
+                    IntPtr shapeObj = Marshal.ReadIntPtr(elemAddr, shapeOffset);
+                    if (AuraFarmDebugLogs && i < 3)
+                    {
+                        ModLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray[" + i + "] elemSize=" + elementSize + " shapeOff=" + shapeOffset + " shape=" + (shapeObj != IntPtr.Zero));
+                    }
                     if (shapeObj == IntPtr.Zero)
                     {
                         continue;
                     }
 
-                    if (this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr == IntPtr.Zero && auraMonoObjectGetClass != null && auraMonoClassGetMethodFromName != null)
-                    {
-                        IntPtr shapeClass = auraMonoObjectGetClass(shapeObj);
-                        if (shapeClass != IntPtr.Zero)
-                        {
-                            this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr = auraMonoClassGetMethodFromName(shapeClass, "GetUniqueId", 0);
-                        }
-                    }
-
-                    if (this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr == IntPtr.Zero)
-                    {
-                        continue;
-                    }
-
-                    IntPtr exc = IntPtr.Zero;
-                    IntPtr boxedId = auraMonoRuntimeInvoke(this.auraMonoDynamicLevelObjectGetUniqueIdMethodPtr, shapeObj, IntPtr.Zero, ref exc);
-                    if (exc != IntPtr.Zero || boxedId == IntPtr.Zero || auraMonoObjectUnbox == null)
-                    {
-                        continue;
-                    }
-
-                    IntPtr raw = auraMonoObjectUnbox(boxedId);
-                    if (raw == IntPtr.Zero)
-                    {
-                        continue;
-                    }
-
-                    ulong levelObjectId = *(ulong*)raw;
-                    if (levelObjectId == 0UL)
-                    {
-                        continue;
-                    }
-
-                    int beforeCount = output.Count;
                     Vector3 shapePosition;
                     bool hasShapePosition = this.TryGetAuraMonoObjectPosition(shapeObj, out shapePosition);
-                    this.RegisterAuraTargetFromLevelObjectId(output, levelObjectId, "MonoSelectPriority[" + i + "]", hasShapePosition, shapePosition);
-                    if (output.Count > beforeCount)
+                    this.TryRegisterAuraTargetFromMonoLevelObjectShape(shapeObj, output, "MonoSelectPriority[" + i + "]");
+
+                    ulong levelObjectId;
+                    AuraTargetInfo levelInfo;
+                    if (this.TryGetAuraMonoShapeLevelObjectId(shapeObj, out levelObjectId) && levelObjectId != 0UL
+                        && this.TryResolveAuraTargetInfoFromLevelObjectId(levelObjectId, out levelInfo) && levelInfo != null)
                     {
+                        if (hasShapePosition)
+                        {
+                            levelInfo.Position = shapePosition;
+                            levelInfo.HasPosition = true;
+                        }
+
+                        this.auraTargetInfoByOwnerId[levelInfo.OwnerNetId] = levelInfo;
+                        output.Add(levelInfo.OwnerNetId);
                         if (AuraFarmDebugLogs && i < 3)
                         {
-                            ModLogger.Msg("[AuraFarm] Mono _selectPriorityInfoArray[" + i + "] levelObjectId=" + levelObjectId);
+                            this.LogAuraTargetDetail("MonoSelectPriority[" + i + "]:levelObject", levelInfo);
                         }
                     }
                 }
