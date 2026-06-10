@@ -218,7 +218,7 @@ the native body.
 | `JigsawPuzzle/` | **JigsawPuzzleSystem** | Puzzle solver |
 | `Insect/` | LevelInscetManager (typo in game) | Insect net farm |
 | `SelfRoom/` | SelfRoomSystem | Join town / room helpers |
-| `Shop/` | Store-related | Auto buy |
+| `Shop/` | `ShopSystem`, `ShopItemData` | Auto buy (UI), **buy-all coin** (`ShopBuyAllFeature.cs`) |
 
 ### 2.5 XDTGameUI
 
@@ -230,7 +230,7 @@ the native body.
 | BagPanel | Warehouse bypass, bag automation |
 | TrackingPanel / TrackingCatPlay | Cat play automation |
 | CatPlayStatusPanel, DogPlayStatusPanel | Pet play |
-| DressShopPanel, FaceShopPanel, ShopPanel, WeatherExchangeShopPanel | Force-open shop helpers |
+| DressShopPanel, FaceShopPanel, ShopPanel, WeatherExchangeShopPanel | Force-open shop; **DressShopPanel** = clothing buy-all (`storeId` **5**) |
 
 **UIManager:** `XDTGame.Core.UIManager` — AuraMono `GetView<T>()`.
 
@@ -808,6 +808,17 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 - **Dialogue:** `DialogueNodeBranch.ProcessUiFunction` — case **1** = `ShopPanel`, case **10** = `WeatherExchangeShopPanel` (`UIParam` = `storeId`)
 - **Docs:** [TYPE_RESOLUTION.md § UI panels, hooks, and IL2CPP](./TYPE_RESOLUTION.md#ui-panels-hooks-and-il2cpp-worked-example-weather-exchange-shop)
 
+#### Shop buy-all (Coin) — `ShopBuyAllFeature.cs`
+- **Dump:** `XDTGameSystem/.../ShopSystem.cs`, `ShopItemData.cs`; `XDTDataAndProtocol/.../ShopShelfProtocolManager.cs`; `EcsClient/.../ClothesStoreEntry.cs`, `ClothesStoreBuyItemsCommand.cs`; `XDTGameUI/.../DressShopPanel.cs` (listing pattern: `GetShopSlotData(5)` + `GetGroupGoodsData`)
+- **Features:** **BUY ALL (COIN)** — buy every unlocked Coin-priced item in the Force Open Shop dropdown; skips owned / sold-out
+- **Listing:** `ShopSystem.GetStoreGoodsData(storeId)` — **R** (managed) then **A** (AuraMono on `DataModule<ShopSystem>`); aura reads struct **fields only**
+- **Normal buy:** `ShopShelfProtocolManager.BuyItem` → `BuyStoreItemCommand` — **A** (primary on IL2CPP), optional **R** `ShopSystem.BuyItem(uint netId, count)`
+- **Clothing buy (`storeId` 5):** `ShopShelfProtocolManager.BuyClothes` → `ClothesStoreBuyItemsCommand` — **A** only (`List<ClothesStoreEntry>` built via `Type.GetType` + `List.Add`); not `BuyItem`
+- **Ownership checks:** `PlayerServiceSystem.GetItemCount` (**A**), `ShopSystem.CheckIfAvatarHasObtain` (**A**), `ShopItemData.isObtained` (**R** when listing is managed), `boughtCount` / `_leftCount` fields
+- **Balance:** `PlayerServiceSystem.GetCurrencyCount(CurrencyType.Coin)` — **A**
+- **UI:** `HeartopiaComplete.cs` — shares `forceOpenShopSelectedIndex` / `TryResolveForceOpenShopStoreId`
+- **Docs:** [FEATURES.md § Buy All (Coin)](./FEATURES.md#buy-all-coin--selected-shop)
+
 ---
 
 ### 3.16 Movement, Unity (interop)
@@ -895,6 +906,7 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 | Pet play | Meow/PetProtocolManager, TrackingCatPlay, TableDogLearningMotion | PetPlayFeature.cs | A + R |
 | Wild animal feed | WildAnimalSystem, WildAnimalProtocolManager, BackPackSystem | WildAnimalFeedFeature.cs | R + A |
 | Wild animal gifts | WildAnimalProtocolManager.HaveGift, AnimalUtil, AnimalProtocolManager.TakeGift | WildAnimalGiftFeature.cs | A |
+| Shop buy-all coin | ShopSystem, ShopItemData, ShopShelfProtocolManager, BuyStoreItemCommand, ClothesStoreEntry, ClothesStoreBuyItemsCommand, PlayerServiceSystem | ShopBuyAllFeature.cs | A (+ R listing/buy fallback) |
 | Homeland sow/fertilize | CropProtocolManager, GrowCropNetworkCommand, SeedBagCommand, BuildSingle, CropComponent | HomelandFarmFeature.cs | A + R |
 | Puzzle | JigsawPuzzleSystem, JigsawPuzzleProtocolManager, DataCenter | PuzzleNetFeature.cs | R + A |
 | NPC teleport | TableData.TableNpcs | HC | A + R + N |

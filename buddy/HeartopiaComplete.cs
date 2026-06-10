@@ -3207,7 +3207,7 @@ namespace HeartopiaMod
 
             if (this.automationSubTab == 3)
             {
-                return this.forceOpenShopDropdownOpen ? 980f : 760f;
+                return this.forceOpenShopDropdownOpen ? 1028f : 808f;
             }
 
             if (this.automationSubTab == 5)
@@ -17977,6 +17977,117 @@ namespace HeartopiaMod
             return status;
         }
 
+        private bool TryResolveForceOpenShopStoreId(int selectedIndex, out int storeId, out string label, out string unsupportedReason)
+        {
+            storeId = 0;
+            label = string.Empty;
+            unsupportedReason = null;
+
+            switch (selectedIndex)
+            {
+                case 0:
+                    unsupportedReason = "No shop selected.";
+                    return false;
+                case 4:
+                    storeId = 5;
+                    label = "Clothing Store";
+                    return true;
+                case 6:
+                    unsupportedReason = "Face Shop is not a Coin shop panel.";
+                    return false;
+                case 17:
+                    unsupportedReason = "Meteor Exchange uses item cost, not Coin.";
+                    return false;
+                case 1:
+                    storeId = 55;
+                    label = "Birdwatching Store";
+                    return true;
+                case 2:
+                    storeId = 147;
+                    label = "Book Shop";
+                    return true;
+                case 3:
+                    storeId = 10;
+                    label = "Carpet Shop";
+                    return true;
+                case 5:
+                    storeId = 53;
+                    label = "Cooking Store";
+                    return true;
+                case 7:
+                    storeId = 52;
+                    label = "Fishing Store";
+                    return true;
+                case 8:
+                    storeId = 6;
+                    label = "Furniture Extra";
+                    return true;
+                case 9:
+                    storeId = 86;
+                    label = "Fortune Store - Rainbow";
+                    return true;
+                case 10:
+                    storeId = 87;
+                    label = "Fortune Store - Rain";
+                    return true;
+                case 11:
+                    storeId = 51;
+                    label = "Garden Store";
+                    return true;
+                case 13:
+                    storeId = 56;
+                    label = "Insect Catching Store";
+                    return true;
+                case 14:
+                    storeId = 54;
+                    label = "Pet Store";
+                    return true;
+                case 15:
+                    storeId = 82;
+                    label = "Special Home Decor Store";
+                    return true;
+                case 16:
+                    storeId = 7;
+                    label = "Showroom";
+                    return true;
+                case 12:
+                    label = "General Store";
+                    if (this.forceOpenShopResolvedStoreIds.TryGetValue(label, out int cachedStoreId) && cachedStoreId > 0 && cachedStoreId != 88)
+                    {
+                        storeId = cachedStoreId;
+                        return true;
+                    }
+
+                    string[] keywords = new string[]
+                    {
+                        "ui_picture_shop_img_1001",
+                        "shop_img_1001",
+                        "ka ching",
+                        "kaching",
+                        "general goods",
+                        "general store"
+                    };
+                    if (!this.TryResolveStoreIdByKeywords(keywords, out storeId, out string matchedName))
+                    {
+                        unsupportedReason = "General Store store id not found.";
+                        return false;
+                    }
+
+                    if (storeId == 88)
+                    {
+                        unsupportedReason = "Resolved pay shop (88), refused.";
+                        return false;
+                    }
+
+                    label = string.IsNullOrWhiteSpace(matchedName) ? label : matchedName;
+                    this.forceOpenShopResolvedStoreIds["General Store"] = storeId;
+                    return true;
+                default:
+                    unsupportedReason = "Unknown shop index " + selectedIndex + ".";
+                    return false;
+            }
+        }
+
         private bool TryOpenSelectedForceShop(out string status)
         {
             status = "No shop selected.";
@@ -17987,25 +18098,10 @@ namespace HeartopiaMod
 
             switch (this.forceOpenShopSelectedIndex)
             {
-                case 0:
-                    this.LogForceOpenShop("No shop selected. Aborting.");
-                    return false;
-                case 1:
-                    if (this.TryOpenShopPanelByStoreId(55, 0, "Birdwatching Store")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 2:
-                    if (this.TryOpenShopPanelByStoreId(147, 0, "Book Shop")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 3:
-                    if (this.TryOpenShopPanelByStoreId(10, 0, "Carpet Shop")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
                 case 4:
                     if (this.TryInvokeAuraMonoStaticNullBoolMethod("XDTGame.UI.Panel.DressShopPanel", "Open", false, "Opened Clothing Store.")
                         || this.TryOpenPanelByRegistry("DressShopPanel", intent => this.TryConfigureIntentBool(intent, "disrobe", false), "Opened Clothing Store.")
                         || this.TryOpenPanelByResolvedTypeName("XDTGame.UI.Panel.DressShopPanel", intent => this.TryConfigureIntentBool(intent, "disrobe", false), "Opened Clothing Store.")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 5:
-                    if (this.TryOpenShopPanelByStoreId(53, 0, "Cooking Store")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 6:
                     if (this.TryInvokeAuraMonoStaticIntMethod("XDTGame.UI.Panel.FaceShopPanel", "OpenAvatarPanelShop", 3008, "Opened Face Shop Panel.")
@@ -18018,42 +18114,27 @@ namespace HeartopiaMod
                         intent => this.TryConfigureIntentInt(intent, "id", 3008),
                         "Opened Face Shop Panel.")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
-                case 7:
-                    if (this.TryOpenShopPanelByStoreId(52, 0, "Fishing Store")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 8:
-                    if (this.TryOpenShopPanelByStoreId(6, 0, "Furniture Extra")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 9:
-                    if (this.TryOpenShopPanelByStoreId(86, 0, "Fortune Store - Rainbow")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 10:
-                    if (this.TryOpenShopPanelByStoreId(87, 0, "Fortune Store - Rain")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 11:
-                    if (this.TryOpenShopPanelByStoreId(51, 0, "Garden Store")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
                 case 12:
                     if (this.TryOpenGeneralStore()) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 13:
-                    if (this.TryOpenShopPanelByStoreId(56, 0, "Insect Catching Store")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 14:
-                    if (this.TryOpenShopPanelByStoreId(54, 0, "Pet Store")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 15:
-                    if (this.TryOpenShopPanelByStoreId(82, 0, "Special Home Decor Store")) { status = this.forceOpenShopStatus; return true; }
-                    status = this.forceOpenShopStatus; return false;
-                case 16:
-                    if (this.TryOpenShopPanelByStoreId(7, 0, "Showroom")) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 case 17:
                     if (this.TryOpenMeteorWeatherExchangeShop()) { status = this.forceOpenShopStatus; return true; }
                     status = this.forceOpenShopStatus; return false;
                 default:
-                    status = "Unsupported shop selection.";
-                    this.LogForceOpenShop("Unsupported shop selection index: " + this.forceOpenShopSelectedIndex);
+                    if (!this.TryResolveForceOpenShopStoreId(this.forceOpenShopSelectedIndex, out int storeId, out string label, out string unsupportedReason))
+                    {
+                        status = unsupportedReason ?? "Shop not supported.";
+                        this.LogForceOpenShop(status);
+                        return false;
+                    }
+
+                    if (this.TryOpenShopPanelByStoreId(storeId, 0, label))
+                    {
+                        status = this.forceOpenShopStatus;
+                        return true;
+                    }
+
+                    status = this.forceOpenShopStatus;
                     return false;
             }
         }
@@ -25235,7 +25316,7 @@ namespace HeartopiaMod
                 }
 
                 num += 36;
-                float forcePanelHeight = 330f + (this.forceOpenShopDropdownOpen ? (this.forceOpenShopOptions.Length * 28f) + 12f : 0f);
+                float forcePanelHeight = 378f + (this.forceOpenShopDropdownOpen ? (this.forceOpenShopOptions.Length * 28f) + 12f : 0f);
                 Rect forcePanel = new Rect(left, (float)num, panelWidth, forcePanelHeight);
                 this.DrawExentriSectionPanel(forcePanel, accent, panelFill, panelLine);
                 GUI.Label(new Rect(forcePanel.x + 14f, forcePanel.y + 12f, forcePanel.width - 28f, 18f), this.L("FORCE OPEN SHOP"), sectionStyle);
@@ -25316,7 +25397,17 @@ namespace HeartopiaMod
                         this.AddMenuNotification(openStatus, new Color(1f, 0.55f, 0.55f));
                     }
                 }
-                num += 46;
+                num += 40;
+
+                GUI.enabled = !this.shopBuyAllRunning;
+                if (this.DrawPrimaryActionButton(new Rect(forceLeft, (float)num, 220f, 32f), this.L("BUY ALL (COIN)")))
+                {
+                    this.StartShopBuyAllGold();
+                }
+                GUI.enabled = true;
+                num += 36;
+                GUI.Label(new Rect(forceLeft, (float)num, forceWidth, 18f), this.shopBuyAllStatus, bodyStyle);
+                num += 22;
 
                 GUI.Label(new Rect(forceLeft, (float)num, forceWidth, 20f), this.L("Manual Store ID"), bodyStyle);
                 num += 24;

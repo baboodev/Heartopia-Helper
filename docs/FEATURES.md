@@ -300,6 +300,66 @@ Throttled background checks (`AutoEatTriggerCheckInterval`, `AutoRepairTriggerCh
 - Teleport → open cooking store → buy configured items → return.
 - Master log flag `MasterLogAutoBuy` / `MasterLogForceOpenShop` in source.
 
+### Buy All (Coin) — Selected Shop
+
+- **Menu:** **Features** tab → same dropdown as **Force Open Shop** → **BUY ALL (COIN)**.
+- **File:** `buddy/ShopBuyAllFeature.cs` (partial `HeartopiaComplete`).
+- **Flow:** coroutine with 2-frame warmup → list goods → filter → buy loop (~100 ms between purchases). Status line under the button.
+- **No UI clicks** — protocol only.
+
+#### What gets bought
+
+Includes only items where all of the following hold:
+
+| Field | Value |
+|-------|--------|
+| `storeMoneyType` | `StoreMoneyType.Currency` |
+| `currencyType` | `CurrencyType.Coin` (1) |
+| `isUnlock` | true |
+| `leftCount` | > 0 |
+| `price` | > 0 |
+
+**Skips already owned** (not offered again):
+
+- `boughtCount > 0` on limited-one slots
+- `PlayerServiceSystem.GetItemCount(itemStaticId) > 0`
+- managed path: `ShopItemData.isObtained`
+- avatar rewards: `ShopSystem.CheckIfAvatarHasObtain` (AuraMono)
+
+Coin balance is read via `PlayerServiceSystem.GetCurrencyCount(Coin)`; unaffordable items are skipped.
+
+#### Purchase paths
+
+| Store type | `storeId` | API |
+|------------|-----------|-----|
+| Normal NPC shops (cooking, garden, general, …) | per dropdown / resolved | `ShopShelfProtocolManager.BuyItem` (AuraMono); managed `ShopSystem.BuyItem(netId, count)` if types load |
+| **Clothing Store** | **5** (`DressShopPanel`) | `ShopShelfProtocolManager.BuyClothes` (AuraMono `List<ClothesStoreEntry>`, `wear: false`) — **not** `BuyItem` |
+
+Clothing buys **one piece per command** (game API), not stack count.
+
+#### Listing goods
+
+1. Managed: `ShopSystem.GetStoreGoodsData(storeId)` when `FindLoadedType` works.
+2. Fallback AuraMono: same method on `DataModule<ShopSystem>` instance.
+
+`ShopItemData` is read via **field-only** access in the Aura path (`_leftCount`, `rewardData.staticId`, …) — no property getters on structs (avoids crashes).
+
+#### Unsupported shops
+
+| Dropdown entry | Reason |
+|----------------|--------|
+| Face Shop | Not a Coin `ShopPanel` store |
+| Meteor / Starfall Exchange | Item cost (shards), not Coin — `WeatherExchangeShopPanel` |
+
+#### Store IDs (Force Open / buy-all)
+
+Same mapping as `TryResolveForceOpenShopStoreId` in `HeartopiaComplete.cs` (e.g. cooking **53**, garden **51**, clothing **5**, general store resolved at runtime). See **Force Open Shop** below.
+
+#### Debug
+
+- Errors always logged: `[ShopBuyAll] …`
+- Verbose steps: set `MasterLogAutoBuy = true` in source (shared with Auto Buy).
+
 ### Force Open Shop
 
 - Menu: **Features** tab → dropdown of hardcoded shops → **OPEN SELECTED SHOP**.
