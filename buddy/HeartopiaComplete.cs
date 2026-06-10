@@ -47400,7 +47400,7 @@ namespace HeartopiaMod
                     return false;
                 }
 
-                value = Marshal.PtrToStringAnsi(utf8Ptr) ?? string.Empty;
+                value = Marshal.PtrToStringUTF8(utf8Ptr) ?? string.Empty;
                 return !string.IsNullOrWhiteSpace(value);
             }
             catch
