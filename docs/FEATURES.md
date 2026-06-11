@@ -60,6 +60,7 @@ Tab index **1** is unused in the main tab bar (historical gap).
 | Animal Care | Wild animal trough feed (manual), claim all wild animal gifts |
 | Daily Quests | Auto-submit item delivery orders (CanSubmit) |
 | Homeland Farm | Crop-box farming: auto farm, water/weed/harvest/sow/fertilize in radius, seed/fertilizer selection |
+| Pictures | Decrypt / re-encrypt `ScreenCapture` cache (Photo, Draw, …). Draw files get a color preview via game `ColorLut`; index maps kept in `Draw/.index/` |
 
 Inventory scan / sort / filter rules for these (and Auto Sell, Bag transfer, pets): **[BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md)**.
 
@@ -507,6 +508,25 @@ Full pipeline: [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md#bag--warehouse-tr
 Does **not** use `AutoSubmitNpcTaskItem` success alone — that only opens NPC dialogue in vanilla UI.
 
 Details and troubleshooting: [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md#daily-quests-detail).
+
+---
+
+## New Features — Pictures (ScreenCapture)
+
+Decrypts `persistentDataPath/ScreenCapture` to `ScreenCaptureDecrypted` (AES, same as game `EncryptUtil`). **Encrypt changed** re-imports only files whose plain SHA256 differs from `.heartopia-helper-manifest.json`.
+
+**Draw** files are palette index maps (`TextureFormat.R8`), not normal photos. On decrypt:
+
+- `Draw/{id}_{w}_{h}.png` — colored RGBA preview (editable)
+- `Draw/.index/{id}_{w}_{h}.png` — original index PNG for lossless roundtrip
+
+Palette comes from the in-game `drawing_lut` texture (128 colors; cached as `ScreenCaptureDecrypted/.drawing_color_lut.png`). Edited colors outside the palette are quantized to the nearest entry on re-encrypt.
+
+**Upload edited drawing to the server** (open the drawing at your easel first): **Extract open drawing** dumps the live canvas to `ScreenCaptureDecrypted/drawing.png`; edit it; **Upload drawing.png** pushes the pixels to the server (DrawBoard protocol) and refreshes the in-game preview/thumbnail. This is server-authoritative — editing the local cache alone does **not** change the drawing in-game.
+
+CLI parity: `tools/screen_capture_crypto.py` (`decrypt` / `encrypt-changed` / `decode-draw` / `encode-draw`; `pip install pycryptodome pillow`). Palette files: `tools/gen_drawing_palette.py`.
+
+**Full technical reference (types, AuraMono access, protocol): [DRAW_TECHNICAL.md](./DRAW_TECHNICAL.md).**
 
 ---
 

@@ -13,7 +13,10 @@ namespace HeartopiaMod
     public partial class HeartopiaComplete
     {
         private const string PicturesManifestFileName = ".heartopia-helper-manifest.json";
-        private const int PicturesManifestVersion = 1;
+        private const int PicturesManifestVersion = 2;
+        private const string PicturesContentPhoto = "photo";
+        private const string PicturesContentDrawIndex = "draw-index";
+        private const string PicturesContentDrawColored = "draw-colored";
 
         private static readonly byte[] PicturesDecryptAesKey =
         {
@@ -55,6 +58,12 @@ namespace HeartopiaMod
             public long PlainSize { get; set; }
 
             public bool WasEncrypted { get; set; }
+
+            public string ContentKind { get; set; } = PicturesContentPhoto;
+
+            public string IndexPlainSha256 { get; set; }
+
+            public string LutSha256 { get; set; }
         }
 
         private float DrawPicturesTab(float startY)
@@ -103,8 +112,10 @@ namespace HeartopiaMod
             float scrollH = this.picturesChangedRelativePaths.Count > 0
                 ? Mathf.Min(this.picturesChangedRelativePaths.Count, 6) * 18f + 4f
                 : 0f;
+            float hintH = Mathf.Ceil(bodyStyle.CalcHeight(new GUIContent(this.L("pictures.draw_hint")), innerW)) + 4f;
             float sectionHeight = 10f + 22f + pathsH + rowGap
-                + btnH + rowGap + btnH + rowGap
+                + hintH + rowGap
+                + btnH + rowGap + btnH + rowGap + btnH + rowGap
                 + 20f + scrollH + 8f + statusH + pad;
 
             Rect sectionRect = new Rect(left, y, width, sectionHeight);
@@ -119,6 +130,9 @@ namespace HeartopiaMod
 
             GUI.Label(new Rect(innerX, cursorY, innerW, pathsH), pathsText, bodyStyle);
             cursorY += pathsH + rowGap;
+
+            GUI.Label(new Rect(innerX, cursorY, innerW, hintH), this.L("pictures.draw_hint"), bodyStyle);
+            cursorY += hintH + rowGap;
 
             bool busy = this.picturesTaskCoroutine != null;
             bool hasManifest = manifest != null && manifest.Files != null && manifest.Files.Count > 0;
@@ -145,6 +159,19 @@ namespace HeartopiaMod
                 this.picturesLastStatus = hasManifest
                     ? this.LF("pictures.changed_count", this.picturesChangedRelativePaths.Count)
                     : this.L("pictures.manifest_missing");
+            }
+
+            cursorY += btnH + rowGap;
+
+            // Draw extract/upload (open the drawing in-game first). Extract -> drawing.png, edit, Upload.
+            if (GUI.Button(new Rect(innerX, cursorY, btnW, btnH), "Extract open drawing", GUI.skin.button))
+            {
+                this.DrawExtractOpenDrawing();
+            }
+
+            if (GUI.Button(new Rect(innerX + btnW + btnGap, cursorY, btnW, btnH), "Upload drawing.png", GUI.skin.button))
+            {
+                this.DrawUploadSendForOpenDrawing();
             }
 
             GUI.enabled = true;
@@ -256,7 +283,22 @@ namespace HeartopiaMod
             int copiedPlain = 0;
             int failed = 0;
             int skipped = 0;
+            int drawPreviews = 0;
             int processed = 0;
+            Color32[] drawLut = null;
+            string drawLutSha256 = null;
+            bool hasDrawLut = false;
+            yield return this.CoTryResolveDrawColorLut(destRoot, (resolved, lut, sha) =>
+            {
+                hasDrawLut = resolved;
+                drawLut = lut;
+                drawLutSha256 = sha;
+            });
+            if (!hasDrawLut)
+            {
+                ModLogger.Msg("[Pictures] Draw LUT unavailable — Draw files will stay grayscale index PNG");
+            }
+
             for (int i = 0; i < files.Length; i++)
             {
                 string sourceFile = files[i];
@@ -290,20 +332,61 @@ namespace HeartopiaMod
                     }
                 }
 
-                PicturesDecryptFileResult result = this.TryDecryptScreenCaptureFile(sourceFile, destFile);
-                switch (result)
+                if (!this.TryReadDecryptedPlainFromSource(sourceFile, out byte[] plainBytes, out bool wasEncrypted))
                 {
-                    case PicturesDecryptFileResult.Decrypted:
-                        decrypted++;
-                        this.TryAddPicturesManifestEntry(manifest, relativePath, destFile, wasEncrypted: true);
-                        break;
-                    case PicturesDecryptFileResult.CopiedPlain:
-                        copiedPlain++;
-                        this.TryAddPicturesManifestEntry(manifest, relativePath, destFile, wasEncrypted: false);
-                        break;
-                    default:
+                    failed++;
+                    processed++;
+                    continue;
+                }
+
+                if (this.IsDrawRelativePath(relativePath) && hasDrawLut)
+                {
+                    if (this.TryWriteDrawDecryptedFiles(
+                            manifest,
+                            destRoot,
+                            relativePath,
+                            destFile,
+                            plainBytes,
+                            wasEncrypted,
+                            drawLut,
+                            drawLutSha256))
+                    {
+                        if (wasEncrypted)
+                        {
+                            decrypted++;
+                        }
+                        else
+                        {
+                            copiedPlain++;
+                        }
+
+                        drawPreviews++;
+                    }
+                    else
+                    {
                         failed++;
-                        break;
+                    }
+                }
+                else
+                {
+                    try
+                    {
+                        File.WriteAllBytes(destFile, plainBytes);
+                        if (wasEncrypted)
+                        {
+                            decrypted++;
+                            this.TryAddPicturesManifestEntry(manifest, relativePath, destFile, wasEncrypted: true);
+                        }
+                        else
+                        {
+                            copiedPlain++;
+                            this.TryAddPicturesManifestEntry(manifest, relativePath, destFile, wasEncrypted: false);
+                        }
+                    }
+                    catch
+                    {
+                        failed++;
+                    }
                 }
 
                 processed++;
@@ -319,7 +402,9 @@ namespace HeartopiaMod
             this.TrySavePicturesManifest(manifest, destRoot);
 
             int totalOk = decrypted + copiedPlain;
-            this.picturesLastStatus = this.LF("pictures.done", totalOk, decrypted, copiedPlain, failed, skipped, destRoot);
+            this.picturesLastStatus = drawPreviews > 0
+                ? this.LF("pictures.done_draw", totalOk, decrypted, copiedPlain, failed, skipped, drawPreviews, destRoot)
+                : this.LF("pictures.done", totalOk, decrypted, copiedPlain, failed, skipped, destRoot);
             if (!silent)
             {
                 Color color = failed > 0
@@ -377,6 +462,16 @@ namespace HeartopiaMod
                 yield break;
             }
 
+            Color32[] drawLut = null;
+            string drawLutSha256 = null;
+            bool hasDrawLut = false;
+            yield return this.CoTryResolveDrawColorLut(manifest.DecryptedRoot, (resolved, lut, sha) =>
+            {
+                hasDrawLut = resolved;
+                drawLut = lut;
+                drawLutSha256 = sha;
+            });
+
             int imported = 0;
             int failed = 0;
             int processed = 0;
@@ -390,13 +485,8 @@ namespace HeartopiaMod
                     continue;
                 }
 
-                string decryptedFile = Path.Combine(manifest.DecryptedRoot, relativePath);
-                string targetFile = Path.Combine(manifest.SourceRoot, relativePath);
-                if (this.TryEncryptScreenCaptureFile(decryptedFile, targetFile, entry.WasEncrypted, out byte[] plainBytes))
+                if (this.TryImportChangedFile(manifest, relativePath, entry, drawLut, drawLutSha256, hasDrawLut))
                 {
-                    entry.PlainSha256 = this.ComputePicturesSha256Hex(plainBytes);
-                    entry.PlainSize = plainBytes.LongLength;
-                    manifest.Files[relativePath] = entry;
                     imported++;
                 }
                 else
@@ -452,6 +542,12 @@ namespace HeartopiaMod
             {
                 string relativePath = pair.Key;
                 PicturesManifestEntry entry = pair.Value;
+                if (this.IsDrawIndexRelativePath(relativePath)
+                    || string.Equals(entry.ContentKind, PicturesContentDrawIndex, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 string decryptedFile = Path.Combine(destRoot, relativePath);
                 if (!File.Exists(decryptedFile))
                 {
@@ -477,7 +573,20 @@ namespace HeartopiaMod
                 return false;
             }
 
-            return File.Exists(destFile);
+            if (!File.Exists(destFile))
+            {
+                return false;
+            }
+
+            if (this.IsDrawRelativePath(relativePath)
+                && string.Equals(manifest.Files[relativePath].ContentKind, PicturesContentDrawColored, StringComparison.OrdinalIgnoreCase))
+            {
+                string indexRelative = this.GetDrawIndexRelativePath(relativePath);
+                string indexFile = Path.Combine(Path.GetDirectoryName(destFile) ?? string.Empty, ".index", Path.GetFileName(destFile));
+                return File.Exists(indexFile);
+            }
+
+            return true;
         }
 
         private void PrunePicturesManifestMissingSources(PicturesManifest manifest, string sourceRoot)
@@ -499,7 +608,12 @@ namespace HeartopiaMod
 
             for (int i = 0; i < staleKeys.Count; i++)
             {
-                manifest.Files.Remove(staleKeys[i]);
+                string staleKey = staleKeys[i];
+                manifest.Files.Remove(staleKey);
+                if (this.IsDrawRelativePath(staleKey))
+                {
+                    manifest.Files.Remove(this.GetDrawIndexRelativePath(staleKey));
+                }
             }
         }
 
@@ -520,8 +634,288 @@ namespace HeartopiaMod
             {
                 PlainSha256 = hash,
                 PlainSize = info.Length,
-                WasEncrypted = wasEncrypted
+                WasEncrypted = wasEncrypted,
+                ContentKind = PicturesContentPhoto
             };
+        }
+
+        private void TryAddDrawManifestEntries(
+            PicturesManifest manifest,
+            string coloredRelativePath,
+            string coloredFile,
+            string indexRelativePath,
+            string indexFile,
+            bool wasEncrypted,
+            string lutSha256)
+        {
+            if (manifest?.Files == null)
+            {
+                return;
+            }
+
+            if (!this.TryComputePicturesFileSha256(coloredFile, out string coloredHash)
+                || !this.TryComputePicturesFileSha256(indexFile, out string indexHash))
+            {
+                return;
+            }
+
+            FileInfo coloredInfo = new FileInfo(coloredFile);
+            FileInfo indexInfo = new FileInfo(indexFile);
+            manifest.Files[coloredRelativePath] = new PicturesManifestEntry
+            {
+                PlainSha256 = coloredHash,
+                PlainSize = coloredInfo.Length,
+                WasEncrypted = wasEncrypted,
+                ContentKind = PicturesContentDrawColored,
+                IndexPlainSha256 = indexHash,
+                LutSha256 = lutSha256 ?? string.Empty
+            };
+            manifest.Files[indexRelativePath] = new PicturesManifestEntry
+            {
+                PlainSha256 = indexHash,
+                PlainSize = indexInfo.Length,
+                WasEncrypted = wasEncrypted,
+                ContentKind = PicturesContentDrawIndex,
+                LutSha256 = lutSha256 ?? string.Empty
+            };
+        }
+
+        private bool TryWriteDrawDecryptedFiles(
+            PicturesManifest manifest,
+            string destRoot,
+            string relativePath,
+            string coloredDestFile,
+            byte[] indexPngBytes,
+            bool wasEncrypted,
+            Color32[] lut,
+            string lutSha256)
+        {
+            try
+            {
+                string indexRelative = this.GetDrawIndexRelativePath(relativePath);
+                string indexDestFile = Path.Combine(destRoot, indexRelative.Replace('/', Path.DirectorySeparatorChar));
+                string indexDir = Path.GetDirectoryName(indexDestFile);
+                if (!string.IsNullOrWhiteSpace(indexDir))
+                {
+                    Directory.CreateDirectory(indexDir);
+                }
+
+                File.WriteAllBytes(indexDestFile, indexPngBytes);
+
+                byte[] coloredPng = DrawColorCodec.IndexPngToColoredPng(indexPngBytes, lut);
+                if (coloredPng == null || coloredPng.Length == 0)
+                {
+                    return false;
+                }
+
+                string coloredDir = Path.GetDirectoryName(coloredDestFile);
+                if (!string.IsNullOrWhiteSpace(coloredDir))
+                {
+                    Directory.CreateDirectory(coloredDir);
+                }
+
+                File.WriteAllBytes(coloredDestFile, coloredPng);
+                this.TryAddDrawManifestEntries(
+                    manifest,
+                    relativePath,
+                    coloredDestFile,
+                    indexRelative,
+                    indexDestFile,
+                    wasEncrypted,
+                    lutSha256);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[Pictures] draw preview failed " + relativePath + ": " + ex.Message);
+                return false;
+            }
+        }
+
+        private bool TryImportChangedFile(
+            PicturesManifest manifest,
+            string relativePath,
+            PicturesManifestEntry entry,
+            Color32[] drawLut,
+            string drawLutSha256,
+            bool hasDrawLut)
+        {
+            string decryptedFile = Path.Combine(manifest.DecryptedRoot, relativePath);
+            string targetFile = Path.Combine(manifest.SourceRoot, relativePath);
+            if (!File.Exists(decryptedFile))
+            {
+                return false;
+            }
+
+            if (string.Equals(entry.ContentKind, PicturesContentDrawColored, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!hasDrawLut)
+                {
+                    ModLogger.Msg("[Pictures] Draw LUT missing for encrypt: " + relativePath);
+                    return false;
+                }
+
+                byte[] coloredBytes = File.ReadAllBytes(decryptedFile);
+                byte[] indexPng = DrawColorCodec.ColoredPngToIndexPng(coloredBytes, drawLut);
+                if (indexPng == null || indexPng.Length == 0)
+                {
+                    return false;
+                }
+
+                string indexRelative = this.GetDrawIndexRelativePath(relativePath);
+                string indexFile = Path.Combine(manifest.DecryptedRoot, indexRelative.Replace('/', Path.DirectorySeparatorChar));
+                string indexDir = Path.GetDirectoryName(indexFile);
+                if (!string.IsNullOrWhiteSpace(indexDir))
+                {
+                    Directory.CreateDirectory(indexDir);
+                }
+
+                File.WriteAllBytes(indexFile, indexPng);
+                if (!this.TryEncryptScreenCaptureFile(indexFile, targetFile, entry.WasEncrypted, out _))
+                {
+                    return false;
+                }
+
+                entry.PlainSha256 = this.ComputePicturesSha256Hex(coloredBytes);
+                entry.PlainSize = coloredBytes.LongLength;
+                entry.IndexPlainSha256 = this.ComputePicturesSha256Hex(indexPng);
+                entry.LutSha256 = drawLutSha256 ?? string.Empty;
+                manifest.Files[relativePath] = entry;
+
+                if (manifest.Files.TryGetValue(indexRelative, out PicturesManifestEntry indexEntry))
+                {
+                    indexEntry.PlainSha256 = entry.IndexPlainSha256;
+                    indexEntry.PlainSize = indexPng.LongLength;
+                    indexEntry.LutSha256 = entry.LutSha256;
+                    manifest.Files[indexRelative] = indexEntry;
+                }
+
+                return true;
+            }
+
+            if (this.IsDrawIndexRelativePath(relativePath))
+            {
+                if (!this.TryEncryptScreenCaptureFile(decryptedFile, targetFile, entry.WasEncrypted, out byte[] indexBytes))
+                {
+                    return false;
+                }
+
+                entry.PlainSha256 = this.ComputePicturesSha256Hex(indexBytes);
+                entry.PlainSize = indexBytes.LongLength;
+                manifest.Files[relativePath] = entry;
+
+                if (hasDrawLut)
+                {
+                    string coloredRelative = this.GetDrawColoredRelativePath(relativePath);
+                    if (!string.IsNullOrWhiteSpace(coloredRelative))
+                    {
+                        string coloredFile = Path.Combine(manifest.DecryptedRoot, coloredRelative.Replace('/', Path.DirectorySeparatorChar));
+                        byte[] coloredPng = DrawColorCodec.IndexPngToColoredPng(indexBytes, drawLut);
+                        if (coloredPng != null && coloredPng.Length > 0)
+                        {
+                            File.WriteAllBytes(coloredFile, coloredPng);
+                            if (manifest.Files.TryGetValue(coloredRelative, out PicturesManifestEntry coloredEntry))
+                            {
+                                coloredEntry.PlainSha256 = this.ComputePicturesSha256Hex(coloredPng);
+                                coloredEntry.PlainSize = coloredPng.LongLength;
+                                coloredEntry.IndexPlainSha256 = entry.PlainSha256;
+                                coloredEntry.LutSha256 = drawLutSha256 ?? string.Empty;
+                                manifest.Files[coloredRelative] = coloredEntry;
+                            }
+                        }
+                    }
+                }
+
+                return true;
+            }
+
+            if (!this.TryEncryptScreenCaptureFile(decryptedFile, targetFile, entry.WasEncrypted, out byte[] plainBytes))
+            {
+                return false;
+            }
+
+            entry.PlainSha256 = this.ComputePicturesSha256Hex(plainBytes);
+            entry.PlainSize = plainBytes.LongLength;
+            manifest.Files[relativePath] = entry;
+            return true;
+        }
+
+        private bool IsDrawRelativePath(string relativePath)
+        {
+            return !string.IsNullOrWhiteSpace(relativePath)
+                && relativePath.StartsWith("Draw/", StringComparison.OrdinalIgnoreCase)
+                && relativePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                && !this.IsDrawIndexRelativePath(relativePath);
+        }
+
+        private bool IsDrawIndexRelativePath(string relativePath)
+        {
+            return !string.IsNullOrWhiteSpace(relativePath)
+                && relativePath.StartsWith("Draw/.index/", StringComparison.OrdinalIgnoreCase)
+                && relativePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string GetDrawIndexRelativePath(string drawColoredRelative)
+        {
+            if (!this.IsDrawRelativePath(drawColoredRelative))
+            {
+                return drawColoredRelative;
+            }
+
+            string fileName = Path.GetFileName(drawColoredRelative);
+            return "Draw/.index/" + fileName;
+        }
+
+        private string GetDrawColoredRelativePath(string drawIndexRelative)
+        {
+            if (!this.IsDrawIndexRelativePath(drawIndexRelative))
+            {
+                return null;
+            }
+
+            string fileName = Path.GetFileName(drawIndexRelative);
+            return "Draw/" + fileName;
+        }
+
+        private bool TryReadDecryptedPlainFromSource(string sourceFile, out byte[] plain, out bool wasEncrypted)
+        {
+            plain = null;
+            wasEncrypted = false;
+            try
+            {
+                byte[] input = File.ReadAllBytes(sourceFile);
+                if (input == null || input.Length == 0)
+                {
+                    return false;
+                }
+
+                if (this.LooksLikeImageBytes(input))
+                {
+                    plain = input;
+                    wasEncrypted = false;
+                    return true;
+                }
+
+                if (this.TryDecryptGamePhotoBytes(input, out byte[] decrypted) && this.LooksLikeImageBytes(decrypted))
+                {
+                    plain = decrypted;
+                    wasEncrypted = true;
+                    return true;
+                }
+
+                if (this.TryInvokeGameDecryptBytes(input, out byte[] gameDecrypted) && this.LooksLikeImageBytes(gameDecrypted))
+                {
+                    plain = gameDecrypted;
+                    wasEncrypted = true;
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[Pictures] read failed " + sourceFile + ": " + ex.Message);
+            }
+
+            return false;
         }
 
         private bool TryEncryptScreenCaptureFile(string decryptedFile, string targetFile, bool wasEncrypted, out byte[] plainBytes)
@@ -634,13 +1028,18 @@ namespace HeartopiaMod
                     return null;
                 }
 
-                string json = File.ReadAllText(path, Encoding.UTF8);
+                string json;
+                using (StreamReader reader = new StreamReader(path, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true), detectEncodingFromByteOrderMarks: true))
+                {
+                    json = reader.ReadToEnd();
+                }
                 PicturesManifest manifest = JsonSerializer.Deserialize<PicturesManifest>(json);
                 if (manifest?.Files == null)
                 {
                     return null;
                 }
 
+                this.NormalizePicturesManifest(manifest);
                 return manifest;
             }
             catch (Exception ex)
@@ -661,6 +1060,7 @@ namespace HeartopiaMod
                     Directory.CreateDirectory(dir);
                 }
 
+                this.NormalizePicturesManifest(manifest);
                 JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
                 string json = JsonSerializer.Serialize(manifest, options);
                 File.WriteAllText(path, json, Encoding.UTF8);
@@ -674,6 +1074,23 @@ namespace HeartopiaMod
         private string GetPicturesManifestPath(string destRoot)
         {
             return Path.Combine(destRoot, PicturesManifestFileName);
+        }
+
+        private void NormalizePicturesManifest(PicturesManifest manifest)
+        {
+            if (manifest?.Files == null)
+            {
+                return;
+            }
+
+            manifest.Version = PicturesManifestVersion;
+            foreach (PicturesManifestEntry entry in manifest.Files.Values)
+            {
+                if (string.IsNullOrWhiteSpace(entry.ContentKind))
+                {
+                    entry.ContentKind = PicturesContentPhoto;
+                }
+            }
         }
 
         private string NormalizePicturesRelativePath(string relativePath)
@@ -876,6 +1293,30 @@ namespace HeartopiaMod
             }
 
             return Path.Combine(Application.persistentDataPath, "ScreenCaptureDecrypted");
+        }
+
+        private bool TryResolveDrawColorLut(string destRoot, out Color32[] lut, out string lutSha256)
+        {
+            return DrawColorCodec.TryResolveLut(destRoot, out lut, out lutSha256);
+        }
+
+        private IEnumerator CoTryResolveDrawColorLut(string destRoot, Action<bool, Color32[], string> done)
+        {
+            // The 'drawing_lut' texture may load a few frames after the drawing UI opens, so retry
+            // briefly before giving up.
+            for (int attempt = 0; attempt < 60; attempt++)
+            {
+                if (this.TryResolveDrawColorLut(destRoot, out Color32[] lut, out string lutSha256))
+                {
+                    ModLogger.Msg("[Pictures] Draw LUT ready (" + lut.Length + " colors)");
+                    done(true, lut, lutSha256);
+                    yield break;
+                }
+
+                yield return null;
+            }
+
+            done(false, null, null);
         }
     }
 }

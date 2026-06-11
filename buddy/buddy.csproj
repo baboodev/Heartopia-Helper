@@ -209,6 +209,8 @@
     <Compile Include="ModLogger.cs" />
     <Compile Include="PetFeedFeature.cs" />
     <Compile Include="PetPlayFeature.cs" />
+    <Compile Include="DrawColorCodec.cs" />
+    <Compile Include="DrawUploadFeature.cs" />
     <Compile Include="PicturesDecryptFeature.cs" />
     <Compile Include="WildAnimalFeedFeature.cs" />
     <Compile Include="WildAnimalGiftFeature.cs" />

@@ -16,6 +16,7 @@ tools/DumpIsTool
 tools/*.py
 tools/*.pyc
 tools/__pycache__
+tools/assets
 docs/superpowers
 .cursor
 .claude
