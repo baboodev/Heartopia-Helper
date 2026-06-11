@@ -48710,8 +48710,15 @@ namespace HeartopiaMod
         private static float lastLocalPlayerCheckTime = -999f;
         private const float LOCAL_PLAYER_CACHE_INTERVAL = 1f; // seconds
 
-        // Return what appears to be the local player's skeleton GameObject.
-        // In multiplayer there may be multiple "p_player_skeleton(Clone)" objects; prefer the one that has a Camera in its children (local player).
+        // Return the local player's skeleton GameObject (`p_player_skeleton(Clone)`).
+        // Resolved with a targeted GameObject.Find. NOTE: the game does NOT parent a Camera under the
+        // player skeleton on this build — the Main Camera lives under `GameApp/startup_root(Clone)` —
+        // so the old FindObjectsOfType + GetComponentInChildren<Camera> "local player" disambiguation
+        // never matched and always fell through to this same GameObject.Find (verified via in-game
+        // hierarchy diagnostics: hasCamera=False, 1 match, ~3000 objects scanned for nothing). The full
+        // scene scan was dropped. In multiplayer with several p_player_skeleton(Clone) this returns the
+        // first match; correct local-player disambiguation would need to map the selfPlayer ECS entity
+        // to its GameObject.
         public static GameObject GetLocalPlayer()
         {
             // Quick return if cached and valid
@@ -48727,36 +48734,16 @@ namespace HeartopiaMod
                 cachedLocalPlayer = null;
             }
 
-            // Throttle full-scans to once per interval
-            if (Time.unscaledTime - lastLocalPlayerCheckTime < LOCAL_PLAYER_CACHE_INTERVAL && cachedLocalPlayer != null)
+            // Throttle re-resolves to once per interval REGARDLESS of cache state, so a missing player
+            // (world loading, between worlds, despawned) doesn't hit GameObject.Find every call from the
+            // hot Transform.position / CharacterController.Move patches. A miss returns the (null/stale)
+            // cache and retries at most once per second.
+            if (Time.unscaledTime - lastLocalPlayerCheckTime < LOCAL_PLAYER_CACHE_INTERVAL)
             {
                 return cachedLocalPlayer;
             }
 
             lastLocalPlayerCheckTime = Time.unscaledTime;
-
-            try
-            {
-                GameObject[] all = UnityEngine.Object.FindObjectsOfType<GameObject>();
-                foreach (GameObject obj in all)
-                {
-                    if (obj == null) continue;
-                    if (obj.name != null && obj.name.Contains("p_player_skeleton"))
-                    {
-                        if (obj.GetComponentInChildren<Camera>() != null)
-                        {
-                            cachedLocalPlayer = obj;
-                            return cachedLocalPlayer;
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // ignore
-            }
-
-            // Fallback: return the first matching name (existing behavior)
             cachedLocalPlayer = GameObject.Find("p_player_skeleton(Clone)");
             return cachedLocalPlayer;
         }
