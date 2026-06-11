@@ -392,6 +392,9 @@ namespace HeartopiaMod
             public float netCookInterval;
             public float netCookScanRadiusMeters;
             public bool netCookMiniGameOnly;
+            public bool netCookMoveIngredients;
+            public bool netCookUseAllIngredients;
+            public int netCookCookQuantity;
             public float homelandFarmWaterRadius;
             public float autoFishScanTimeout = -1f;
             public float autoFishTeleportDelay = -1f;
@@ -975,6 +978,9 @@ namespace HeartopiaMod
             data.netCookInterval = this.netCookInterval;
             data.netCookScanRadiusMeters = this.netCookScanRadiusMeters;
             data.netCookMiniGameOnly = this.netCookMiniGameOnly;
+            data.netCookMoveIngredients = this.netCookMoveIngredients;
+            data.netCookUseAllIngredients = this.netCookUseAllIngredients;
+            data.netCookCookQuantity = this.netCookCookQuantity;
             data.homelandFarmWaterRadius = this.homelandFarmWaterRadius;
             data.autoFishScanTimeout = -1f;
             data.autoFishTeleportDelay = -1f;
@@ -1110,6 +1116,10 @@ namespace HeartopiaMod
             this.netCookInterval = Mathf.Clamp(data.netCookInterval > 0f ? data.netCookInterval : 1.5f, 0.25f, 10f);
             this.netCookScanRadiusMeters = Mathf.Clamp(data.netCookScanRadiusMeters > 0f ? data.netCookScanRadiusMeters : NetCookDefaultScanRadiusMeters, NetCookMinScanRadiusMeters, NetCookMaxScanRadiusMeters);
             this.netCookMiniGameOnly = data.netCookMiniGameOnly;
+            this.netCookMoveIngredients = data.netCookMoveIngredients;
+            this.netCookUseAllIngredients = data.netCookUseAllIngredients;
+            this.netCookCookQuantity = Mathf.Max(1, data.netCookCookQuantity);
+            this.netCookCookQuantityInput = this.netCookCookQuantity.ToString();
             this.homelandFarmWaterRadius = Mathf.Clamp(data.homelandFarmWaterRadius > 0f ? data.homelandFarmWaterRadius : HomelandFarmDefaultWaterRadius, HomelandFarmMinWaterRadius, HomelandFarmMaxWaterRadius);
             this.saved_autoFishScanTimeout = data.autoFishScanTimeout;
             this.saved_autoFishTeleportDelay = data.autoFishTeleportDelay;
@@ -1440,6 +1450,9 @@ namespace HeartopiaMod
             else if (line.Contains("netCookInterval")) this.netCookInterval = GetJsonFloat(line, "\"netCookInterval\":");
             else if (line.Contains("netCookScanRadiusMeters")) this.netCookScanRadiusMeters = Mathf.Clamp(GetJsonFloat(line, "\"netCookScanRadiusMeters\":"), NetCookMinScanRadiusMeters, NetCookMaxScanRadiusMeters);
             else if (line.Contains("netCookMiniGameOnly")) this.netCookMiniGameOnly = line.IndexOf("true", StringComparison.OrdinalIgnoreCase) >= 0 || GetJsonInt(line, "\"netCookMiniGameOnly\":") != 0;
+            else if (line.Contains("netCookMoveIngredients")) this.netCookMoveIngredients = line.IndexOf("true", StringComparison.OrdinalIgnoreCase) >= 0 || GetJsonInt(line, "\"netCookMoveIngredients\":") != 0;
+            else if (line.Contains("netCookUseAllIngredients")) this.netCookUseAllIngredients = line.IndexOf("true", StringComparison.OrdinalIgnoreCase) >= 0 || GetJsonInt(line, "\"netCookUseAllIngredients\":") != 0;
+            else if (line.Contains("netCookCookQuantity")) this.netCookCookQuantity = Mathf.Max(1, GetJsonInt(line, "\"netCookCookQuantity\":"));
             else if (line.Contains("autoFishScanTimeout")) this.saved_autoFishScanTimeout = GetJsonFloat(line, "\"autoFishScanTimeout\":");
                         else if (line.Contains("autoFishTeleportDelay")) this.saved_autoFishTeleportDelay = GetJsonFloat(line, "\"autoFishTeleportDelay\":");
                         else if (line.Contains("autoFishFishShadowDetectRange")) AutoFishingFarm.SetDetectRange(GetJsonFloat(line, "\"autoFishFishShadowDetectRange\":"));
@@ -3143,7 +3156,12 @@ namespace HeartopiaMod
 
             if (this.automationSubTab == 5)
             {
-                return this.netCookRecipeDropdownOpen ? 760f : 540f;
+                if (this.netCookMiniGameOnly)
+                {
+                    return 540f;
+                }
+
+                return this.netCookRecipeDropdownOpen ? 840f : 620f;
             }
 
             if (this.automationSubTab == 6)
@@ -26111,6 +26129,9 @@ namespace HeartopiaMod
                         {
                             this.netCookRecipeId = recipeEntry.Key;
                             this.netCookRecipeDropdownOpen = false;
+                            this.netCookCookQuantity = 1;
+                            this.netCookCookQuantityInput = "1";
+                            this.nextNetCookMaxRefreshAt = 0f;
                             this.netCookStatus = "Selected recipe: " + recipeEntry.Value;
                         }
                         string recipeDisplayName = string.IsNullOrWhiteSpace(recipeEntry.Value) ? ("Recipe " + recipeEntry.Key) : recipeEntry.Value;
@@ -26119,6 +26140,60 @@ namespace HeartopiaMod
 
                     GUI.EndScrollView();
                     num += (int)panelHeight + 8;
+                }
+
+                float ingredientHalfWidth = (controlWidth - rowGap) * 0.5f;
+                bool previousNetCookMoveIngredients = this.netCookMoveIngredients;
+                bool nextNetCookMoveIngredients = this.DrawSwitchToggle(new Rect(left, (float)num, ingredientHalfWidth, 28f), this.netCookMoveIngredients, "Move Ingredients");
+                if (nextNetCookMoveIngredients != previousNetCookMoveIngredients)
+                {
+                    this.netCookMoveIngredients = nextNetCookMoveIngredients;
+                    this.nextNetCookMaxRefreshAt = 0f;
+                    try { this.SaveKeybinds(false); } catch { }
+                }
+
+                bool previousNetCookUseAllIngredients = this.netCookUseAllIngredients;
+                bool nextNetCookUseAllIngredients = this.DrawSwitchToggle(new Rect(left + ingredientHalfWidth + rowGap, (float)num, ingredientHalfWidth, 28f), this.netCookUseAllIngredients, "Use All Ingredients");
+                if (nextNetCookUseAllIngredients != previousNetCookUseAllIngredients)
+                {
+                    this.netCookUseAllIngredients = nextNetCookUseAllIngredients;
+                    if (this.netCookUseAllIngredients)
+                    {
+                        this.netCookCookQuantity = 1;
+                        this.netCookCookQuantityInput = "1";
+                    }
+                    this.nextNetCookMaxRefreshAt = 0f;
+                    try { this.SaveKeybinds(false); } catch { }
+                }
+                num += 38;
+
+                this.RefreshNetCookMaxCookQuantity();
+                string maxLabel = this.netCookMaxCookQuantity > 0
+                    ? ("Max: " + this.netCookMaxCookQuantity)
+                    : "Max: —";
+
+                if (!this.netCookUseAllIngredients)
+                {
+                    GUI.Label(new Rect(left, (float)num, controlWidth * 0.42f, 18f), "QUANTITY", smallLabelStyle);
+                    GUI.Label(new Rect(left + controlWidth * 0.58f, (float)num, controlWidth * 0.42f, 18f), maxLabel, valueLabelStyle);
+                    num += 20;
+
+                    Rect qtyRect = new Rect(left, (float)num, controlWidth * 0.42f, 32f);
+                    GUI.Box(qtyRect, "", this.themeTopTabStyle ?? this.themePanelStyle ?? GUI.skin.box);
+                    this.DrawCardOutline(qtyRect, 1f);
+                    string nextQtyInput = GUI.TextField(new Rect(qtyRect.x + 10f, qtyRect.y + 5f, qtyRect.width - 20f, 22f), this.netCookCookQuantityInput ?? "1", 6);
+                    if (!string.Equals(nextQtyInput, this.netCookCookQuantityInput, StringComparison.Ordinal))
+                    {
+                        this.netCookCookQuantityInput = nextQtyInput;
+                        this.SyncNetCookCookQuantityFromInput();
+                        try { this.SaveKeybinds(false); } catch { }
+                    }
+                    num += 42;
+                }
+                else
+                {
+                    GUI.Label(new Rect(left, (float)num, controlWidth, 18f), maxLabel, valueLabelStyle);
+                    num += 24;
                 }
             }
 
@@ -26195,6 +26270,13 @@ namespace HeartopiaMod
 
         private void StartNetCookInternal()
         {
+            if (this.netCookStartCoroutine != null)
+            {
+                this.netCookStatus = "Preparing mass cook after ingredient move...";
+                this.AddMenuNotification(this.netCookStatus, new Color(1f, 0.85f, 0.45f));
+                return;
+            }
+
             if (this.netCookCaptureCoroutine != null)
             {
                 this.netCookStatus = "Still expanding stove capture. Please wait...";
@@ -26257,11 +26339,52 @@ namespace HeartopiaMod
                 return;
             }
 
+            bool deferredStartAfterWarehouseMove = false;
+            if (this.netCookMoveIngredients)
+            {
+                this.SyncNetCookCookQuantityFromInput();
+                this.RefreshNetCookMaxCookQuantity(true);
+                int moveCookQuantity = this.netCookUseAllIngredients
+                    ? Math.Max(1, this.netCookMaxCookQuantity)
+                    : this.netCookCookQuantity;
+                if (!this.TryMoveNetCookIngredientsFromWarehouse(this.netCookUseAllIngredients, moveCookQuantity, out string moveStatus))
+                {
+                    this.netCookStatus = moveStatus;
+                    this.AddMenuNotification(moveStatus, new Color(1f, 0.55f, 0.55f));
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(moveStatus)
+                    && moveStatus.IndexOf("Moved ", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    this.AddMenuNotification(moveStatus, new Color(0.45f, 1f, 0.55f));
+                    deferredStartAfterWarehouseMove = true;
+                }
+
+                this.TryInvokeNetCookRefreshSlots();
+            }
+
+            if (deferredStartAfterWarehouseMove)
+            {
+                this.netCookStatus = "Waiting for ingredients in bag...";
+                this.netCookStartCoroutine = ModCoroutines.Start(this.NetCookStartAfterWarehouseMoveRoutine());
+                return;
+            }
+
+            if (!this.TryCompleteNetCookStart(out string startStatus))
+            {
+                this.netCookStatus = startStatus;
+                this.AddMenuNotification(startStatus, new Color(1f, 0.55f, 0.55f));
+            }
+        }
+
+        private bool TryCompleteNetCookStart(out string status)
+        {
+            status = string.Empty;
             if (!this.TryBuildNetCookMaterials(this.netCookRecipeId, out List<uint> previewMaterials, out string previewStatus))
             {
-                this.netCookStatus = previewStatus;
-                this.AddMenuNotification(previewStatus, new Color(1f, 0.55f, 0.55f));
-                return;
+                status = previewStatus;
+                return false;
             }
 
             if (this.autoCookEnabled)
@@ -26278,6 +26401,41 @@ namespace HeartopiaMod
             this.netCookMaterialNetIds.AddRange(previewMaterials);
             this.netCookStatus = "Net mass cook running on " + this.netCookTargets.Count + " stove(s).";
             this.NetCookLog("STARTED recipe=" + this.netCookRecipeId + " cookerStaticId=" + this.netCookCookerStaticId + " targets=" + this.netCookTargets.Count + " materials=" + this.netCookMaterialNetIds.Count);
+            return true;
+        }
+
+        private System.Collections.IEnumerator NetCookStartAfterWarehouseMoveRoutine()
+        {
+            string lastStatus = "Ingredients not ready after warehouse move.";
+            float deadline = Time.unscaledTime + NetCookPostMoveMaterialRetrySeconds;
+            try
+            {
+                while (Time.unscaledTime < deadline)
+                {
+                    yield return null;
+                    this.TryInvokeNetCookRefreshSlots();
+                    if (this.TryCompleteNetCookStart(out string startStatus))
+                    {
+                        this.netCookStartCoroutine = null;
+                        yield break;
+                    }
+
+                    lastStatus = startStatus;
+                    float waitUntil = Time.unscaledTime + NetCookPostMoveMaterialRetryIntervalSeconds;
+                    while (Time.unscaledTime < waitUntil)
+                    {
+                        yield return null;
+                    }
+                }
+
+                this.netCookStatus = lastStatus;
+                this.AddMenuNotification(lastStatus, new Color(1f, 0.55f, 0.55f));
+                this.NetCookLog("Deferred mass cook start failed: " + lastStatus);
+            }
+            finally
+            {
+                this.netCookStartCoroutine = null;
+            }
         }
 
         private void PrimeNetCookTargetsForStart(float now)
@@ -26414,6 +26572,12 @@ namespace HeartopiaMod
 
         private void StopNetCookInternal(string reason)
         {
+            if (this.netCookStartCoroutine != null)
+            {
+                ModCoroutines.Stop(this.netCookStartCoroutine);
+                this.netCookStartCoroutine = null;
+            }
+
             bool wasEnabled = this.netCookEnabled;
             this.netCookEnabled = false;
             this.netCookDrainAfterIngredientsRunOut = false;
@@ -26559,6 +26723,12 @@ namespace HeartopiaMod
                 this.netCookCaptureCoroutine = null;
             }
 
+            if (this.netCookStartCoroutine != null)
+            {
+                ModCoroutines.Stop(this.netCookStartCoroutine);
+                this.netCookStartCoroutine = null;
+            }
+
             this.netCookCaptureGeneration++;
             this.netCookCaptureInProgress = false;
             HeartopiaComplete.DebugEspClearGroup("mass-cook-capture");
@@ -26586,9 +26756,11 @@ namespace HeartopiaMod
             this.netCookRecipeEntries.Clear();
             this.netCookVisibleRecipeEntries.Clear();
             this.netCookRecipeCookerTypes.Clear();
+            this.netCookRecipeRequirementsCache.Clear();
             this.netCookRecipeCacheCookerStaticId = 0;
             this.netCookRecipeCacheFailureCookerStaticId = 0;
             this.nextNetCookRecipeCacheRetryAt = 0f;
+            this.nextNetCookMaxRefreshAt = 0f;
         }
 
         private bool HasFreshNetCookRecipeCache()
@@ -35541,6 +35713,925 @@ namespace HeartopiaMod
             }
         }
 
+        private void SyncNetCookCookQuantityFromInput()
+        {
+            if (!int.TryParse(this.netCookCookQuantityInput, out int parsed) || parsed < 1)
+            {
+                parsed = 1;
+            }
+
+            if (this.netCookMaxCookQuantity > 0)
+            {
+                parsed = Mathf.Clamp(parsed, 1, this.netCookMaxCookQuantity);
+            }
+
+            this.netCookCookQuantity = parsed;
+            this.netCookCookQuantityInput = this.netCookCookQuantity.ToString();
+        }
+
+        private void RefreshNetCookMaxCookQuantity(bool force = false)
+        {
+            if (this.netCookMiniGameOnly || this.netCookRecipeId <= 0)
+            {
+                this.netCookMaxCookQuantity = 0;
+                return;
+            }
+
+            float now = Time.unscaledTime;
+            if (!force && now < this.nextNetCookMaxRefreshAt)
+            {
+                return;
+            }
+
+            this.nextNetCookMaxRefreshAt = now + NetCookMaxRefreshIntervalSeconds;
+            if (!this.TryComputeNetCookMaxQuantity(this.netCookRecipeId, this.netCookMoveIngredients, out int maxQuantity))
+            {
+                this.netCookMaxCookQuantity = 0;
+                return;
+            }
+
+            this.netCookMaxCookQuantity = maxQuantity;
+            if (!this.netCookUseAllIngredients && this.netCookMaxCookQuantity > 0 && this.netCookCookQuantity > this.netCookMaxCookQuantity)
+            {
+                this.netCookCookQuantity = this.netCookMaxCookQuantity;
+                this.netCookCookQuantityInput = this.netCookCookQuantity.ToString();
+            }
+        }
+
+        private bool TryComputeNetCookMaxQuantity(int recipeId, bool includeWarehouse, out int maxQuantity)
+        {
+            maxQuantity = 0;
+            if (recipeId <= 0)
+            {
+                return false;
+            }
+
+            if (!this.TryGetNetCookRecipeRequirements(recipeId, out List<NetCookIngredientRequirement> requirements, out _))
+            {
+                return false;
+            }
+
+            if (requirements == null || requirements.Count == 0)
+            {
+                return false;
+            }
+
+            Dictionary<int, int> totalsByStaticId = new Dictionary<int, int>();
+            this.AggregateNetCookIngredientCounts(NetCookBackpackStorageType, totalsByStaticId);
+            if (includeWarehouse)
+            {
+                this.AggregateNetCookIngredientCounts(NetCookWarehouseStorageType, totalsByStaticId);
+            }
+
+            Dictionary<int, int> requiredPerDish = new Dictionary<int, int>();
+            for (int i = 0; i < requirements.Count; i++)
+            {
+                NetCookIngredientRequirement requirement = requirements[i];
+                if (requirement.StaticId <= 0 || requirement.CountPerDish <= 0)
+                {
+                    continue;
+                }
+
+                if (requiredPerDish.TryGetValue(requirement.StaticId, out int existing))
+                {
+                    requiredPerDish[requirement.StaticId] = existing + requirement.CountPerDish;
+                }
+                else
+                {
+                    requiredPerDish[requirement.StaticId] = requirement.CountPerDish;
+                }
+            }
+
+            if (requiredPerDish.Count == 0)
+            {
+                return false;
+            }
+
+            bool hasLimit = false;
+            foreach (KeyValuePair<int, int> pair in requiredPerDish)
+            {
+                totalsByStaticId.TryGetValue(pair.Key, out int available);
+                int possible = available / Math.Max(1, pair.Value);
+                if (!hasLimit)
+                {
+                    maxQuantity = possible;
+                    hasLimit = true;
+                }
+                else
+                {
+                    maxQuantity = Math.Min(maxQuantity, possible);
+                }
+            }
+
+            return hasLimit;
+        }
+
+        private bool TryGetNetCookRecipeRequirements(int recipeId, out List<NetCookIngredientRequirement> requirements, out string status)
+        {
+            requirements = null;
+            status = "Recipe requirements unavailable.";
+            if (recipeId <= 0)
+            {
+                return false;
+            }
+
+            if (this.netCookRecipeRequirementsCache.TryGetValue(recipeId, out List<NetCookIngredientRequirement> cached) && cached != null)
+            {
+                requirements = cached;
+                status = "Recipe requirements ready.";
+                return cached.Count > 0;
+            }
+
+            List<NetCookIngredientRequirement> resolved = new List<NetCookIngredientRequirement>(8);
+            if (this.TryGetNetCookRecipeRequirementsAuraMono(recipeId, resolved, out status)
+                || this.TryGetNetCookRecipeRequirementsManaged(recipeId, resolved, out status)
+                || this.TryGetNetCookRecipeRequirementsFromTable(recipeId, resolved, out status))
+            {
+                this.netCookRecipeRequirementsCache[recipeId] = resolved;
+                requirements = resolved;
+                return resolved.Count > 0;
+            }
+
+            this.netCookRecipeRequirementsCache[recipeId] = resolved;
+            requirements = resolved;
+            return false;
+        }
+
+        private unsafe bool TryGetNetCookRecipeRequirementsAuraMono(int recipeId, List<NetCookIngredientRequirement> requirements, out string status)
+        {
+            status = "AuraMono recipe requirements unavailable.";
+            requirements?.Clear();
+            if (requirements == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!this.TryResolveAuraMonoModule("XDTGameSystem.GameplaySystem.Cooking.CookingSystem", out IntPtr cookingSystemObj)
+                    || cookingSystemObj == IntPtr.Zero
+                    || auraMonoObjectGetClass == null
+                    || auraMonoRuntimeInvoke == null)
+                {
+                    return false;
+                }
+
+                IntPtr cookingSystemClass = auraMonoObjectGetClass(cookingSystemObj);
+                if (cookingSystemClass == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                IntPtr initDetailMethod = this.FindAuraMonoMethodOnHierarchy(cookingSystemClass, "InitCookingRecipeDetail", 1);
+                IntPtr getDetailMethod = this.FindAuraMonoMethodOnHierarchy(cookingSystemClass, "GetRecipeDetail", 1);
+                IntPtr detailMethod = initDetailMethod != IntPtr.Zero ? initDetailMethod : getDetailMethod;
+                if (detailMethod == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                IntPtr exc = IntPtr.Zero;
+                IntPtr* args = stackalloc IntPtr[1];
+                args[0] = (IntPtr)(&recipeId);
+                IntPtr detailObj = auraMonoRuntimeInvoke(detailMethod, cookingSystemObj, (IntPtr)args, ref exc);
+                if ((detailObj == IntPtr.Zero || exc != IntPtr.Zero) && detailMethod != getDetailMethod && getDetailMethod != IntPtr.Zero)
+                {
+                    exc = IntPtr.Zero;
+                    detailObj = auraMonoRuntimeInvoke(getDetailMethod, cookingSystemObj, (IntPtr)args, ref exc);
+                }
+
+                if (exc != IntPtr.Zero || detailObj == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                if (!this.TryAppendNetCookRequirementsFromMonoDetail(detailObj, requirements))
+                {
+                    return false;
+                }
+
+                status = "AuraMono recipe requirements ready.";
+                return requirements.Count > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryGetNetCookRecipeRequirementsManaged(int recipeId, List<NetCookIngredientRequirement> requirements, out string status)
+        {
+            status = "Managed recipe requirements unavailable.";
+            requirements?.Clear();
+            if (requirements == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!this.EnsureNetCookMethods())
+                {
+                    return false;
+                }
+
+                object cookingSystem = this.netCookCookingSystemInstanceProperty.GetValue(null, null);
+                if (cookingSystem == null)
+                {
+                    return false;
+                }
+
+                object detail = this.netCookInitRecipeDetailMethod.Invoke(cookingSystem, new object[] { recipeId });
+                if (detail == null && this.netCookGetRecipeDetailMethod != null)
+                {
+                    detail = this.netCookGetRecipeDetailMethod.Invoke(cookingSystem, new object[] { recipeId });
+                }
+
+                if (detail == null)
+                {
+                    return false;
+                }
+
+                if (!this.TryAppendNetCookRequirementsFromManagedDetail(detail, requirements))
+                {
+                    return false;
+                }
+
+                status = "Managed recipe requirements ready.";
+                return requirements.Count > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryGetNetCookRecipeRequirementsFromTable(int recipeId, List<NetCookIngredientRequirement> requirements, out string status)
+        {
+            status = "Table recipe requirements unavailable.";
+            requirements?.Clear();
+            if (requirements == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                Type tableDataType = this.FindLoadedType("TableData", "EcsClient.TableData");
+                if (tableDataType == null)
+                {
+                    return false;
+                }
+
+                MethodInfo getCookingRecipeMethod = tableDataType.GetMethod("GetCookingRecipe", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, new Type[] { typeof(int), typeof(bool) }, null);
+                if (getCookingRecipeMethod == null)
+                {
+                    return false;
+                }
+
+                object recipeTable = getCookingRecipeMethod.Invoke(null, new object[] { recipeId, false });
+                if (recipeTable == null)
+                {
+                    return false;
+                }
+
+                if (!this.TryAppendNetCookRequirementsFromManagedObject(recipeTable, requirements))
+                {
+                    return false;
+                }
+
+                status = "Table recipe requirements ready.";
+                return requirements.Count > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryAppendNetCookRequirementsFromManagedDetail(object detail, List<NetCookIngredientRequirement> requirements)
+        {
+            if (detail == null || requirements == null)
+            {
+                return false;
+            }
+
+            object slotsObj = this.TryGetManagedMemberValue(detail, "materialSlots");
+            IEnumerable slots = slotsObj as IEnumerable;
+            if (slots != null)
+            {
+                foreach (object slot in slots)
+                {
+                    if (this.TryReadNetCookMaterialSlotRequirementManaged(slot, out NetCookIngredientRequirement requirement))
+                    {
+                        requirements.Add(requirement);
+                    }
+                }
+            }
+
+            if (requirements.Count > 0)
+            {
+                return true;
+            }
+
+            return this.TryAppendNetCookRequirementsFromManagedObject(detail, requirements);
+        }
+
+        private unsafe bool TryAppendNetCookRequirementsFromMonoDetail(IntPtr detailObj, List<NetCookIngredientRequirement> requirements)
+        {
+            if (detailObj == IntPtr.Zero || requirements == null)
+            {
+                return false;
+            }
+
+            IntPtr slotsObj = IntPtr.Zero;
+            if (this.TryGetMonoObjectMember(detailObj, "materialSlots", out slotsObj) && slotsObj != IntPtr.Zero)
+            {
+                List<IntPtr> slotItems = new List<IntPtr>(16);
+                if (this.TryEnumerateAuraMonoCollectionItems(slotsObj, slotItems))
+                {
+                    for (int i = 0; i < slotItems.Count; i++)
+                    {
+                        if (this.TryReadNetCookMaterialSlotRequirementMono(slotItems[i], out NetCookIngredientRequirement requirement))
+                        {
+                            requirements.Add(requirement);
+                        }
+                    }
+                }
+            }
+
+            return requirements.Count > 0;
+        }
+
+        private bool TryAppendNetCookRequirementsFromManagedObject(object source, List<NetCookIngredientRequirement> requirements)
+        {
+            if (source == null || requirements == null)
+            {
+                return false;
+            }
+
+            string[] materialCollectionFields = { "materials", "cookingMaterials", "materialList", "recipeMaterials", "Materials", "MaterialList" };
+            for (int fieldIndex = 0; fieldIndex < materialCollectionFields.Length; fieldIndex++)
+            {
+                object materialsObj = this.TryGetManagedMemberValue(source, materialCollectionFields[fieldIndex]);
+                IEnumerable materials = materialsObj as IEnumerable;
+                if (materials == null)
+                {
+                    continue;
+                }
+
+                foreach (object material in materials)
+                {
+                    if (this.TryReadNetCookMaterialSlotRequirementManaged(material, out NetCookIngredientRequirement requirement))
+                    {
+                        requirements.Add(requirement);
+                    }
+                }
+            }
+
+            return requirements.Count > 0;
+        }
+
+        private bool TryReadNetCookMaterialSlotRequirementManaged(object slot, out NetCookIngredientRequirement requirement)
+        {
+            requirement = default;
+            if (slot == null)
+            {
+                return false;
+            }
+
+            int staticId = 0;
+            string[] staticIdFields = { "staticId", "materialStaticId", "itemStaticId", "entityStaticId", "materialId", "StaticId", "MaterialStaticId" };
+            for (int i = 0; i < staticIdFields.Length; i++)
+            {
+                if (this.TryReadManagedInt32Member(slot, staticIdFields[i], out staticId) && staticId > 0)
+                {
+                    break;
+                }
+            }
+
+            if (staticId <= 0)
+            {
+                object nested = this.TryGetManagedMemberValue(slot, "material");
+                if (nested != null && nested != slot)
+                {
+                    return this.TryReadNetCookMaterialSlotRequirementManaged(nested, out requirement);
+                }
+
+                return false;
+            }
+
+            int countPerDish = 1;
+            string[] countFields = { "needNum", "needCount", "count", "materialCount", "num", "NeedNum", "Count" };
+            for (int i = 0; i < countFields.Length; i++)
+            {
+                if (this.TryReadManagedInt32Member(slot, countFields[i], out int candidate) && candidate > 0)
+                {
+                    countPerDish = candidate;
+                    break;
+                }
+            }
+
+            requirement = new NetCookIngredientRequirement { StaticId = staticId, CountPerDish = countPerDish };
+            return true;
+        }
+
+        private bool TryReadNetCookMaterialSlotRequirementMono(IntPtr slotObj, out NetCookIngredientRequirement requirement)
+        {
+            requirement = default;
+            if (slotObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            int staticId = 0;
+            string[] staticIdFields = { "staticId", "materialStaticId", "itemStaticId", "entityStaticId", "materialId", "StaticId", "MaterialStaticId" };
+            for (int i = 0; i < staticIdFields.Length; i++)
+            {
+                if (this.TryGetMonoIntMember(slotObj, staticIdFields[i], out staticId) && staticId > 0)
+                {
+                    break;
+                }
+            }
+
+            if (staticId <= 0)
+            {
+                if (this.TryGetMonoObjectMember(slotObj, "material", out IntPtr nestedObj) && nestedObj != IntPtr.Zero)
+                {
+                    return this.TryReadNetCookMaterialSlotRequirementMono(nestedObj, out requirement);
+                }
+
+                return false;
+            }
+
+            int countPerDish = 1;
+            string[] countFields = { "needNum", "needCount", "count", "materialCount", "num", "NeedNum", "Count" };
+            for (int i = 0; i < countFields.Length; i++)
+            {
+                if (this.TryGetMonoIntMember(slotObj, countFields[i], out int candidate) && candidate > 0)
+                {
+                    countPerDish = candidate;
+                    break;
+                }
+            }
+
+            requirement = new NetCookIngredientRequirement { StaticId = staticId, CountPerDish = countPerDish };
+            return true;
+        }
+
+        private void AggregateNetCookIngredientCounts(int storageType, Dictionary<int, int> totalsByStaticId)
+        {
+            if (totalsByStaticId == null)
+            {
+                return;
+            }
+
+            int countBefore = totalsByStaticId.Count;
+            this.AggregateNetCookIngredientCountsAuraMono(storageType, totalsByStaticId);
+            if (totalsByStaticId.Count == countBefore)
+            {
+                this.AggregateNetCookIngredientCountsManaged(storageType, totalsByStaticId);
+            }
+        }
+
+        private unsafe void AggregateNetCookIngredientCountsAuraMono(int storageType, Dictionary<int, int> totalsByStaticId)
+        {
+            try
+            {
+                if (!this.TryResolveAuraMonoModule("XDTGameSystem.GameplaySystem.BackPack.BackPackSystem", out IntPtr backPackSystemObj)
+                    || backPackSystemObj == IntPtr.Zero
+                    || auraMonoObjectGetClass == null
+                    || auraMonoRuntimeInvoke == null)
+                {
+                    return;
+                }
+
+                IntPtr backPackClass = auraMonoObjectGetClass(backPackSystemObj);
+                IntPtr getAllItemMethod = this.FindAuraMonoMethodOnHierarchy(backPackClass, "GetAllItem", 1);
+                bool needsStorageType = true;
+                if (getAllItemMethod == IntPtr.Zero)
+                {
+                    getAllItemMethod = this.FindAuraMonoMethodOnHierarchy(backPackClass, "GetAllItem", 0);
+                    needsStorageType = false;
+                }
+
+                if (getAllItemMethod == IntPtr.Zero)
+                {
+                    return;
+                }
+
+                IntPtr exc = IntPtr.Zero;
+                IntPtr itemListObj;
+                int storageTypeValue = storageType;
+                if (needsStorageType)
+                {
+                    IntPtr* args = stackalloc IntPtr[1];
+                    args[0] = (IntPtr)(&storageTypeValue);
+                    itemListObj = auraMonoRuntimeInvoke(getAllItemMethod, backPackSystemObj, (IntPtr)args, ref exc);
+                }
+                else
+                {
+                    itemListObj = auraMonoRuntimeInvoke(getAllItemMethod, backPackSystemObj, IntPtr.Zero, ref exc);
+                }
+
+                if (exc != IntPtr.Zero || itemListObj == IntPtr.Zero)
+                {
+                    return;
+                }
+
+                List<IntPtr> items = new List<IntPtr>(128);
+                if (!this.TryEnumerateAuraMonoCollectionItems(itemListObj, items))
+                {
+                    return;
+                }
+
+                for (int i = 0; i < items.Count; i++)
+                {
+                    IntPtr itemObj = items[i];
+                    if (itemObj == IntPtr.Zero
+                        || (this.TryGetDirectBackpackItemIsLocked(itemObj, out bool isLocked) && isLocked)
+                        || !this.TryGetDirectBackpackItemStaticId(itemObj, out int staticId)
+                        || staticId <= 0)
+                    {
+                        continue;
+                    }
+
+                    if (!this.TryGetDirectBackpackItemCount(itemObj, out int count) || count <= 0)
+                    {
+                        count = 1;
+                    }
+
+                    if (totalsByStaticId.TryGetValue(staticId, out int existing))
+                    {
+                        totalsByStaticId[staticId] = existing + count;
+                    }
+                    else
+                    {
+                        totalsByStaticId[staticId] = count;
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void AggregateNetCookIngredientCountsManaged(int storageType, Dictionary<int, int> totalsByStaticId)
+        {
+            try
+            {
+                Type backPackType = this.FindLoadedType("XDTGameSystem.GameplaySystem.BackPack.BackPackSystem", "BackPackSystem");
+                if (backPackType == null)
+                {
+                    return;
+                }
+
+                if (!this.TryGetManagedModule(backPackType, out object backPackObj) || backPackObj == null)
+                {
+                    backPackObj = this.TryGetStaticObjectAcrossHierarchy(backPackType, "Instance", "_instance");
+                }
+
+                if (backPackObj == null)
+                {
+                    return;
+                }
+
+                Type storageTypeEnum = this.FindLoadedType("EcsClient.XDT.Scene.Shared.Data.StaticPartial.EStorageType", "EStorageType");
+                object storageArg = storageTypeEnum != null && storageTypeEnum.IsEnum ? Enum.ToObject(storageTypeEnum, storageType) : (object)storageType;
+                MethodInfo getAllItem = backPackObj.GetType().GetMethod("GetAllItem", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { storageArg.GetType() }, null);
+                if (getAllItem == null)
+                {
+                    getAllItem = backPackObj.GetType().GetMethod("GetAllItem", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                }
+
+                if (getAllItem == null)
+                {
+                    return;
+                }
+
+                object itemListObj = getAllItem.GetParameters().Length == 1
+                    ? getAllItem.Invoke(backPackObj, new[] { storageArg })
+                    : getAllItem.Invoke(backPackObj, null);
+                IEnumerable items = itemListObj as IEnumerable;
+                if (items == null)
+                {
+                    return;
+                }
+
+                foreach (object item in items)
+                {
+                    if (item == null)
+                    {
+                        continue;
+                    }
+
+                    if (this.TryReadManagedBoolMember(item, "isLock", out bool isLocked) && isLocked)
+                    {
+                        continue;
+                    }
+
+                    if (!this.TryReadManagedInt32Member(item, "staticId", out int staticId) || staticId <= 0)
+                    {
+                        this.TryReadManagedInt32Member(item, "StaticId", out staticId);
+                    }
+
+                    if (staticId <= 0)
+                    {
+                        continue;
+                    }
+
+                    int count = 1;
+                    this.TryGetManagedBackpackItemCount(item, out count);
+                    if (totalsByStaticId.TryGetValue(staticId, out int existing))
+                    {
+                        totalsByStaticId[staticId] = existing + count;
+                    }
+                    else
+                    {
+                        totalsByStaticId[staticId] = count;
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private bool TryMoveNetCookIngredientsFromWarehouse(bool useAll, int cookQuantity, out string status)
+        {
+            status = string.Empty;
+            if (!this.TryGetNetCookRecipeRequirements(this.netCookRecipeId, out List<NetCookIngredientRequirement> requirements, out string requirementStatus))
+            {
+                status = requirementStatus;
+                return false;
+            }
+
+            if (!this.TryBuildNetCookWarehouseMoveMap(requirements, useAll, cookQuantity, out Dictionary<uint, int> moveMap, out string buildStatus))
+            {
+                status = buildStatus;
+                return false;
+            }
+
+            if (moveMap.Count == 0)
+            {
+                status = "No matching ingredients in warehouse.";
+                return true;
+            }
+
+            List<uint> keys = new List<uint>(moveMap.Keys);
+            int sentStacks = 0;
+            int sentQty = 0;
+            for (int offset = 0; offset < keys.Count; offset += TransferBatchMaxCount)
+            {
+                Dictionary<uint, int> chunk = new Dictionary<uint, int>();
+                int end = Math.Min(keys.Count, offset + TransferBatchMaxCount);
+                for (int i = offset; i < end; i++)
+                {
+                    uint netId = keys[i];
+                    chunk[netId] = moveMap[netId];
+                }
+
+                if (!this.TrySendTransferBatch(chunk, NetCookWarehouseStorageType, out string error))
+                {
+                    status = string.IsNullOrEmpty(error)
+                        ? "MoveBatchBackpackItems failed"
+                        : error + (sentStacks > 0 ? " (after " + sentStacks + " stack(s))" : string.Empty);
+                    return false;
+                }
+
+                sentStacks += chunk.Count;
+                foreach (int qty in chunk.Values)
+                {
+                    sentQty += qty;
+                }
+            }
+
+            this.nextNetCookMaxRefreshAt = 0f;
+            status = "Moved " + sentStacks + " ingredient stack(s), qty " + sentQty + " -> Bag";
+            return true;
+        }
+
+        private unsafe bool TryBuildNetCookWarehouseMoveMap(List<NetCookIngredientRequirement> requirements, bool useAll, int cookQuantity, out Dictionary<uint, int> moveMap, out string status)
+        {
+            moveMap = new Dictionary<uint, int>();
+            status = string.Empty;
+            if (requirements == null || requirements.Count == 0)
+            {
+                status = "Recipe requirements unavailable.";
+                return false;
+            }
+
+            Dictionary<int, int> requiredPerDish = new Dictionary<int, int>();
+            HashSet<int> requiredStaticIds = new HashSet<int>();
+            for (int i = 0; i < requirements.Count; i++)
+            {
+                NetCookIngredientRequirement requirement = requirements[i];
+                if (requirement.StaticId <= 0 || requirement.CountPerDish <= 0)
+                {
+                    continue;
+                }
+
+                requiredStaticIds.Add(requirement.StaticId);
+                if (requiredPerDish.TryGetValue(requirement.StaticId, out int existing))
+                {
+                    requiredPerDish[requirement.StaticId] = existing + requirement.CountPerDish;
+                }
+                else
+                {
+                    requiredPerDish[requirement.StaticId] = requirement.CountPerDish;
+                }
+            }
+
+            if (requiredStaticIds.Count == 0)
+            {
+                status = "Recipe requirements unavailable.";
+                return false;
+            }
+
+            Dictionary<int, List<KeyValuePair<uint, int>>> stacksByStaticId = new Dictionary<int, List<KeyValuePair<uint, int>>>();
+            if (!this.TryCollectNetCookWarehouseStacks(stacksByStaticId, requiredStaticIds, out status))
+            {
+                return false;
+            }
+
+            if (useAll)
+            {
+                foreach (KeyValuePair<int, List<KeyValuePair<uint, int>>> pair in stacksByStaticId)
+                {
+                    List<KeyValuePair<uint, int>> stacks = pair.Value;
+                    for (int i = 0; i < stacks.Count; i++)
+                    {
+                        moveMap[stacks[i].Key] = stacks[i].Value;
+                    }
+                }
+
+                return true;
+            }
+
+            int batches = Math.Max(1, cookQuantity);
+            foreach (KeyValuePair<int, int> requirement in requiredPerDish)
+            {
+                if (!stacksByStaticId.TryGetValue(requirement.Key, out List<KeyValuePair<uint, int>> stacks) || stacks == null || stacks.Count == 0)
+                {
+                    continue;
+                }
+
+                stacks.Sort((a, b) => a.Value.CompareTo(b.Value));
+                int remaining = batches * requirement.Value;
+                for (int i = 0; i < stacks.Count && remaining > 0; i++)
+                {
+                    uint netId = stacks[i].Key;
+                    int stackCount = stacks[i].Value;
+                    int take = Math.Min(remaining, stackCount);
+                    if (take <= 0)
+                    {
+                        continue;
+                    }
+
+                    moveMap[netId] = take;
+                    remaining -= take;
+                }
+            }
+
+            return true;
+        }
+
+        private unsafe bool TryCollectNetCookWarehouseStacks(Dictionary<int, List<KeyValuePair<uint, int>>> stacksByStaticId, HashSet<int> requiredStaticIds, out string status)
+        {
+            status = string.Empty;
+            if (stacksByStaticId == null || requiredStaticIds == null || requiredStaticIds.Count == 0)
+            {
+                status = "Warehouse scan unavailable.";
+                return false;
+            }
+
+            try
+            {
+                if (!this.TryResolveAuraMonoModule("XDTGameSystem.GameplaySystem.BackPack.BackPackSystem", out IntPtr backPackSystemObj)
+                    || backPackSystemObj == IntPtr.Zero
+                    || auraMonoObjectGetClass == null
+                    || auraMonoRuntimeInvoke == null)
+                {
+                    status = "BackPackSystem unavailable.";
+                    return false;
+                }
+
+                IntPtr backPackClass = auraMonoObjectGetClass(backPackSystemObj);
+                IntPtr getAllItemMethod = this.FindAuraMonoMethodOnHierarchy(backPackClass, "GetAllItem", 1);
+                bool needsStorageType = true;
+                if (getAllItemMethod == IntPtr.Zero)
+                {
+                    getAllItemMethod = this.FindAuraMonoMethodOnHierarchy(backPackClass, "GetAllItem", 0);
+                    needsStorageType = false;
+                }
+
+                if (getAllItemMethod == IntPtr.Zero)
+                {
+                    status = "GetAllItem unavailable.";
+                    return false;
+                }
+
+                IntPtr exc = IntPtr.Zero;
+                IntPtr itemListObj;
+                int storageTypeValue = NetCookWarehouseStorageType;
+                if (needsStorageType)
+                {
+                    IntPtr* args = stackalloc IntPtr[1];
+                    args[0] = (IntPtr)(&storageTypeValue);
+                    itemListObj = auraMonoRuntimeInvoke(getAllItemMethod, backPackSystemObj, (IntPtr)args, ref exc);
+                }
+                else
+                {
+                    itemListObj = auraMonoRuntimeInvoke(getAllItemMethod, backPackSystemObj, IntPtr.Zero, ref exc);
+                }
+
+                if (exc != IntPtr.Zero || itemListObj == IntPtr.Zero)
+                {
+                    status = "Warehouse read failed.";
+                    return false;
+                }
+
+                List<IntPtr> warehouseItems = new List<IntPtr>(128);
+                if (!this.TryEnumerateAuraMonoCollectionItems(itemListObj, warehouseItems))
+                {
+                    return true;
+                }
+
+                for (int i = 0; i < warehouseItems.Count; i++)
+                {
+                    IntPtr itemObj = warehouseItems[i];
+                    if (itemObj == IntPtr.Zero
+                        || !this.TryGetDirectBackpackItemNetId(itemObj, out uint netId)
+                        || netId == 0U
+                        || (this.TryGetDirectBackpackItemIsLocked(itemObj, out bool isLocked) && isLocked)
+                        || !this.TryGetDirectBackpackItemStaticId(itemObj, out int staticId)
+                        || !requiredStaticIds.Contains(staticId))
+                    {
+                        continue;
+                    }
+
+                    if (!this.TryGetDirectBackpackItemCount(itemObj, out int count) || count <= 0)
+                    {
+                        count = 1;
+                    }
+
+                    if (!stacksByStaticId.TryGetValue(staticId, out List<KeyValuePair<uint, int>> stacks))
+                    {
+                        stacks = new List<KeyValuePair<uint, int>>(4);
+                        stacksByStaticId[staticId] = stacks;
+                    }
+
+                    stacks.Add(new KeyValuePair<uint, int>(netId, count));
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                status = "Warehouse scan failed: " + ex.Message;
+                return false;
+            }
+        }
+
+        private unsafe bool TryInvokeNetCookRefreshSlots()
+        {
+            try
+            {
+                if (this.TryResolveAuraMonoModule("XDTGameSystem.GameplaySystem.Cooking.CookingSystem", out IntPtr cookingSystemObj)
+                    && cookingSystemObj != IntPtr.Zero
+                    && auraMonoObjectGetClass != null
+                    && auraMonoRuntimeInvoke != null)
+                {
+                    IntPtr cookingSystemClass = auraMonoObjectGetClass(cookingSystemObj);
+                    IntPtr refreshMethod = this.FindAuraMonoMethodOnHierarchy(cookingSystemClass, "RefreshSlots", 0);
+                    if (refreshMethod != IntPtr.Zero)
+                    {
+                        IntPtr exc = IntPtr.Zero;
+                        auraMonoRuntimeInvoke(refreshMethod, cookingSystemObj, IntPtr.Zero, ref exc);
+                        if (exc == IntPtr.Zero)
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                if (this.EnsureNetCookMethods() && this.netCookRefreshSlotsMethod != null)
+                {
+                    object cookingSystem = this.netCookCookingSystemInstanceProperty.GetValue(null, null);
+                    if (cookingSystem != null)
+                    {
+                        this.netCookRefreshSlotsMethod.Invoke(cookingSystem, null);
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
         private bool TryBuildNetCookMaterials(int recipeId, out List<uint> materials, out string status)
         {
             materials = new List<uint>(16);
@@ -35699,6 +36790,13 @@ namespace HeartopiaMod
                 {
                     status = "AuraMono recipe detail unavailable.";
                     return false;
+                }
+
+                IntPtr refreshMethod = this.FindAuraMonoMethodOnHierarchy(cookingSystemClass, "RefreshSlots", 0);
+                if (refreshMethod != IntPtr.Zero)
+                {
+                    exc = IntPtr.Zero;
+                    auraMonoRuntimeInvoke(refreshMethod, cookingSystemObj, IntPtr.Zero, ref exc);
                 }
 
                 IntPtr slotsObj = IntPtr.Zero;
@@ -63351,6 +64449,12 @@ namespace HeartopiaMod
         private readonly List<Image> cookImageScanBuffer = new List<Image>(256);
         private float nextCookingCleanupScanAt = 0f;
         private bool lastCookingCleanupResult = false;
+        private struct NetCookIngredientRequirement
+        {
+            public int StaticId;
+            public int CountPerDish;
+        }
+
         private sealed class NetCookTargetContext
         {
             public uint CookerNetId;
@@ -63406,8 +64510,19 @@ namespace HeartopiaMod
         private const int NetCookMaxCaptureTargets = 32;
         private const bool NetCookUnsafeBroadAuraMonoExpansionEnabled = true;
         private const bool NetCookUseMagicSpice = false;
+        private const int NetCookBackpackStorageType = 1;
+        private const int NetCookWarehouseStorageType = 2;
+        private const float NetCookMaxRefreshIntervalSeconds = 0.5f;
+        private const float NetCookPostMoveMaterialRetrySeconds = 3f;
+        private const float NetCookPostMoveMaterialRetryIntervalSeconds = 0.12f;
         private bool netCookEnabled = false;
         private bool netCookMiniGameOnly = false;
+        private bool netCookMoveIngredients = false;
+        private bool netCookUseAllIngredients = false;
+        private int netCookCookQuantity = 1;
+        private string netCookCookQuantityInput = "1";
+        private int netCookMaxCookQuantity = 0;
+        private float nextNetCookMaxRefreshAt = 0f;
         private float netCookInterval = 1.5f;
         private float netCookScanRadiusMeters = NetCookDefaultScanRadiusMeters;
         private int netCookRecipeId = 0;
@@ -63421,6 +64536,7 @@ namespace HeartopiaMod
         private bool netCookCaptureInProgress = false;
         private object netCookCaptureCoroutine = null;
         private object netCookCleanupCoroutine = null;
+        private object netCookStartCoroutine = null;
         private int netCookCaptureGeneration = 0;
         private bool netCookDrainAfterIngredientsRunOut = false;
         private string netCookDrainReason = null;
@@ -63440,6 +64556,7 @@ namespace HeartopiaMod
         private int netCookRecipeCacheFailureCookerStaticId = 0;
         private float nextNetCookRecipeCacheRetryAt = 0f;
         private readonly List<uint> netCookMaterialNetIds = new List<uint>(16);
+        private readonly Dictionary<int, List<NetCookIngredientRequirement>> netCookRecipeRequirementsCache = new Dictionary<int, List<NetCookIngredientRequirement>>(64);
         private readonly List<NetCookTargetContext> netCookTargets = new List<NetCookTargetContext>(16);
         private readonly Dictionary<string, NetCookTargetContext> netCookRegisteredTargets = new Dictionary<string, NetCookTargetContext>(32);
         private readonly Dictionary<uint, NetCookRegisteredWorldCooker> netCookRegisteredWorldCookers = new Dictionary<uint, NetCookRegisteredWorldCooker>(64);
