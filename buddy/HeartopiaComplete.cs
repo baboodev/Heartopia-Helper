@@ -1808,116 +1808,12 @@ namespace HeartopiaMod
             this.LoadPatrolPoints();
             this.LoadRadarSettings();
             this.LoadBirdFarmSettings();
-            ModLogger.Msg("=== Attempting Harmony Patches ===");
-            try
-            {
-                MethodInfo method = typeof(CharacterController).GetMethod("Move", new Type[]
-                {
-                    typeof(Vector3)
-                });
-                MethodInfo method2 = typeof(CharacterControllerPatch).GetMethod("MovePrefix");
-                bool flag = method != null && method2 != null;
-                if (flag)
-                {
-                    HeartopiaComplete.harmonyInstance.Patch(method, new HarmonyMethod(method2), null, null, null, null);
-                    ModLogger.Msg("[OK] Successfully patched CharacterController.Move!");
-                }
-                else
-                {
-                    ModLogger.Msg($"[ERR] Failed to find methods - ccMove: {method != null}, prefix: {method2 != null}");
-                }
-            }
-            catch (Exception ex)
-            {
-                ModLogger.Msg("[ERR] CharacterController.Move patch failed: " + ex.Message);
-            }
-            try
-            {
-                MethodInfo setMethod = typeof(Transform).GetProperty("position").GetSetMethod();
-                MethodInfo method3 = typeof(TransformPositionPatch).GetMethod("SetPositionPrefix");
-                bool flag2 = setMethod != null && method3 != null;
-                if (flag2)
-                {
-                    HeartopiaComplete.harmonyInstance.Patch(setMethod, new HarmonyMethod(method3), null, null, null, null);
-                    ModLogger.Msg("[OK] Successfully patched Transform.position setter!");
-                }
-                else
-                {
-                    ModLogger.Msg($"[ERR] Failed to find methods - setPos: {setMethod != null}, prefix: {method3 != null}");
-                }
-            }
-            catch (Exception ex2)
-            {
-                ModLogger.Msg("[ERR] Transform.position patch failed: " + ex2.Message);
-            }
-            try
-            {
-                MethodInfo setMethod2 = typeof(Transform).GetProperty("rotation").GetSetMethod();
-                MethodInfo method4 = typeof(TransformRotationPatch).GetMethod("SetRotationPrefix");
-                bool flag3 = setMethod2 != null && method4 != null;
-                if (flag3)
-                {
-                    HeartopiaComplete.harmonyInstance.Patch(setMethod2, new HarmonyMethod(method4), null, null, null, null);
-                    ModLogger.Msg("[OK] Successfully patched Transform.rotation setter!");
-                }
-                else
-                {
-                    ModLogger.Msg($"[ERR] Failed to find rotation methods - setRot: {setMethod2 != null}, prefix: {method4 != null}");
-                }
-            }
-            catch (Exception ex3)
-            {
-                ModLogger.Msg("[ERR] Transform.rotation patch failed: " + ex3.Message);
-            }
-            try
-            {
-                MethodInfo setMethod3 = typeof(Transform).GetProperty("rotation").GetSetMethod();
-                MethodInfo method5 = typeof(CharacterRotationPatch).GetMethod("SetRotationPrefix");
-                bool flag5 = setMethod3 != null && method5 != null;
-                if (flag5)
-                {
-                    HeartopiaComplete.harmonyInstance.Patch(setMethod3, new HarmonyMethod(method5), null, null, null, null);
-                    ModLogger.Msg("[OK] Successfully patched Transform.rotation setter for Character Rotation!");
-                }
-                else
-                {
-                    ModLogger.Msg($"[ERR] Failed to find character rotation methods - setRot: {setMethod3 != null}, prefix: {method5 != null}");
-                }
-            }
-            catch (Exception ex4)
-            {
-                ModLogger.Msg("[ERR] Character rotation patch failed: " + ex4.Message);
-            }
-            try
-            {
-                Action<string, Type[], Type, string> patchInputPostfix = (methodName, args, patchType, label) =>
-                {
-                    MethodInfo target = typeof(Input).GetMethod(methodName, args);
-                    MethodInfo patch = patchType.GetMethod("Postfix", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                    if (target != null && patch != null)
-                    {
-                        HeartopiaComplete.harmonyInstance.Patch(target, null, new HarmonyMethod(patch), null, null, null);
-                        ModLogger.Msg($"[OK] Patched {label}");
-                    }
-                    else
-                    {
-                        ModLogger.Msg($"[ERR] Failed to patch {label} - target: {target != null}, patch: {patch != null}");
-                    }
-                };
-
-                patchInputPostfix("GetKey", new Type[] { typeof(KeyCode) }, typeof(InputGetKeyPatch), "Input.GetKey F");
-                patchInputPostfix("GetKey", new Type[] { typeof(string) }, typeof(InputGetKeyStringPatch), "Input.GetKey string F");
-                patchInputPostfix("GetKeyDown", new Type[] { typeof(KeyCode) }, typeof(InputGetKeyDownPatch), "Input.GetKeyDown F");
-                patchInputPostfix("GetKeyDown", new Type[] { typeof(string) }, typeof(InputGetKeyDownStringPatch), "Input.GetKeyDown string F");
-                patchInputPostfix("GetKeyUp", new Type[] { typeof(KeyCode) }, typeof(InputGetKeyUpPatch), "Input.GetKeyUp F");
-                patchInputPostfix("GetKeyUp", new Type[] { typeof(string) }, typeof(InputGetKeyUpStringPatch), "Input.GetKeyUp string F");
-            }
-            catch (Exception ex5)
-            {
-                ModLogger.Msg("[ERR] AutoFish input patch registration failed: " + ex5.Message);
-            }
-
-            ModLogger.Msg("=== Patch Attempt Complete ===");
+            // NOTE: The hot Unity methods (CharacterController.Move, Transform.position/rotation
+            // setters, Input.GetKey*) are intentionally NOT patched here. Patching them globally
+            // taxes every frame of normal gameplay even when no mod feature is active, and is a
+            // known source of periodic native crashes. They are now installed lazily on first use
+            // via EnsureMovementOverridePatched / EnsureRotationOverridePatched / EnsureInputSimPatched.
+            ModLogger.Msg("=== Hot-path patches deferred (installed on demand) ===");
 
             ModLogger.Msg("AutoFish subsystem disabled.");
 
@@ -1988,6 +1884,30 @@ namespace HeartopiaMod
         // Token: 0x06000005 RID: 5 RVA: 0x000024C0 File Offset: 0x000006C0
         public void OnUpdate()
         {
+            // Lazily install the hot-path patches only while a feature that needs them is active.
+            // This is the safety net for sustained, multi-frame effects; one-shot writers that
+            // touch a transform in the same call (teleport, camera) also Ensure directly at the site.
+            if (this.noclipEnabled || this.mouseLookEnabled
+                || HeartopiaComplete.OverridePlayerPosition || HeartopiaComplete.OverrideCameraPosition
+                || this.teleportFramesRemaining > 0 || this.cameraOverrideFramesRemaining > 0
+                || (this.showMenu && this.blockGameUiWhenMenuOpen)
+                || Time.unscaledTime < this.blockInputReleaseUntil)
+            {
+                this.EnsureMovementOverridePatched();
+            }
+            if (this.mouseLookEnabled
+                || HeartopiaComplete.OverrideCameraPosition || HeartopiaComplete.OverridePlayerRotation
+                || this.cameraOverrideFramesRemaining > 0 || this.playerRotationFramesRemaining > 0)
+            {
+                this.EnsureRotationOverridePatched();
+            }
+            if (AutoFishingFarm.IsEnabled || InsectNetFarm.IsEnabled || this.autoResourceFarmEnabled
+                || this.autoCookEnabled || this.autoFarmActive
+                || HeartopiaComplete.SimulateFKeyHeld || HeartopiaComplete.SimulateFKeyDown || HeartopiaComplete.SimulateFKeyUp)
+            {
+                this.EnsureInputSimPatched();
+            }
+
             if (BirdNetFarm.IsEnabled)
             {
                 this.EnsureBirdPhotoRuntimeProbePatch();
@@ -23411,6 +23331,8 @@ namespace HeartopiaMod
             {
                 cam.fieldOfView = this.mouseLookDefaultCameraFov;
             }
+            this.EnsureMovementOverridePatched();
+            this.EnsureRotationOverridePatched();
             HeartopiaComplete.CameraOverridePos = desiredCameraPos;
             HeartopiaComplete.CameraOverrideRot = desiredCameraRot;
             HeartopiaComplete.OverrideCameraPosition = true;
@@ -23603,6 +23525,107 @@ namespace HeartopiaMod
             {
                 this.selfSubTab = subTab;
                 this.tabScrollPos = Vector2.zero;
+            }
+        }
+
+        // Installs the player/camera position patches (Transform.position setter +
+        // CharacterController.Move) the first time a movement-override feature is used
+        // (teleport, noclip, camera mouse-look, menu input block).
+        private void EnsureMovementOverridePatched()
+        {
+            if (this.movementOverridePatched) return;
+            this.movementOverridePatched = true; // set first so a failed attempt is not retried every frame
+            try
+            {
+                var harmony = HeartopiaComplete.harmonyInstance;
+                if (harmony == null) { this.movementOverridePatched = false; return; }
+
+                MethodInfo posSetter = typeof(Transform).GetProperty("position").GetSetMethod();
+                MethodInfo posPrefix = typeof(TransformPositionPatch).GetMethod("SetPositionPrefix");
+                if (posSetter != null && posPrefix != null)
+                {
+                    harmony.Patch(posSetter, new HarmonyMethod(posPrefix), null, null, null, null);
+                }
+
+                MethodInfo move = typeof(CharacterController).GetMethod("Move", new Type[] { typeof(Vector3) });
+                MethodInfo movePrefix = typeof(CharacterControllerPatch).GetMethod("MovePrefix");
+                if (move != null && movePrefix != null)
+                {
+                    harmony.Patch(move, new HarmonyMethod(movePrefix), null, null, null, null);
+                }
+
+                ModLogger.Msg("[Patch] Movement override installed (Transform.position + CharacterController.Move).");
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[Patch] Movement override patch failed: " + ex.Message);
+            }
+        }
+
+        // Installs the rotation patches (Transform.rotation setter, used by both the camera
+        // mouse-look override and the player-rotation override) on first use.
+        private void EnsureRotationOverridePatched()
+        {
+            if (this.rotationOverridePatched) return;
+            this.rotationOverridePatched = true;
+            try
+            {
+                var harmony = HeartopiaComplete.harmonyInstance;
+                if (harmony == null) { this.rotationOverridePatched = false; return; }
+
+                MethodInfo rotSetter = typeof(Transform).GetProperty("rotation").GetSetMethod();
+                MethodInfo camRotPrefix = typeof(TransformRotationPatch).GetMethod("SetRotationPrefix");
+                MethodInfo playerRotPrefix = typeof(CharacterRotationPatch).GetMethod("SetRotationPrefix");
+                if (rotSetter != null && camRotPrefix != null)
+                {
+                    harmony.Patch(rotSetter, new HarmonyMethod(camRotPrefix), null, null, null, null);
+                }
+                if (rotSetter != null && playerRotPrefix != null)
+                {
+                    harmony.Patch(rotSetter, new HarmonyMethod(playerRotPrefix), null, null, null, null);
+                }
+
+                ModLogger.Msg("[Patch] Rotation override installed (Transform.rotation setter).");
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[Patch] Rotation override patch failed: " + ex.Message);
+            }
+        }
+
+        // Installs the Input.GetKey* postfixes used for simulated F-key presses (fishing,
+        // insect net, auto-cook interact) on first use.
+        private void EnsureInputSimPatched()
+        {
+            if (this.inputSimPatched) return;
+            this.inputSimPatched = true;
+            try
+            {
+                var harmony = HeartopiaComplete.harmonyInstance;
+                if (harmony == null) { this.inputSimPatched = false; return; }
+
+                Action<string, Type[], Type> patchInputPostfix = (methodName, args, patchType) =>
+                {
+                    MethodInfo target = typeof(Input).GetMethod(methodName, args);
+                    MethodInfo patch = patchType.GetMethod("Postfix", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    if (target != null && patch != null)
+                    {
+                        harmony.Patch(target, null, new HarmonyMethod(patch), null, null, null);
+                    }
+                };
+
+                patchInputPostfix("GetKey", new Type[] { typeof(KeyCode) }, typeof(InputGetKeyPatch));
+                patchInputPostfix("GetKey", new Type[] { typeof(string) }, typeof(InputGetKeyStringPatch));
+                patchInputPostfix("GetKeyDown", new Type[] { typeof(KeyCode) }, typeof(InputGetKeyDownPatch));
+                patchInputPostfix("GetKeyDown", new Type[] { typeof(string) }, typeof(InputGetKeyDownStringPatch));
+                patchInputPostfix("GetKeyUp", new Type[] { typeof(KeyCode) }, typeof(InputGetKeyUpPatch));
+                patchInputPostfix("GetKeyUp", new Type[] { typeof(string) }, typeof(InputGetKeyUpStringPatch));
+
+                ModLogger.Msg("[Patch] Input simulation installed (Input.GetKey*).");
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[Patch] Input simulation patch failed: " + ex.Message);
             }
         }
 
@@ -45387,6 +45410,8 @@ namespace HeartopiaMod
                 {
                     HeartopiaComplete.CameraOverrideRot = Quaternion.LookRotation(vector4);
                 }
+                this.EnsureMovementOverridePatched();
+                this.EnsureRotationOverridePatched();
                 HeartopiaComplete.CameraOverridePos = vector3;
                 HeartopiaComplete.OverrideCameraPosition = true;
                 this.cameraOverrideFramesRemaining = 60;
@@ -48138,6 +48163,7 @@ namespace HeartopiaMod
             else
             {
                 Vector3 position = gameObject.transform.position;
+                this.EnsureMovementOverridePatched();
                 HeartopiaComplete.OverridePosition = targetPos;
                 HeartopiaComplete.OverridePlayerPosition = true;
                 CharacterController component = gameObject.GetComponent<CharacterController>();
@@ -48167,6 +48193,8 @@ namespace HeartopiaMod
             else
             {
                 Vector3 position = gameObject.transform.position;
+                this.EnsureMovementOverridePatched();
+                this.EnsureRotationOverridePatched();
                 HeartopiaComplete.OverridePosition = targetPos;
                 HeartopiaComplete.OverridePlayerPosition = true;
                 HeartopiaComplete.PlayerOverrideRot = targetRot;
@@ -48291,6 +48319,7 @@ namespace HeartopiaMod
 
                 // 2. APPLY CHARACTER ROTATION
                 Quaternion targetRotation = point.Rotation.ToQuaternion();
+                this.EnsureRotationOverridePatched();
                 HeartopiaComplete.OverridePlayerRotation = true;
                 HeartopiaComplete.PlayerOverrideRot = targetRotation;
                 this.playerRotationFramesRemaining = 100;
@@ -48487,6 +48516,7 @@ namespace HeartopiaMod
         {
             try
             {
+                this.EnsureInputSimPatched();
                 HeartopiaComplete.SimulateFKeyDown = true;
                 HeartopiaComplete.SimulateFKeyHeld = true;
                 HeartopiaComplete.SimulateFKeyUp = false;
@@ -48690,6 +48720,7 @@ namespace HeartopiaMod
 
         private void TeleportTo(Vector3 targetPos)
         {
+            this.EnsureMovementOverridePatched();
             OverridePosition = targetPos;
             OverridePlayerPosition = true;
             teleportFramesRemaining = 10;
@@ -64037,6 +64068,13 @@ namespace HeartopiaMod
         private readonly Queue<uint> pendingBirdFarmAttemptedNetIds = new Queue<uint>();
         private const string BOTTOM_DIALOG_PATH = "GameApp/startup_root(Clone)/XDUIRoot/Popup/BottomDialogPanel(Clone)";
         private const float BOTTOM_DIALOG_CLICK_INTERVAL = 0.3f;
+
+        // Lazy patch state for the hot Unity methods (Transform.position/rotation setters,
+        // CharacterController.Move, Input.GetKey*). These are only installed once the
+        // corresponding in-game feature is actually used, so they cost nothing when idle.
+        private bool movementOverridePatched = false;
+        private bool rotationOverridePatched = false;
+        private bool inputSimPatched = false;
 
         // Bypass overlap building state
         private bool bypassOverlapEnabled = false;
