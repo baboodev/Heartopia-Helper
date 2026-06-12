@@ -116,6 +116,7 @@ Pattern for new features:
 | **Net cook** | `EnsureNetCookProtocolMethods`, AuraMono `CookingSystem` | Protocol types + optional Mono invoke. |
 | **Homeland Farm** (`HomelandFarmFeature.cs`) | `ResolveHomelandFarmManagedType`, `HomelandFarmResolveAuraComponentClassRobust` | Managed-first, AuraMono fallback; see [worked example](#worked-example-homeland-farm-type-resolution). |
 | **Pet / puzzle partials** | `FindLoadedType` in `PetFeedFeature.cs`, `PetPlayFeature.cs`, `PuzzleNetFeature.cs` | Same core API. |
+| **Pad build hotkeys** (`PadBuildHotkeyFeature.cs`) | `TryGetPadBuildManagedModule` → `TryGetPadBuildAuraModule` → UI clicks | Three-tier `BuildModule` **instance** resolution; see [module instances](#resolving-module-instances-managersgetmodule--worked-example-buildmodule). |
 
 ---
 
@@ -149,6 +150,7 @@ Used for:
 - Net cook `PrepareCooking` via `CookingSystem` in some builds.
 - Reading interact targets and entity lists when managed reflection fails.
 - **Homeland-farm entity discovery** — inflating and invoking `Entities.GetComponents<T>` through Mono because the managed `Entities` method is absent (see [AuraMono generic `GetComponents<T>`](#auramono-generic-getcomponentst-direct-ecs-query)).
+- **Pad build hotkeys** — resolving the `BuildModule` *instance* via `Managers.GetModule(Type)` and invoking its placing methods (see [module instances](#resolving-module-instances-managersgetmodule--worked-example-buildmodule)).
 
 Other features (bubble, bird direct command, etc.) **do not** use Mono unless explicitly wired. Prefer `WebRequestUtility.SendCommand` for network actions.
 
@@ -217,6 +219,65 @@ These are uncatchable by C# `try/catch` — a native access-violation kills the 
 ### Non-fatal `icall.c:1622`
 
 `D:\…\mono\metadata\icall.c:1622:` (= `ves_icall_System_Array_GetValue`) lines appear in the **native console** during these scans and sometimes leak into the file log. They are **non-fatal** — the scan completes. They come from a value-array `Array.GetValue` path used elsewhere (dictionary-backed discovery, water batches) and are **not** the crash. Do not chase them when diagnosing an AV; look at the last breadcrumb step instead.
+
+---
+
+## Resolving module instances (`Managers.GetModule`) — worked example: BuildModule
+
+Game "modules" (`Module` / `ViewModule` subclasses: `BagModule`, `BuildModule`, `UICacheModule`, …)
+are **instances** owned by `XDTGame.Framework.Managers` (assembly **XDTBaseService**). Storage:
+`private static readonly Dictionary<Type, ModuleObject> _moduleDic` — note the values are
+**`ModuleObject` wrappers**, the module itself is `wrapper.module`. The only sane accessors are
+`GetModule<T>()` / `internal static IModule GetModule(Type)`.
+
+`PadBuildHotkeyFeature.cs` resolves `BuildModule` with a three-tier dispatch (each tier verified):
+
+### Tier 1 — managed (`TryGetManagedModule`)
+
+```csharp
+Type t = this.FindLoadedType("XDTGUI.Module.Build.BuildModule",
+                             "Il2CppXDTGUI.Module.Build.BuildModule", "BuildModule");
+this.TryGetManagedModule(t, out object module);   // Managers.GetModule(Type) via MethodInfo,
+                                                  // fallback: _moduleDic as managed IDictionary
+```
+
+Works when interop has a stub for the module (true for `BagModule` / DirectBackpack). For
+`BuildModule` on the current build `FindLoadedType` returns `null` — interop never generated it —
+so this tier is a miss-cached no-op that self-heals after an interop regen.
+
+### Tier 2 — AuraMono `Managers.GetModule(Type)` (the working path for BuildModule)
+
+```csharp
+// 1. Class — explicit image list; see the namespace ≠ assembly pitfall below.
+IntPtr cls = this.FindAuraMonoClassInImages("XDTGUI.Module.Build", "BuildModule",
+    new[] { "XDTLevelAndEntity", "XDTLevelAndEntity.dll", /* … */ });
+// 2. System.Type from the class pointer — NEVER Type.GetType(string).
+IntPtr typeObj = auraMonoTypeGetObject(domain, auraMonoClassGetType(cls));
+// 3. Managers pinned to its real namespace+image (an unqualified "Managers" can hit a wrong class).
+IntPtr managers = this.FindAuraMonoClassInImages("XDTGame.Framework", "Managers",
+    new[] { "XDTBaseService", "XDTBaseService.dll", /* … */ });
+// 4. Invoke internal static GetModule(Type); visibility does not matter to mono_runtime_invoke.
+IntPtr getModule = this.FindAuraMonoMethodOnHierarchy(managers, "GetModule", 1);
+IntPtr* args = stackalloc IntPtr[1]; args[0] = typeObj;
+IntPtr module = auraMonoRuntimeInvoke(getModule, IntPtr.Zero, (IntPtr)args, ref exc);
+```
+
+Cache the module object + method ptrs; **drop the object on any invoke `exc`** (it can go stale
+after GC / level switch) and re-resolve on the next use (throttled).
+
+### Tier 3 — UI fallback
+
+Clicking the feature's `BuildStatusPanel` buttons via `GameObject.Find` (paths from
+`BuildStatusPanel_Auto.cs`). No type resolution at all; kept as the backstop.
+
+### Dead ends (verified on this build — do not retry)
+
+| Attempt | Why it fails |
+|---------|--------------|
+| `Type.GetType(fullName)` via `mono_runtime_invoke` (the `TryResolveAuraMonoModule` fallback) | **Hard-crashes the runtime** — `icall.c:1622 internal_from_name`, native abort, uncatchable. Build `System.Type` only from a class pointer (`mono_class_get_type` + `mono_type_get_object`). |
+| Enumerating `Managers._moduleDic.Values` via AuraMono | `Dictionary<,>.Values` (ValueCollection) **enumerates to 0** through the boxed struct-enumerator path of `TryEnumerateAuraMonoCollectionItems`; and even if it worked, the values are `ModuleObject` wrappers, not modules. |
+| `FindAuraMonoClassByFullName("XDTGUI.Module.Build.BuildModule")` | **First-image-only bug**: `FindAuraMonoClassInLikelyImages` calls `FindAuraMonoImage(list)` which returns the *first loaded* image and probes only it. The unmapped `XDTGUI.*` namespace falls into the default list starting with `XDTGameUI`, but `BuildModule` is compiled into **XDTLevelAndEntity** (namespace ≠ assembly). Use `FindAuraMonoClassInImages` (probes every image) with the right image first. |
+| `TryResolveAuraMonoModule(fullName)` for any module without a static `Instance` | Walks the static-getter list, then falls into the `Type.GetType` crash above. Only safe for singleton-style classes. |
 
 ---
 
@@ -486,6 +547,9 @@ Features should **not** call `FindLoadedType` every frame without cache; use mis
 | Silent native crash (no log) inflating a generic method via Mono | `MonoGenericContext.method_inst` was a raw `MonoType*[]` | Build a real `MonoGenericInst*` with `mono_metadata_get_generic_inst` ([detail](#three-native-av-gotchas-each-cost-a-crash-to-find)) |
 | Silent native crash invoking a Mono method taking `ref`/`out` | Passed the object pointer for a by-ref param | Pass a pointer-to-pointer (`List**`); read the slot back after invoke |
 | `…Component=missing` though sibling components resolve | Wrong namespace assumed (e.g. `.Plant` vs `.Homeland`) | Confirm exact namespace per type in `ilspy-dumps/` |
+| AuraMono class lookup fails though the type exists in dumps | `FindAuraMonoClassByFullName` probes only the **first loaded** image; namespace ≠ assembly (e.g. `XDTGUI.Module.Build.BuildModule` lives in **XDTLevelAndEntity**) | Use `FindAuraMonoClassInImages` with an explicit image list (correct image first) |
+| Native crash (`icall.c:1622 internal_from_name`) right after a module/type resolve attempt | `Type.GetType(string)` invoked through `mono_runtime_invoke` | Build `System.Type` from the class ptr: `mono_class_get_type` → `mono_type_get_object` |
+| Module instance unreachable (`_moduleDic` scan finds nothing / count=0) | Dict values are `ModuleObject` wrappers; ValueCollection does not enumerate via AuraMono | Invoke `Managers.GetModule(Type)` instead ([module instances](#resolving-module-instances-managersgetmodule--worked-example-buildmodule)) |
 | `[OK] Mono hook WeatherExchangeShopPanel…` but no capture in-game | UI runs on IL2CPP, not Mono thunk | Open via AuraMono invoke; discover `storeId` via ILSpy/poll, then hardcode |
 | `WeatherExchange capture hook deferred: AuraMono not ready` | Hook attempted before world / AuraMono attach | Defer install to `Update` retry (see `ProcessBubbleFeatureOnUpdate`) |
 | Exchange opens with wrong NPC or empty list | Wrong `storeId` heuristic (e.g. 127, 87) | Doris starfall = `WeatherExchangeShopPanel` + case 10; rain/rainbow fortune = `ShopPanel` 86/87 |

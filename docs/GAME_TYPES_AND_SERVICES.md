@@ -166,9 +166,32 @@ Resolution order:
 | `XDTGame.UI.*` | `XDTGameUI.dll`, `Client.dll` |
 | *(default)* | All major `XDT*`, `EcsClient`, `Client`, `Assembly-CSharp` |
 
+> **⚠ First-image-only:** `FindAuraMonoClassInLikelyImages` resolves the image list via `FindAuraMonoImage(list)`, which returns the **first loaded image** — `mono_class_from_name` is then tried on that single image only. If the namespace is unmapped (falls into the *default* row) and the type's real assembly is not the first loaded entry, the lookup fails even though the class exists. Verified case: `XDTGUI.Module.Build.BuildModule` — the namespace suggests UI, but the class is compiled into **XDTLevelAndEntity** (namespace ≠ assembly); the default list starts with `XDTGameUI`, so `FindAuraMonoClassByFullName` never finds it. **Fix:** call `FindAuraMonoClassInImages(ns, name, imageNames)` directly — it probes *every* image in the list. Confirm the real assembly by the dump path (`ilspy-dumps/<assembly>/<namespace>/<Type>.cs`).
+
 **Global-namespace tables** (`TableData`, `TableGuidesChapters`): use `FindAuraMonoClassAcrossLoadedAssemblies(string.Empty, "TableData")`.
 
 Methods: `FindAuraMonoMethodOnHierarchy(class, methodName, paramCount)` walks base types; **paramCount must match exactly** (includes `ref`/`out` as parameters).
+
+### Module instances (`Module` / `ViewModule`) via `Managers.GetModule(Type)`
+
+`BagModule`, `BuildModule`, `UICacheModule`, … are instances owned by `XDTGame.Framework.Managers`
+(assembly **XDTBaseService**), stored in `_moduleDic` — a `Dictionary<Type, ModuleObject>` whose
+values are **wrappers** (the module is `wrapper.module`). Resolve instances through `GetModule`,
+never by scanning the dictionary:
+
+- **Managed tier:** `FindLoadedType(fullName)` + `TryGetManagedModule(type, out obj)` (non-generic
+  `Managers.GetModule(Type)` via `MethodInfo`; fallback reads `_moduleDic` as a managed
+  `IDictionary`). Works when interop has a stub (`BagModule` / DirectBackpack); returns null when it
+  doesn't (`BuildModule` on the current build).
+- **AuraMono tier:** class via `FindAuraMonoClassInImages` (see warning above) →
+  `mono_class_get_type` + `mono_type_get_object` → invoke `internal static GetModule(Type)` on the
+  `Managers` class **pinned to `XDTGame.Framework` in the `XDTBaseService` image** (an unqualified
+  `"Managers"` lookup can land on an unrelated class with an empty `_moduleDic`).
+- **Never:** `Type.GetType(string)` through `mono_runtime_invoke` (hard native crash,
+  `icall.c:1622 internal_from_name`), or enumerating `_moduleDic.Values` via AuraMono
+  (`Dictionary` ValueCollection enumerates to 0 through the boxed struct-enumerator path).
+
+Worked example with code: [TYPE_RESOLUTION.md → Resolving module instances](./TYPE_RESOLUTION.md#resolving-module-instances-managersgetmodule--worked-example-buildmodule). Consumer: `PadBuildHotkeyFeature.cs` (Pad build hotkeys).
 
 ---
 
@@ -377,6 +400,7 @@ When a feature logs `unavailable` / `null` / `count=0` unexpectedly:
 | `buddy/AuraFarm.cs` | Mono exports, `TryUnboxMonoBoolean`, generic inflation primitives |
 | `buddy/DailyQuestSubmitFeature.cs` | `List<ItemNetPair>` AuraMono create + fill pattern |
 | `buddy/WildAnimalGiftFeature.cs` | AuraMono-only protocol (`WildAnimalProtocolManager`) — no `EcsService` |
+| `buddy/PadBuildHotkeyFeature.cs` | Module-instance resolve reference: managed `TryGetManagedModule` → AuraMono `Managers.GetModule(Type)` → UI fallback |
 
 ---
 

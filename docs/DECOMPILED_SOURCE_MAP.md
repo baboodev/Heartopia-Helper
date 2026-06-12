@@ -185,6 +185,8 @@ the native body.
 | `EntityView/` | LevelEntityComponent |
 | `Utils/` | **EntityHelper** |
 | `Core/World/` | **Entity** |
+| `XDTGUI.Module.Build/` *(non-`XDTLevelAndEntity` namespace, same assembly)* | **BuildModule** — Pad build hotkeys (§3.19) |
+| `Gameplay/Component/Player/` (also) | PlayerStateBuildTps, CraftState |
 
 **ScriptsRefactory** (same assembly or separate paths): `BirdComponent`, `BirdScannableComponent`, `LevelObjectManager`.
 
@@ -231,6 +233,7 @@ the native body.
 | TrackingPanel / TrackingCatPlay | Cat play automation |
 | CatPlayStatusPanel, DogPlayStatusPanel | Pet play |
 | DressShopPanel, FaceShopPanel, ShopPanel, WeatherExchangeShopPanel | Force-open shop; **DressShopPanel** = clothing buy-all (`storeId` **5**) |
+| BuildStatusPanel (+ `XDTGame.Auto/BuildStatusPanel_Auto`) | Pad build hotkeys — button→API mapping and node paths for the UI-click fallback (see §3.19) |
 
 **UIManager:** `XDTGame.Core.UIManager` — AuraMono `GetView<T>()`.
 
@@ -884,6 +887,28 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 - **Filter:** `BackpackItem.staticId == 5100` only
 - **File:** `SnowSculptureFeature.cs` (send helpers in `HeartopiaComplete.cs`)
 
+### 3.19 Homeland building (Pad)
+
+#### `BuildModule`
+- **Dump:** `XDTLevelAndEntity/XDTGUI.Module.Build/BuildModule.cs` — ⚠ namespace `XDTGUI.Module.Build`, but the class is compiled into the **XDTLevelAndEntity** assembly (namespace ≠ assembly)
+- **Features:** Pad build hotkeys — `ConfirmPlacing(bool)`, `CancelPlacing()`, `RotateAround()`, `InteractExecuteMove()`, `InteractExecutePickup()` (pack furniture = furniture delete), `InteractExecuteDelete()` (wreck, god mode); state read via `SubState` (`CraftState`: Null=0, Free=1, **Focus=2**) and `InGodMode`
+- **Access:** **A** — instance via `Managers.GetModule(Type)` (class from `FindAuraMonoClassInImages`, `Type` from `mono_type_get_object`); managed tier dormant (no interop stub); UI-click fallback
+- **File:** `PadBuildHotkeyFeature.cs`
+
+#### `Managers`
+- **Dump:** `XDTBaseService/XDTGame.Framework/Managers.cs`
+- **Detail:** `_moduleDic` is `Dictionary<Type, ModuleObject>` (values are **wrappers**; module = `wrapper.module`); resolve instances only via `GetModule<T>()` / `internal static GetModule(Type)`. `_moduleDic.Values` does not enumerate via AuraMono.
+- **Access:** **A** (pinned to `XDTGame.Framework` in the `XDTBaseService` image), **R** (`TryGetManagedModule`)
+
+#### `BuildStatusPanel` / `BuildStatusPanel_Auto`
+- **Dump:** `XDTGameUI/XDTGame.UI.Panel/BuildStatusPanel.cs`, `XDTGameUI/XDTGame.Auto/BuildStatusPanel_Auto.cs`
+- **Features:** button→API mapping (`HoldUpConfirm`, `ClickCancel`, `InputFixed1`=rotate, `InputMain`=move, `InputThird`=pack, `InputDelete`=wreck) and exact node paths (`AniRoot@ani@queueanimation/Bottom/…`) for the UI-click fallback
+- **Access:** **G** (fallback tier only)
+
+#### `PlayerStateBuildTps` / `CraftMode_Placing`
+- **Dump:** `XDTLevelAndEntity/XDTLevelAndEntity.Gameplay.Component.Player/PlayerStateBuildTps.cs`, `…GameplaySystem.CraftingSystem/CraftMode_Placing.cs`
+- **Detail:** internal chain behind the BuildModule calls in homeland Pad mode (`BuildControl = BuildState.mode`); reference only — the mod invokes `BuildModule`, not these directly
+
 ---
 
 ## 4. Matrix: Feature → types → mod file
@@ -898,6 +923,7 @@ Below: **only types the mod actually resolves or patches**. For each: dump path,
 | Radar / ESP | Entities, resource components, BubbleComponent | HC, HeartopiaResourceVisualEsp.cs | R + G |
 | Bag / transfer | BackPackSystem, BackpackProtocolManager, EStorageType | HC, DailyQuestSubmitFeature, SnowSculptureFeature | A + R |
 | Snow sculpting | SnowSculpturePanel, SnowSculptureProtocolManager, PlayerInteraction, InteractSystem, snow interact commands 14–16 | SnowSculptureFeature.cs | A (+ R) |
+| Pad build hotkeys | BuildModule, Managers (GetModule), BuildStatusPanel (UI fallback) | PadBuildHotkeyFeature.cs | A (+ R dormant, G fallback) |
 | Daily quest submit | BackPackSystem, TaskProtocolManager, ItemNetPair, TableData | DailyQuestSubmitFeature.cs | A (+ N) |
 | Daily claims | EcsService, IOperationActivityCenterService, ITownGuidesService, IMailClientService, BattlePassSystem, *ProtocolManager | DailyClaimsFeature.cs | A + S |
 | Auto sell | BackPackSystem, TableData, sell protocol (HC) | HC | A + R + N |

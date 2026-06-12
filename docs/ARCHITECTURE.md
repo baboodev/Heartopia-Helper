@@ -364,17 +364,30 @@ All merge into `public partial class HeartopiaComplete`:
 
 | File | ~Lines | Responsibility |
 |------|--------|----------------|
-| `HeartopiaComplete.cs` | 57947 | Core: UI, config, teleport, radar, net cook, auto sell, fishing helpers, type resolution, IL2CPP/AuraMono infrastructure |
-| `AuraFarm.cs` | 5267 | Aura gather/chop/mine, Mono API exports, resource protocol |
+| `HeartopiaComplete.cs` | 66958 | Core: UI, config, teleport, radar, net cook, auto sell, fishing helpers, type resolution, IL2CPP/AuraMono infrastructure |
+| `HomelandFarmFeature.cs` | 20045 | Homeland farm: radius water/weed/harvest/fertilize, sow, AuraMono `GetComponents<T>` discovery |
+| `AuraFarm.cs` | 7435 | Aura gather/chop/mine, Mono API exports, resource protocol |
 | `PetFeedFeature.cs` | 4530 | Feed all pets, UI textures, AuraMono pet APIs |
+| `DailyClaimsFeature.cs` | 2719 | Daily activity / guides / mail / battle-pass claims |
 | `WildAnimalFeedFeature.cs` | 2573 | Trough feeding, table lookups |
 | `PuzzleNetFeature.cs` | 2265 | Puzzle solver automation |
 | `PetPlayFeature.cs` | 2188 | Cat play / dog train automation |
+| `ShopDumpFeature.cs` | 1996 | Store dump tooling |
+| `SnowSculptureFeature.cs` | 1584 | Auto snow sculpting |
 | `DailyQuestSubmitFeature.cs` | 1467 | CanSubmit daily orders, ItemNetPair lists |
+| `FaceShopBuyAllFeature.cs` | 1359 | Face shop buy-all |
+| `PicturesDecryptFeature.cs` | 1322 | ScreenCapture pictures decrypt/browse |
+| `ShopBuyAllFeature.cs` | 1197 | Clothing shop buy-all |
 | `BubbleFeature.cs` | 1164 | Bubble radar, spawn, SendCommand Harmony |
-| `BirdPhotoSubmitFeature.cs` | 504 | Bird photo submit helper |
+| `PadBuildHotkeyFeature.cs` | 913 | Pad build hotkeys (confirm/cancel/rotate/move/delete); 3-tier `BuildModule` resolve: managed → AuraMono `Managers.GetModule(Type)` → UI clicks |
+| `NoclipFeature.cs` | 883 | Noclip movement (incl. vehicle) |
+| `ItemDumpFeature.cs` | 863 | Item table dump tooling |
 | `WildAnimalGiftFeature.cs` | ~700 | Claim wild animal gifts (AuraMono entity scan) |
+| `DrawUploadFeature.cs` | 588 | Drawing-board upload (server-authoritative pixel ops) |
 | `HeartopiaResourceVisualEsp.cs` | 587 | On-screen resource ESP |
+| `BirdPhotoSubmitFeature.cs` | 504 | Bird photo submit helper |
+| `ShopQuickBuyFeature.cs` | 441 | Shop quick-buy |
+| `InstrumentHotkeyGuardFeature.cs` | 428 | Blocks mod hotkeys while an instrument panel is open (throttled `GetView` poll) |
 | `HeartopiaDebugEsp.cs` | 319 | Internal debug overlays |
 | `BunnyHopFeature.cs` | small | Jump via AuraMono player state |
 | `HideJumpButtonFeature.cs` | small | UI tweak |
@@ -399,6 +412,9 @@ All merge into `public partial class HeartopiaComplete`:
 - `BubbleMonoNativeHook.cs` — x64 detour for Mono method thunks (bubble create)
 - `LocalizationManager.cs` — i18n
 - `WarehouseBypassFeature.cs` — static helper called from `OnUpdate`
+- `DrawColorCodec.cs` — drawing-board color LUT codec (static helper)
+- `MonoAssemblyDump.cs` — embedded-Mono assembly dump tooling
+- `HelperPaths.cs` — config/data path resolution
 
 ### 4.3 Lifecycle sequence
 
