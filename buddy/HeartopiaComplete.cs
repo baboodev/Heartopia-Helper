@@ -11197,7 +11197,12 @@ namespace HeartopiaMod
 
             IntPtr getCountMethod = this.FindAuraMonoMethodOnHierarchy(collectionClass, "get_Count", 0);
             IntPtr getItemMethod = this.FindAuraMonoMethodOnHierarchy(collectionClass, "get_Item", 1);
-            if (getCountMethod != IntPtr.Zero && getItemMethod != IntPtr.Zero)
+            // Dictionaries also expose get_Count and a 1-arg get_Item, but that indexer takes a
+            // KEY, not an index: probing it with 0..Count-1 throws KeyNotFoundException for nearly
+            // every element (and could return wrong items for densely int-keyed dicts). Route
+            // keyed collections straight to the enumerator path below.
+            bool isKeyedCollection = this.FindAuraMonoMethodOnHierarchy(collectionClass, "ContainsKey", 1) != IntPtr.Zero;
+            if (!isKeyedCollection && getCountMethod != IntPtr.Zero && getItemMethod != IntPtr.Zero)
             {
                 int count = Math.Min(this.GetAuraMonoIntCount(collectionObj, getCountMethod), MaxAuraMonoCollectionItems);
                 for (int i = 0; i < count; i++)
@@ -11229,10 +11234,25 @@ namespace HeartopiaMod
 
             if (getEnumeratorMethod != IntPtr.Zero)
             {
-                IntPtr exc = IntPtr.Zero;
-                IntPtr enumeratorObj = auraMonoRuntimeInvoke(getEnumeratorMethod, collectionObj, IntPtr.Zero, ref exc);
-                if (exc == IntPtr.Zero && enumeratorObj != IntPtr.Zero)
+                // A live game collection can be mutated while we walk it (entities load/unload,
+                // game threads touch the dictionary), which surfaces as InvalidOperationException
+                // from MoveNext mid-walk. Retry once with a fresh enumerator instead of silently
+                // returning a partial result every frame.
+                int baselineCount = output.Count;
+                for (int attempt = 0; attempt < 2; attempt++)
                 {
+                    if (output.Count > baselineCount)
+                    {
+                        output.RemoveRange(baselineCount, output.Count - baselineCount);
+                    }
+
+                    IntPtr exc = IntPtr.Zero;
+                    IntPtr enumeratorObj = auraMonoRuntimeInvoke(getEnumeratorMethod, collectionObj, IntPtr.Zero, ref exc);
+                    if (exc != IntPtr.Zero || enumeratorObj == IntPtr.Zero)
+                    {
+                        break;
+                    }
+
                     IntPtr enumeratorClass = auraMonoObjectGetClass(enumeratorObj);
                     IntPtr moveNextMethod = this.FindAuraMonoMethodOnHierarchy(enumeratorClass, "MoveNext", 0);
                     IntPtr getCurrentMethod = this.FindAuraMonoMethodOnHierarchy(enumeratorClass, "get_Current", 0);
@@ -11241,54 +11261,68 @@ namespace HeartopiaMod
                         getCurrentMethod = this.FindAuraMonoMethodOnHierarchy(enumeratorClass, "System.Collections.IEnumerator.get_Current", 0);
                     }
 
-                    if (moveNextMethod != IntPtr.Zero && getCurrentMethod != IntPtr.Zero)
+                    if (moveNextMethod == IntPtr.Zero || getCurrentMethod == IntPtr.Zero)
                     {
-                        int safety = 0;
-                        while (safety < MaxAuraMonoCollectionItems)
-                        {
-                            exc = IntPtr.Zero;
-                            IntPtr moved = auraMonoRuntimeInvoke(moveNextMethod, enumeratorObj, IntPtr.Zero, ref exc);
-                            bool hasNext = false;
-                            if (exc != IntPtr.Zero || moved == IntPtr.Zero || auraMonoObjectUnbox == null)
-                            {
-                                break;
-                            }
-
-                            try
-                            {
-                                IntPtr rawMoved = auraMonoObjectUnbox(moved);
-                                if (rawMoved == IntPtr.Zero)
-                                {
-                                    break;
-                                }
-
-                                hasNext = Marshal.ReadByte(rawMoved) != 0;
-                            }
-                            catch
-                            {
-                                break;
-                            }
-
-                            if (!hasNext)
-                            {
-                                break;
-                            }
-
-                            exc = IntPtr.Zero;
-                            IntPtr currentObj = auraMonoRuntimeInvoke(getCurrentMethod, enumeratorObj, IntPtr.Zero, ref exc);
-                            if (exc == IntPtr.Zero && currentObj != IntPtr.Zero)
-                            {
-                                output.Add(currentObj);
-                            }
-
-                            safety++;
-                        }
-
-                        if (output.Count > 0)
-                        {
-                            return true;
-                        }
+                        break;
                     }
+
+                    bool moveNextThrew = false;
+                    int safety = 0;
+                    while (safety < MaxAuraMonoCollectionItems)
+                    {
+                        exc = IntPtr.Zero;
+                        IntPtr moved = auraMonoRuntimeInvoke(moveNextMethod, enumeratorObj, IntPtr.Zero, ref exc);
+                        if (exc != IntPtr.Zero)
+                        {
+                            moveNextThrew = true;
+                            break;
+                        }
+
+                        bool hasNext = false;
+                        if (moved == IntPtr.Zero || auraMonoObjectUnbox == null)
+                        {
+                            break;
+                        }
+
+                        try
+                        {
+                            IntPtr rawMoved = auraMonoObjectUnbox(moved);
+                            if (rawMoved == IntPtr.Zero)
+                            {
+                                break;
+                            }
+
+                            hasNext = Marshal.ReadByte(rawMoved) != 0;
+                        }
+                        catch
+                        {
+                            break;
+                        }
+
+                        if (!hasNext)
+                        {
+                            break;
+                        }
+
+                        exc = IntPtr.Zero;
+                        IntPtr currentObj = auraMonoRuntimeInvoke(getCurrentMethod, enumeratorObj, IntPtr.Zero, ref exc);
+                        if (exc == IntPtr.Zero && currentObj != IntPtr.Zero)
+                        {
+                            output.Add(currentObj);
+                        }
+
+                        safety++;
+                    }
+
+                    if (!moveNextThrew)
+                    {
+                        break;
+                    }
+                }
+
+                if (output.Count > baselineCount)
+                {
+                    return true;
                 }
             }
 
@@ -54965,6 +54999,34 @@ namespace HeartopiaMod
                 }
 
                 IntPtr dictClass = auraMonoObjectGetClass(itemDataDictObj);
+                // Gate with ContainsKey so the indexer below never throws KeyNotFoundException
+                // for absent netIds (this lookup runs per frame and used to spam the invoke
+                // guard). NOTE: deliberately NOT TryGetValue — its out-parameter writes the raw
+                // value into caller storage, which smashes the stack when the dictionary value
+                // is a struct wider than a pointer. ContainsKey + get_Item only ever returns
+                // boxed objects, which is safe for any value type.
+                if (auraMonoObjectUnbox != null)
+                {
+                    IntPtr containsKeyMethod = this.FindAuraMonoMethodOnHierarchy(dictClass, "ContainsKey", 1);
+                    if (containsKeyMethod != IntPtr.Zero)
+                    {
+                        IntPtr excContains = IntPtr.Zero;
+                        IntPtr* containsArgs = stackalloc IntPtr[1];
+                        containsArgs[0] = (IntPtr)(&netId);
+                        IntPtr boxedHas = auraMonoRuntimeInvoke(containsKeyMethod, itemDataDictObj, (IntPtr)containsArgs, ref excContains);
+                        if (excContains != IntPtr.Zero || boxedHas == IntPtr.Zero)
+                        {
+                            return false;
+                        }
+
+                        IntPtr rawHas = auraMonoObjectUnbox(boxedHas);
+                        if (rawHas == IntPtr.Zero || Marshal.ReadByte(rawHas) == 0)
+                        {
+                            return false;
+                        }
+                    }
+                }
+
                 IntPtr getItemMethod = this.FindAuraMonoMethodOnHierarchy(dictClass, "get_Item", 1);
                 if (getItemMethod == IntPtr.Zero)
                 {

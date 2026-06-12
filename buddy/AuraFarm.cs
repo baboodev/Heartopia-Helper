@@ -340,6 +340,9 @@ namespace HeartopiaMod
         private delegate IntPtr MonoMethodGetNameDelegate(IntPtr method);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate IntPtr MonoMethodGetClassDelegate(IntPtr method);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoClassGetFieldsDelegate(IntPtr klass, ref IntPtr iter);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -427,6 +430,7 @@ namespace HeartopiaMod
         private static MonoClassGetNamespaceDelegate auraMonoClassGetNamespace;
         private static MonoClassGetMethodsDelegate auraMonoClassGetMethods;
         private static MonoMethodGetNameDelegate auraMonoMethodGetName;
+        private static MonoMethodGetClassDelegate auraMonoMethodGetClass;
         private static MonoClassGetFieldsDelegate auraMonoClassGetFields;
         private static MonoFieldGetNameDelegate auraMonoFieldGetName;
         private static MonoMethodSignatureDelegate auraMonoMethodSignature;
@@ -545,9 +549,13 @@ namespace HeartopiaMod
         //   3. every game-side exception is counted and logged (throttled), even at the ~50 call
         //      sites that ignore the exc out-param.
         private static int auraInvokeExceptionCount;
-        private static int auraInvokeNextExceptionLogTick;
+        private static int auraInvokeLastSummaryCount;
+        private static int auraInvokeNextSummaryTick;
         private static string auraInvokeLastExceptionName = string.Empty;
-        private const int AuraInvokeExceptionLogThrottleMs = 2000;
+        private static string auraInvokeLastExceptionSite = string.Empty;
+        private static readonly HashSet<long> auraInvokeSeenExceptionKeys = new HashSet<long>();
+        private const int AuraInvokeExceptionSummaryMs = 60000;
+        private const int AuraInvokeSeenKeysCap = 256;
 
         private static IntPtr InvokeAuraMonoChecked(IntPtr method, IntPtr obj, IntPtr parameters, ref IntPtr exc)
         {
@@ -561,40 +569,76 @@ namespace HeartopiaMod
             IntPtr result = raw(method, obj, parameters, ref exc);
             if (exc != IntPtr.Zero)
             {
-                RecordAuraInvokeException(exc);
+                RecordAuraInvokeException(method, exc);
                 return IntPtr.Zero;
             }
             return result;
         }
 
-        private static void RecordAuraInvokeException(IntPtr exc)
+        // mono_class_get_name/namespace and mono_method_get_name return image-owned const char* —
+        // never mono_free these.
+        private static string DescribeAuraMonoClass(IntPtr klass)
+        {
+            if (klass == IntPtr.Zero)
+            {
+                return null;
+            }
+            string ns = auraMonoClassGetNamespace != null ? Marshal.PtrToStringAnsi(auraMonoClassGetNamespace(klass)) : null;
+            string cn = auraMonoClassGetName != null ? Marshal.PtrToStringAnsi(auraMonoClassGetName(klass)) : null;
+            if (string.IsNullOrEmpty(cn))
+            {
+                return null;
+            }
+            return string.IsNullOrEmpty(ns) ? cn : ns + "." + cn;
+        }
+
+        // Logging policy: each unique (method, exception class) pair is logged once with full
+        // names; afterwards a one-line summary at most every 60s while exceptions keep flowing.
+        // A game method that throws every frame must not be able to flood the log.
+        private static void RecordAuraInvokeException(IntPtr method, IntPtr exc)
         {
             auraInvokeExceptionCount++;
             try
             {
-                string name = "<unknown>";
-                MonoObjectGetClassDelegate getClass = auraMonoObjectGetClass;
-                if (getClass != null)
-                {
-                    IntPtr klass = getClass(exc);
-                    if (klass != IntPtr.Zero)
-                    {
-                        // mono_class_get_name/namespace return image-owned const char* — no free.
-                        string ns = auraMonoClassGetNamespace != null ? Marshal.PtrToStringAnsi(auraMonoClassGetNamespace(klass)) : null;
-                        string cn = auraMonoClassGetName != null ? Marshal.PtrToStringAnsi(auraMonoClassGetName(klass)) : null;
-                        if (!string.IsNullOrEmpty(cn))
-                        {
-                            name = string.IsNullOrEmpty(ns) ? cn : ns + "." + cn;
-                        }
-                    }
-                }
-                auraInvokeLastExceptionName = name;
+                IntPtr excClass = auraMonoObjectGetClass != null ? auraMonoObjectGetClass(exc) : IntPtr.Zero;
+                long key = unchecked(method.ToInt64() * 397L ^ excClass.ToInt64());
+                bool firstOfKind = auraInvokeSeenExceptionKeys.Count < AuraInvokeSeenKeysCap
+                    && auraInvokeSeenExceptionKeys.Add(key);
 
                 int now = Environment.TickCount;
-                if (unchecked(now - auraInvokeNextExceptionLogTick) >= 0)
+                bool summaryDue = unchecked(now - auraInvokeNextSummaryTick) >= 0
+                    && auraInvokeExceptionCount != auraInvokeLastSummaryCount;
+                if (!firstOfKind && !summaryDue)
                 {
-                    auraInvokeNextExceptionLogTick = now + AuraInvokeExceptionLogThrottleMs;
-                    ModLogger.Msg("[AuraMono] Invoke raised " + name + " (total exceptions: " + auraInvokeExceptionCount + ").");
+                    return;
+                }
+
+                string excName = DescribeAuraMonoClass(excClass) ?? "<unknown exception>";
+                string site = "<unknown method>";
+                IntPtr declClass = auraMonoMethodGetClass != null ? auraMonoMethodGetClass(method) : IntPtr.Zero;
+                string declName = DescribeAuraMonoClass(declClass);
+                string methodName = auraMonoMethodGetName != null ? Marshal.PtrToStringAnsi(auraMonoMethodGetName(method)) : null;
+                if (!string.IsNullOrEmpty(methodName))
+                {
+                    site = string.IsNullOrEmpty(declName) ? methodName : declName + "." + methodName;
+                }
+                auraInvokeLastExceptionName = excName;
+                auraInvokeLastExceptionSite = site;
+
+                if (firstOfKind)
+                {
+                    ModLogger.Msg("[AuraMono] Invoke of " + site + " raised " + excName
+                        + " — logged once; further occurrences are counted and summarized every 60s.");
+                    auraInvokeNextSummaryTick = now + AuraInvokeExceptionSummaryMs;
+                    auraInvokeLastSummaryCount = auraInvokeExceptionCount;
+                }
+                else
+                {
+                    int delta = auraInvokeExceptionCount - auraInvokeLastSummaryCount;
+                    ModLogger.Msg("[AuraMono] " + delta + " invoke exception(s) in the last 60s (latest: "
+                        + site + " raised " + excName + "; total: " + auraInvokeExceptionCount + ").");
+                    auraInvokeNextSummaryTick = now + AuraInvokeExceptionSummaryMs;
+                    auraInvokeLastSummaryCount = auraInvokeExceptionCount;
                 }
             }
             catch
@@ -643,7 +687,7 @@ namespace HeartopiaMod
             result = InvokeAuraMonoChecked(method, obj, args, ref exc);
             if (exc != IntPtr.Zero)
             {
-                error = "AuraMono invoke raised " + auraInvokeLastExceptionName + ".";
+                error = "AuraMono invoke of " + auraInvokeLastExceptionSite + " raised " + auraInvokeLastExceptionName + ".";
                 return false;
             }
             return true;
@@ -5826,6 +5870,7 @@ namespace HeartopiaMod
             auraMonoClassGetNamespace = this.GetAuraMonoExport<MonoClassGetNamespaceDelegate>(monoModule, "mono_class_get_namespace");
             auraMonoClassGetMethods = this.GetAuraMonoExport<MonoClassGetMethodsDelegate>(monoModule, "mono_class_get_methods");
             auraMonoMethodGetName = this.GetAuraMonoExport<MonoMethodGetNameDelegate>(monoModule, "mono_method_get_name");
+            auraMonoMethodGetClass = this.GetAuraMonoExport<MonoMethodGetClassDelegate>(monoModule, "mono_method_get_class");
             auraMonoClassGetFields = this.GetAuraMonoExport<MonoClassGetFieldsDelegate>(monoModule, "mono_class_get_fields");
             auraMonoFieldGetName = this.GetAuraMonoExport<MonoFieldGetNameDelegate>(monoModule, "mono_field_get_name");
             auraMonoMethodSignature = this.GetAuraMonoExport<MonoMethodSignatureDelegate>(monoModule, "mono_method_signature");
