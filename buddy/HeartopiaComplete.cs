@@ -1909,21 +1909,27 @@ namespace HeartopiaMod
             // touch a transform in the same call (teleport, camera) also Ensure directly at the site.
             // Player teleport / noclip: pin position via the Transform.position setter. (The
             // CharacterController.Move patch was removed — the local player isn't driven by it.)
+            float hotPatchNow = Time.unscaledTime;
             if (this.noclipEnabled || HeartopiaComplete.OverridePlayerPosition || this.teleportFramesRemaining > 0)
             {
                 this.EnsurePositionOverridePatched();
+                this.positionOverridePatchLastNeededAt = hotPatchNow;
             }
             // Camera mouse-look: pin camera position + rotation. Does NOT need CharacterController.Move.
             if (this.mouseLookEnabled || HeartopiaComplete.OverrideCameraPosition || this.cameraOverrideFramesRemaining > 0)
             {
                 this.EnsurePositionOverridePatched();
                 this.EnsureRotationOverridePatched();
+                this.positionOverridePatchLastNeededAt = hotPatchNow;
+                this.rotationOverridePatchLastNeededAt = hotPatchNow;
             }
             // Player rotation override.
             if (HeartopiaComplete.OverridePlayerRotation || this.playerRotationFramesRemaining > 0)
             {
                 this.EnsureRotationOverridePatched();
+                this.rotationOverridePatchLastNeededAt = hotPatchNow;
             }
+            this.UpdateHotPathOverrideTargetIds();
             // Menu input-block: stop player movement while the menu is open. Routed through the
             // game's MonoInputManager (the player isn't driven by Unity's CharacterController.Move),
             // so no hot-path Harmony patch is installed for this.
@@ -1937,7 +1943,9 @@ namespace HeartopiaMod
                 || HeartopiaComplete.SimulateFKeyHeld || HeartopiaComplete.SimulateFKeyDown || HeartopiaComplete.SimulateFKeyUp)
             {
                 this.EnsureInputSimPatched();
+                this.inputSimPatchLastNeededAt = hotPatchNow;
             }
+            this.MaybeUnpatchIdleHotPathPatches(hotPatchNow);
 
             if (BirdNetFarm.IsEnabled)
             {
@@ -2542,7 +2550,11 @@ namespace HeartopiaMod
                 this.nextAutoBuyFishingLogicTime = Time.unscaledTime + 0.05f;
                 this.RunAutoBuyFishingLogic();
             }
-            AutoFishingFarm.Update(this);
+            if (this.autoFishingFarmBreaker.ShouldRun(Time.unscaledTime))
+            {
+                try { AutoFishingFarm.Update(this); this.autoFishingFarmBreaker.Success(); }
+                catch (Exception ex) { this.autoFishingFarmBreaker.Failure("AutoFishingFarm", ex, Time.unscaledTime); }
+            }
             this.ProcessAutoSell();
             this.RunTreeFarmLogic();
             this.RunLobbyAutoActions();
@@ -2583,20 +2595,39 @@ namespace HeartopiaMod
                     this.AddMenuNotification("Auto Farm auto-stopped (timer)", new Color(1f, 0.75f, 0.45f));
                 }
             }
-            try
+            // Farm ticks behind circuit breakers: a systematically failing farm cools down for
+            // 30s instead of throwing (and logging) every frame, and is disabled after repeated
+            // cooldown cycles. One good tick resets the breaker.
+            float farmTickNow = Time.unscaledTime;
+            if (this.auraFarmBreaker.ShouldRun(farmTickNow))
             {
-                this.UpdateAuraFarm();
-                try { this.UpdateHomelandFarmBackground(); } catch (Exception ex) { ModLogger.Msg("[HomelandFarm] Update error: " + ex.Message); }
-                // Insect farm periodic update (from separate module)
-                try { BirdNetFarm.Update(this); } catch (Exception ex) { ModLogger.Msg("[BirdNetFarm] Update error: " + ex.Message); }
-                try { InsectNetFarm.Update(this); } catch (Exception ex) { ModLogger.Msg("[InsectNetFarm] Update error: " + ex.Message); }
-                try { this.UpdatePuzzleAutomation(); } catch (Exception ex) { ModLogger.Msg("[PuzzleNet] Update error: " + ex.Message); }
-                // Resource farm periodic update
-                try { this.UpdateResourceFarm(); } catch (Exception ex) { ModLogger.Msg("[ResourceFarm] Update error: " + ex.Message); }
+                try { this.UpdateAuraFarm(); this.auraFarmBreaker.Success(); }
+                catch (Exception ex) { this.auraFarmBreaker.Failure("AuraFarm", ex, farmTickNow); }
             }
-            catch (Exception ex)
+            if (this.homelandFarmBreaker.ShouldRun(farmTickNow))
             {
-                ModLogger.Msg("? AutoFish update error: " + ex.Message);
+                try { this.UpdateHomelandFarmBackground(); this.homelandFarmBreaker.Success(); }
+                catch (Exception ex) { this.homelandFarmBreaker.Failure("HomelandFarm", ex, farmTickNow); }
+            }
+            if (this.birdNetFarmBreaker.ShouldRun(farmTickNow))
+            {
+                try { BirdNetFarm.Update(this); this.birdNetFarmBreaker.Success(); }
+                catch (Exception ex) { this.birdNetFarmBreaker.Failure("BirdNetFarm", ex, farmTickNow); }
+            }
+            if (this.insectNetFarmBreaker.ShouldRun(farmTickNow))
+            {
+                try { InsectNetFarm.Update(this); this.insectNetFarmBreaker.Success(); }
+                catch (Exception ex) { this.insectNetFarmBreaker.Failure("InsectNetFarm", ex, farmTickNow); }
+            }
+            if (this.puzzleNetBreaker.ShouldRun(farmTickNow))
+            {
+                try { this.UpdatePuzzleAutomation(); this.puzzleNetBreaker.Success(); }
+                catch (Exception ex) { this.puzzleNetBreaker.Failure("PuzzleNet", ex, farmTickNow); }
+            }
+            if (this.resourceFarmBreaker.ShouldRun(farmTickNow))
+            {
+                try { this.UpdateResourceFarm(); this.resourceFarmBreaker.Success(); }
+                catch (Exception ex) { this.resourceFarmBreaker.Failure("ResourceFarm", ex, farmTickNow); }
             }
 
             this.UpdateVisualDebugEsp();
@@ -23612,6 +23643,150 @@ namespace HeartopiaMod
             {
                 this.selfSubTab = subTab;
                 this.tabScrollPos = Vector2.zero;
+            }
+        }
+
+        // Refreshes the Transform instance ids the hot-path prefixes compare against. Runs once
+        // per frame from OnUpdate; GetLocalPlayer/Camera.main are internally cached, so this is
+        // far cheaper than the per-set gameObject.name fetches the prefixes used to do.
+        private void UpdateHotPathOverrideTargetIds()
+        {
+            try
+            {
+                if (HeartopiaComplete.OverridePlayerPosition || HeartopiaComplete.OverridePlayerRotation || this.noclipEnabled)
+                {
+                    GameObject local = HeartopiaComplete.GetLocalPlayer();
+                    HeartopiaComplete.OverridePlayerTransformId = local != null ? local.transform.GetInstanceID() : 0;
+                }
+                else
+                {
+                    HeartopiaComplete.OverridePlayerTransformId = 0;
+                }
+
+                if (HeartopiaComplete.OverrideCameraPosition || this.mouseLookEnabled)
+                {
+                    Camera cam = Camera.main;
+                    HeartopiaComplete.OverrideCameraTransformId = cam != null ? cam.transform.GetInstanceID() : 0;
+                }
+                else
+                {
+                    HeartopiaComplete.OverrideCameraTransformId = 0;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        // Circuit-breaker states for the per-frame farm ticks (see FeatureBreakerState).
+        private FeatureBreakerState auraFarmBreaker;
+        private FeatureBreakerState homelandFarmBreaker;
+        private FeatureBreakerState birdNetFarmBreaker;
+        private FeatureBreakerState insectNetFarmBreaker;
+        private FeatureBreakerState puzzleNetBreaker;
+        private FeatureBreakerState resourceFarmBreaker;
+        private FeatureBreakerState autoFishingFarmBreaker;
+
+        // Removes the hot-path Harmony patches once nothing has needed them for a while, so the
+        // per-call prefix tax is not paid for the rest of the session after a one-off teleport.
+        private const float HotPathPatchIdleUnpatchSeconds = 60f;
+        private float positionOverridePatchLastNeededAt;
+        private float rotationOverridePatchLastNeededAt;
+        private float inputSimPatchLastNeededAt;
+
+        private void MaybeUnpatchIdleHotPathPatches(float now)
+        {
+            if (this.positionOverridePatched && now - this.positionOverridePatchLastNeededAt > HotPathPatchIdleUnpatchSeconds)
+            {
+                this.UnpatchPositionOverride();
+            }
+            if (this.rotationOverridePatched && now - this.rotationOverridePatchLastNeededAt > HotPathPatchIdleUnpatchSeconds)
+            {
+                this.UnpatchRotationOverride();
+            }
+            if (this.inputSimPatched && now - this.inputSimPatchLastNeededAt > HotPathPatchIdleUnpatchSeconds)
+            {
+                this.UnpatchInputSim();
+            }
+        }
+
+        private void UnpatchPositionOverride()
+        {
+            this.positionOverridePatched = false;
+            try
+            {
+                var harmony = HeartopiaComplete.harmonyInstance;
+                if (harmony == null) return;
+                MethodInfo posSetter = typeof(Transform).GetProperty("position").GetSetMethod();
+                MethodInfo posPrefix = typeof(TransformPositionPatch).GetMethod("SetPositionPrefix");
+                if (posSetter != null && posPrefix != null)
+                {
+                    harmony.Unpatch(posSetter, posPrefix);
+                }
+                ModLogger.Msg("[Patch] Position override removed (idle).");
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[Patch] Position override unpatch failed: " + ex.Message);
+            }
+        }
+
+        private void UnpatchRotationOverride()
+        {
+            this.rotationOverridePatched = false;
+            try
+            {
+                var harmony = HeartopiaComplete.harmonyInstance;
+                if (harmony == null) return;
+                MethodInfo rotSetter = typeof(Transform).GetProperty("rotation").GetSetMethod();
+                MethodInfo camRotPrefix = typeof(TransformRotationPatch).GetMethod("SetRotationPrefix");
+                MethodInfo playerRotPrefix = typeof(CharacterRotationPatch).GetMethod("SetRotationPrefix");
+                if (rotSetter != null && camRotPrefix != null)
+                {
+                    harmony.Unpatch(rotSetter, camRotPrefix);
+                }
+                if (rotSetter != null && playerRotPrefix != null)
+                {
+                    harmony.Unpatch(rotSetter, playerRotPrefix);
+                }
+                ModLogger.Msg("[Patch] Rotation override removed (idle).");
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[Patch] Rotation override unpatch failed: " + ex.Message);
+            }
+        }
+
+        private void UnpatchInputSim()
+        {
+            this.inputSimPatched = false;
+            try
+            {
+                var harmony = HeartopiaComplete.harmonyInstance;
+                if (harmony == null) return;
+
+                Action<string, Type[], Type> unpatchInputPostfix = (methodName, args, patchType) =>
+                {
+                    MethodInfo target = typeof(Input).GetMethod(methodName, args);
+                    MethodInfo patch = patchType.GetMethod("Postfix", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    if (target != null && patch != null)
+                    {
+                        harmony.Unpatch(target, patch);
+                    }
+                };
+
+                unpatchInputPostfix("GetKey", new Type[] { typeof(KeyCode) }, typeof(InputGetKeyPatch));
+                unpatchInputPostfix("GetKey", new Type[] { typeof(string) }, typeof(InputGetKeyStringPatch));
+                unpatchInputPostfix("GetKeyDown", new Type[] { typeof(KeyCode) }, typeof(InputGetKeyDownPatch));
+                unpatchInputPostfix("GetKeyDown", new Type[] { typeof(string) }, typeof(InputGetKeyDownStringPatch));
+                unpatchInputPostfix("GetKeyUp", new Type[] { typeof(KeyCode) }, typeof(InputGetKeyUpPatch));
+                unpatchInputPostfix("GetKeyUp", new Type[] { typeof(string) }, typeof(InputGetKeyUpStringPatch));
+
+                ModLogger.Msg("[Patch] Input simulation removed (idle).");
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[Patch] Input simulation unpatch failed: " + ex.Message);
             }
         }
 
@@ -59697,6 +59872,11 @@ namespace HeartopiaMod
             return string.Join(" ", parts);
         }
 
+        // INVARIANT: module instances are resolved by scanning Managers._moduleDic. Never route
+        // this through Managers.GetModule(Type) for a type that exists only on the Mono side:
+        // its internal Type.GetType on a no-Instance ViewModule hard-crashes the mono runtime
+        // (see docs/plans pad-build migration notes). PadBuild's GetModule(Type) path is the one
+        // vetted exception — it passes a Type object resolved from the same mono image.
         private bool TryResolveAuraMonoModule(string fullTypeName, out IntPtr moduleObj)
         {
             moduleObj = IntPtr.Zero;
@@ -64379,6 +64559,12 @@ namespace HeartopiaMod
         public static bool OverridePlayerRotation = false;
         public static Quaternion PlayerOverrideRot = Quaternion.identity;
         private int playerRotationFramesRemaining = 0;
+
+        // Transform.GetInstanceID of the hot-path patch targets. Refreshed once per frame in
+        // OnUpdate (and lazily by the prefixes when still 0) so the Transform setter prefixes
+        // compare ints instead of fetching gameObject.name (native call + string alloc) per set.
+        public static int OverridePlayerTransformId;
+        public static int OverrideCameraTransformId;
 
         // IMGUI Theme
         private bool themeInitialized = false;

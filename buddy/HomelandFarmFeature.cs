@@ -10436,6 +10436,14 @@ namespace HeartopiaMod
 
             this.HomelandFarmVerboseLog("AuraMono inflate step3d: inflate+compile OK.");
 
+            // Inflated GetComponents<T> must still take exactly 1 parameter (ref list); a
+            // mismatched method_inst would AV the process on invoke instead of throwing.
+            if (!AuraMonoMethodParamCountIs(inflatedMethod, 1))
+            {
+                this.HomelandFarmLog("AuraMono inflate: inflated method signature mismatch, refusing to invoke.");
+                return false;
+            }
+
             this.homelandFarmAuraInflatedGetComponentsMethodByComponentClass[componentClass] = inflatedMethod;
             return true;
         }

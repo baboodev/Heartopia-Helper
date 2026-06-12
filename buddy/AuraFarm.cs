@@ -602,6 +602,31 @@ namespace HeartopiaMod
             }
         }
 
+        // Sanity check before invoking an inflated generic method: a wrong method_inst yields a
+        // method whose invoke AVs the process rather than throwing managed — verify the signature
+        // still carries the expected parameter count first. Returns true when validation is
+        // impossible on this build (missing exports) so working paths are never blocked.
+        internal static bool AuraMonoMethodParamCountIs(IntPtr method, uint expected)
+        {
+            if (method == IntPtr.Zero)
+            {
+                return false;
+            }
+            if (auraMonoMethodSignature == null || auraMonoSignatureGetParamCount == null)
+            {
+                return true;
+            }
+            try
+            {
+                IntPtr sig = auraMonoMethodSignature(method);
+                return sig != IntPtr.Zero && auraMonoSignatureGetParamCount(sig) == expected;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         // Preferred invoke API for new code: explicit success flag + readable error, result is
         // always Zero on failure. Existing sites reach the same guard via the delegate binding.
         internal static bool TryAuraInvoke(IntPtr method, IntPtr obj, IntPtr args, out IntPtr result, out string error)

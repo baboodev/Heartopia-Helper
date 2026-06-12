@@ -4,11 +4,10 @@ using UnityEngine;
 
 namespace HeartopiaMod
 {
-    // Token: 0x02000006 RID: 6
-    [HarmonyPatch(typeof(Transform), "position", MethodType.Getter)]
+    // Installed manually on the Transform.position SETTER by EnsurePositionOverridePatched —
+    // no [HarmonyPatch] attribute on purpose, a PatchAll must never pick this up.
     public static class TransformPositionPatch
     {
-        // Token: 0x0600002C RID: 44 RVA: 0x00008344 File Offset: 0x00006544
 		public static bool SetPositionPrefix(Transform __instance, ref Vector3 value)
 		{
 			if (!HeartopiaComplete.OverridePlayerPosition && !HeartopiaComplete.OverrideCameraPosition)
@@ -17,25 +16,40 @@ namespace HeartopiaMod
 			}
 
 			// This prefix sits on a per-frame hot path inside native callers; an exception
-			// escaping it can take down the process, so never let one out.
+			// escaping it can take down the process, so never let one out. Targets are matched
+			// by Transform instance id (refreshed each frame in OnUpdate, filled lazily below
+			// for the same-frame enable case) — no gameObject.name string fetch per call.
 			try
 			{
-				bool flag = __instance == null || __instance.gameObject == null;
-				if (!flag)
+				if (__instance == null)
 				{
-					// Only override the local player's position (avoid affecting other players with the same name)
-					string gname = __instance.gameObject.name;
-					if (HeartopiaComplete.OverridePlayerPosition)
+					return true;
+				}
+				int id = __instance.GetInstanceID();
+				if (HeartopiaComplete.OverridePlayerPosition)
+				{
+					int playerId = HeartopiaComplete.OverridePlayerTransformId;
+					if (playerId == 0)
 					{
 						GameObject local = HeartopiaComplete.GetLocalPlayer();
-						bool flag2 = __instance.gameObject == local;
-						if (flag2)
-						{
-							value = HeartopiaComplete.OverridePosition;
-						}
+						playerId = local != null ? local.transform.GetInstanceID() : 0;
+						HeartopiaComplete.OverridePlayerTransformId = playerId;
 					}
-					bool flag3 = HeartopiaComplete.OverrideCameraPosition && gname == "Main Camera";
-					if (flag3)
+					if (playerId != 0 && id == playerId)
+					{
+						value = HeartopiaComplete.OverridePosition;
+					}
+				}
+				if (HeartopiaComplete.OverrideCameraPosition)
+				{
+					int cameraId = HeartopiaComplete.OverrideCameraTransformId;
+					if (cameraId == 0)
+					{
+						Camera cam = Camera.main;
+						cameraId = cam != null ? cam.transform.GetInstanceID() : 0;
+						HeartopiaComplete.OverrideCameraTransformId = cameraId;
+					}
+					if (cameraId != 0 && id == cameraId)
 					{
 						value = HeartopiaComplete.CameraOverridePos;
 					}

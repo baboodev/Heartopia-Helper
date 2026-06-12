@@ -4,11 +4,10 @@ using UnityEngine;
 
 namespace HeartopiaMod
 {
-    // Token: 0x02000007 RID: 7
-    [HarmonyPatch(typeof(Transform), "rotation", MethodType.Getter)]
+    // Installed manually on the Transform.rotation SETTER by EnsureRotationOverridePatched —
+    // no [HarmonyPatch] attribute on purpose, a PatchAll must never pick this up.
     public static class TransformRotationPatch
     {
-        // Token: 0x0600002D RID: 45 RVA: 0x000083D4 File Offset: 0x000065D4
 		public static bool SetRotationPrefix(Transform __instance, ref Quaternion value)
 		{
 			if (!HeartopiaComplete.OverrideCameraPosition)
@@ -17,16 +16,23 @@ namespace HeartopiaMod
 			}
 
 			// Hot-path prefix called from native code — an escaping exception is fatal.
+			// Camera matched by Transform instance id; see TransformPositionPatch.
 			try
 			{
-				bool flag = __instance == null || __instance.gameObject == null;
-				if (!flag)
+				if (__instance == null)
 				{
-					bool flag2 = HeartopiaComplete.OverrideCameraPosition && __instance.gameObject.name == "Main Camera";
-					if (flag2)
-					{
-						value = HeartopiaComplete.CameraOverrideRot;
-					}
+					return true;
+				}
+				int cameraId = HeartopiaComplete.OverrideCameraTransformId;
+				if (cameraId == 0)
+				{
+					Camera cam = Camera.main;
+					cameraId = cam != null ? cam.transform.GetInstanceID() : 0;
+					HeartopiaComplete.OverrideCameraTransformId = cameraId;
+				}
+				if (cameraId != 0 && __instance.GetInstanceID() == cameraId)
+				{
+					value = HeartopiaComplete.CameraOverrideRot;
 				}
 			}
 			catch

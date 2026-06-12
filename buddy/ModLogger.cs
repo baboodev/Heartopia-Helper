@@ -64,6 +64,60 @@ public static class ModLogger
     }
 }
 
+// Circuit breaker for per-frame feature ticks. A tick that throws repeatedly goes into a
+// cooldown instead of hammering (and log-spamming) every frame; after several cooldown cycles
+// in a row it is disabled for the session. One successful tick resets the whole state.
+// Usage (no allocations on the hot path):
+//   if (breaker.ShouldRun(now)) {
+//       try { Tick(); breaker.Success(); }
+//       catch (Exception ex) { breaker.Failure("Name", ex, now); }
+//   }
+public struct FeatureBreakerState
+{
+    private const int FailuresPerCooldown = 5;
+    private const float CooldownSeconds = 30f;
+    private const int CooldownCyclesUntilDisable = 5;
+
+    private int consecutiveFailures;
+    private int cooldownCycles;
+    private float retryAt;
+    private bool disabled;
+
+    public bool ShouldRun(float now) => !disabled && now >= retryAt;
+
+    public void Success()
+    {
+        consecutiveFailures = 0;
+        cooldownCycles = 0;
+    }
+
+    public void Failure(string name, System.Exception ex, float now)
+    {
+        consecutiveFailures++;
+        if (consecutiveFailures == 1)
+        {
+            ModLogger.Msg("[" + name + "] tick exception: " + ex.Message);
+        }
+        if (consecutiveFailures < FailuresPerCooldown)
+        {
+            return;
+        }
+
+        consecutiveFailures = 0;
+        cooldownCycles++;
+        if (cooldownCycles >= CooldownCyclesUntilDisable)
+        {
+            disabled = true;
+            ModLogger.Warning("[" + name + "] disabled for this session after repeated tick exceptions: " + ex.Message);
+        }
+        else
+        {
+            retryAt = now + CooldownSeconds;
+            ModLogger.Warning("[" + name + "] cooling down " + (int)CooldownSeconds + "s after repeated tick exceptions (cycle " + cooldownCycles + "/" + CooldownCyclesUntilDisable + ").");
+        }
+    }
+}
+
 // Last-resort exception guard for the loader entry points (Update/LateUpdate/OnGUI).
 // An exception escaping those callbacks travels through the IL2CPP/interop trampoline,
 // where it can abort the process or silently kill the rest of the frame's features,
