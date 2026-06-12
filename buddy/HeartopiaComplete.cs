@@ -2043,6 +2043,11 @@ namespace HeartopiaMod
             }
             
             this.ProcessNoclipMovementOnUpdate();
+
+            if (!string.IsNullOrEmpty(this.keyBindingActive))
+            {
+                this.TryCaptureSideMouseKeybindOnUpdate();
+            }
             
             // Check for keybinds (Only if not currently rebinding and not just assigned)
             if (string.IsNullOrEmpty(this.keyBindingActive) && Time.unscaledTime - this.keyBindAssignedAt >= 0.2f)
@@ -62880,7 +62885,7 @@ namespace HeartopiaMod
                 this.DrawExentriSectionPanel(capturePanel, accent, panelFill, panelLine);
                 GUIStyle centerStyle = new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
                 centerStyle.normal.textColor = new Color(this.uiTextR, this.uiTextG, this.uiTextB);
-                GUI.Label(new Rect(capturePanel.x + 12f, capturePanel.y + 18f, capturePanel.width - 24f, 20f), this.L("PRESS ANY KEY FOR"), centerStyle);
+                GUI.Label(new Rect(capturePanel.x + 12f, capturePanel.y + 18f, capturePanel.width - 24f, 20f), this.L("PRESS ANY KEY FOR:"), centerStyle);
                 centerStyle.normal.textColor = new Color(1f, 0.86f, 0.36f);
                 GUI.Label(new Rect(capturePanel.x + 12f, capturePanel.y + 42f, capturePanel.width - 24f, 24f), this.L(this.keyBindingActive).ToUpperInvariant(), centerStyle);
                 
@@ -62889,78 +62894,7 @@ namespace HeartopiaMod
                     this.keyBindingActive = "";
                 }
 
-                Event e = Event.current;
-                if (e.isKey && e.type == EventType.KeyDown)
-                {
-                    KeyCode newKey = e.keyCode;
-                    if (newKey != KeyCode.None)
-                    {
-                        string bindingLabel = this.keyBindingActive;
-                        if (newKey == KeyCode.Escape)
-                        {
-                            newKey = KeyCode.None;
-                        }
-                        switch (this.keyBindingActive)
-                        {
-                            case "Toggle Menu": this.keyToggleMenu = newKey; break;
-                            case "Toggle Radar": this.keyToggleRadar = newKey; break;
-                            case "Auto Foraging": this.keyAutoForaging = newKey; break;
-                            case "Aura Farm": this.keyAuraFarm = newKey; break;
-                            case "Water + Weed Radius": this.keyWaterWeedRadius = newKey; break;
-                            case "Auto Fish Farm (Auto Teleport)": this.keyAutoFishingTeleport = newKey; break;
-                            case "Auto Fishing (Teleport)": this.keyAutoFishingTeleport = newKey; break;
-                            case "Auto Fish (No Teleport)": this.keyAutoFish = newKey; break;
-                            case "Fish Shadow Net":
-                            case "Auto Fish Shadow Net": this.keyAutoFishShadowNet = newKey; break;
-                            case "Bypass UI": this.keyBypassUI = newKey; break;
-                            case "Disable All": this.keyDisableAll = newKey; break;
-                            case "Inspect Player": this.keyInspectPlayer = newKey; break;
-                            case "Inspect Move": this.keyInspectMove = newKey; break;
-                            case "Auto Repair": this.keyAutoRepair = newKey; break;
-                            case "Auto Join Friend": this.keyAutoJoinFriend = newKey; break;
-                            case "Auto Snow Sculpture": this.autoSnowHotkey = newKey; break;
-                            case "Noclip": this.keyNoclip = newKey; break;
-                            case "Camera Toggle": this.keyCameraToggle = newKey; break;
-                            case "Join Public": this.keyJoinPublic = newKey; break;
-                            case "Join My Town": this.keyJoinMyTown = newKey; break;
-                            case "Auto Eat": this.keyAutoEat = newKey; break;
-                            case "Use Bait": this.keyUseBait = newKey; break;
-                            case "Anti AFK": this.keyAntiAfk = newKey; break;
-                            case "Bypass Overlap": this.keyBypassOverlap = newKey; break;
-                            case "Bird Vacuum": this.keyBirdVacuum = newKey; break;
-                            case "Game Speed 1x": this.keyGameSpeed1x = newKey; break;
-                            case "Game Speed 2x": this.keyGameSpeed2x = newKey; break;
-                            case "Game Speed 5x": this.keyGameSpeed5x = newKey; break;
-                            case "Game Speed 10x": this.keyGameSpeed10x = newKey; break;
-                            case "Equip Axe": this.keyEquipAxe = newKey; break;
-                            case "Equip Net": this.keyEquipNet = newKey; break;
-                            case "Equip Rod": this.keyEquipRod = newKey; break;
-                            case "Equip Sprinkler": this.keyEquipSprinkler = newKey; break;
-                            case "Equip Bird Scanner": this.keyEquipBirdScanner = newKey; break;
-                            case "Equip Pad": this.keyEquipPad = newKey; break;
-                            case "Pad Confirm": this.keyPadConfirm = newKey; break;
-                            case "Pad Cancel": this.keyPadCancel = newKey; break;
-                            case "Pad Rotate": this.keyPadRotate = newKey; break;
-                            case "Pad Move": this.keyPadMove = newKey; break;
-                            case "Pad Delete": this.keyPadDelete = newKey; break;
-                            case "Auto Insect Farm": this.keyAutoInsectFarm = newKey; break;
-                            case "Auto Bird Farm": this.keyAutoBirdFarm = newKey; break;
-                            case "Mass Cook": this.keyMassCook = newKey; break;
-                            case "Auto Puzzle": this.keyAutoPuzzle = newKey; break;
-                            case "Auto Cat Play": this.keyAutoCatPlay = newKey; break;
-                            case "Auto Dog Train": this.keyAutoDogTrain = newKey; break;
-                            case "Auto Pet Wash": this.keyAutoPetWash = newKey; break;
-                            case "Feed All Cats": this.keyFeedAllCats = newKey; break;
-                            case "Feed All Dogs": this.keyFeedAllDogs = newKey; break;
-                            case "Spawn Bubble": this.keySpawnBubble = newKey; break;
-                        }
-                        this.keyBindingActive = "";
-                        this.keyBindAssignedAt = Time.unscaledTime;
-                        this.SaveKeybinds(false);
-                        string keyName = newKey == KeyCode.None ? "None" : newKey.ToString();
-                        this.AddMenuNotification(this.LF("{0}: {1}", this.L(bindingLabel), keyName), new Color(this.uiAccentR, this.uiAccentG, this.uiAccentB));
-                    }
-                }
+                this.TryCaptureKeybindFromEvent(Event.current);
                 return (float)num + 180f;
             }
 
@@ -64052,6 +63986,160 @@ namespace HeartopiaMod
             return true;
         }
 
+        private static string FormatKeybindLabel(KeyCode key)
+        {
+            switch (key)
+            {
+                case KeyCode.None:
+                    return "None";
+                case KeyCode.Mouse0:
+                    return "LMB";
+                case KeyCode.Mouse1:
+                    return "RMB";
+                case KeyCode.Mouse2:
+                    return "MMB";
+                case KeyCode.Mouse3:
+                    return "Back";
+                case KeyCode.Mouse4:
+                    return "Forward";
+                default:
+                    if (key >= KeyCode.Mouse5 && key <= KeyCode.Mouse6)
+                    {
+                        return "Mouse" + ((int)key - (int)KeyCode.Mouse0 + 1);
+                    }
+
+                    string text = key.ToString();
+                    if (text.StartsWith("Joystick", StringComparison.Ordinal))
+                    {
+                        return "Gamepad";
+                    }
+
+                    return text;
+            }
+        }
+
+        private void ApplyActiveKeybind(string bindingLabel, KeyCode newKey)
+        {
+            switch (bindingLabel)
+            {
+                case "Toggle Menu": this.keyToggleMenu = newKey; break;
+                case "Toggle Radar": this.keyToggleRadar = newKey; break;
+                case "Auto Foraging": this.keyAutoForaging = newKey; break;
+                case "Aura Farm": this.keyAuraFarm = newKey; break;
+                case "Water + Weed Radius": this.keyWaterWeedRadius = newKey; break;
+                case "Auto Fish Farm (Auto Teleport)": this.keyAutoFishingTeleport = newKey; break;
+                case "Auto Fishing (Teleport)": this.keyAutoFishingTeleport = newKey; break;
+                case "Auto Fish (No Teleport)": this.keyAutoFish = newKey; break;
+                case "Fish Shadow Net":
+                case "Auto Fish Shadow Net": this.keyAutoFishShadowNet = newKey; break;
+                case "Bypass UI": this.keyBypassUI = newKey; break;
+                case "Disable All": this.keyDisableAll = newKey; break;
+                case "Inspect Player": this.keyInspectPlayer = newKey; break;
+                case "Inspect Move": this.keyInspectMove = newKey; break;
+                case "Auto Repair": this.keyAutoRepair = newKey; break;
+                case "Auto Join Friend": this.keyAutoJoinFriend = newKey; break;
+                case "Auto Snow Sculpture": this.autoSnowHotkey = newKey; break;
+                case "Noclip": this.keyNoclip = newKey; break;
+                case "Camera Toggle": this.keyCameraToggle = newKey; break;
+                case "Join Public": this.keyJoinPublic = newKey; break;
+                case "Join My Town": this.keyJoinMyTown = newKey; break;
+                case "Auto Eat": this.keyAutoEat = newKey; break;
+                case "Use Bait": this.keyUseBait = newKey; break;
+                case "Anti AFK": this.keyAntiAfk = newKey; break;
+                case "Bypass Overlap": this.keyBypassOverlap = newKey; break;
+                case "Bird Vacuum": this.keyBirdVacuum = newKey; break;
+                case "Game Speed 1x": this.keyGameSpeed1x = newKey; break;
+                case "Game Speed 2x": this.keyGameSpeed2x = newKey; break;
+                case "Game Speed 5x": this.keyGameSpeed5x = newKey; break;
+                case "Game Speed 10x": this.keyGameSpeed10x = newKey; break;
+                case "Equip Axe": this.keyEquipAxe = newKey; break;
+                case "Equip Net": this.keyEquipNet = newKey; break;
+                case "Equip Rod": this.keyEquipRod = newKey; break;
+                case "Equip Sprinkler": this.keyEquipSprinkler = newKey; break;
+                case "Equip Bird Scanner": this.keyEquipBirdScanner = newKey; break;
+                case "Equip Pad": this.keyEquipPad = newKey; break;
+                case "Pad Confirm": this.keyPadConfirm = newKey; break;
+                case "Pad Cancel": this.keyPadCancel = newKey; break;
+                case "Pad Rotate": this.keyPadRotate = newKey; break;
+                case "Pad Move": this.keyPadMove = newKey; break;
+                case "Pad Delete": this.keyPadDelete = newKey; break;
+                case "Auto Insect Farm": this.keyAutoInsectFarm = newKey; break;
+                case "Auto Bird Farm": this.keyAutoBirdFarm = newKey; break;
+                case "Mass Cook": this.keyMassCook = newKey; break;
+                case "Auto Puzzle": this.keyAutoPuzzle = newKey; break;
+                case "Auto Cat Play": this.keyAutoCatPlay = newKey; break;
+                case "Auto Dog Train": this.keyAutoDogTrain = newKey; break;
+                case "Auto Pet Wash": this.keyAutoPetWash = newKey; break;
+                case "Feed All Cats": this.keyFeedAllCats = newKey; break;
+                case "Feed All Dogs": this.keyFeedAllDogs = newKey; break;
+                case "Spawn Bubble": this.keySpawnBubble = newKey; break;
+            }
+
+            this.keyBindingActive = "";
+            this.keyBindAssignedAt = Time.unscaledTime;
+            this.SaveKeybinds(false);
+            this.AddMenuNotification(
+                this.LF("{0}: {1}", this.L(bindingLabel), FormatKeybindLabel(newKey)),
+                new Color(this.uiAccentR, this.uiAccentG, this.uiAccentB));
+        }
+
+        private void TryCaptureSideMouseKeybindOnUpdate()
+        {
+            if (string.IsNullOrEmpty(this.keyBindingActive))
+            {
+                return;
+            }
+
+            for (int button = 3; button <= 6; button++)
+            {
+                KeyCode mouseKey = KeyCode.Mouse0 + button;
+                if (!Input.GetMouseButtonDown(button) && !Input.GetKeyDown(mouseKey))
+                {
+                    continue;
+                }
+
+                this.ApplyActiveKeybind(this.keyBindingActive, mouseKey);
+                return;
+            }
+        }
+
+        private bool TryCaptureKeybindFromEvent(Event e)
+        {
+            if (e == null || string.IsNullOrEmpty(this.keyBindingActive))
+            {
+                return false;
+            }
+
+            KeyCode newKey = KeyCode.None;
+            if (e.isKey && e.type == EventType.KeyDown)
+            {
+                newKey = e.keyCode;
+                if (newKey == KeyCode.None)
+                {
+                    return false;
+                }
+
+                if (newKey == KeyCode.Escape)
+                {
+                    newKey = KeyCode.None;
+                }
+
+                e.Use();
+            }
+            else if (e.type == EventType.MouseDown && e.button >= 0 && e.button <= 2)
+            {
+                newKey = KeyCode.Mouse0 + e.button;
+                e.Use();
+            }
+            else
+            {
+                return false;
+            }
+
+            this.ApplyActiveKeybind(this.keyBindingActive, newKey);
+            return true;
+        }
+
         private void DrawKeybindRow(ref int y, string label, ref KeyCode key)
         {
             // Allow long labels to wrap and keep the bind button readable.
@@ -64064,9 +64152,7 @@ namespace HeartopiaMod
 
             GUI.Label(new Rect(20f, (float)y, labelWidth, labelH), displayLabel, lblStyle);
 
-            string btnText = key.ToString();
-            // Shorten some long key names
-            if (btnText.StartsWith("Joystick")) btnText = "Gamepad";
+            string btnText = FormatKeybindLabel(key);
 
             // Keep button at fixed width to the right of label area
             float btnX = 160f;
@@ -64105,9 +64191,7 @@ namespace HeartopiaMod
 
             GUI.Label(new Rect(rowRect.x + 10f, rowRect.y + 1f, rowRect.width - 156f, rowRect.height - 2f), this.L(label), labelStyle);
 
-            string btnText = key.ToString();
-            if (btnText.StartsWith("Joystick")) btnText = "Gamepad";
-            if (key == KeyCode.None) btnText = "None";
+            string btnText = FormatKeybindLabel(key);
 
             Rect bindRect = new Rect(rowRect.xMax - 134f, rowRect.y + 3f, 124f, 22f);
             GUIStyle bindStyle = this.themeTopTabStyle ?? GUI.skin.button;

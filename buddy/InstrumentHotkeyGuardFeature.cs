@@ -84,6 +84,16 @@ namespace HeartopiaMod
             return instance != null && instance.IsInstrumentHotkeyConflict(key);
         }
 
+        private static bool IsMouseKeyCode(KeyCode key)
+        {
+            return key >= KeyCode.Mouse0 && key <= KeyCode.Mouse6;
+        }
+
+        private static int MouseKeyCodeToButtonIndex(KeyCode key)
+        {
+            return (int)key - (int)KeyCode.Mouse0;
+        }
+
         private bool TryGetModHotkeyDown(KeyCode key)
         {
             if (key == KeyCode.None)
@@ -95,6 +105,12 @@ namespace HeartopiaMod
             if (this.instrumentHotkeyBlockedKeys.Contains(key))
             {
                 return false;
+            }
+
+            if (IsMouseKeyCode(key))
+            {
+                int button = MouseKeyCodeToButtonIndex(key);
+                return Input.GetMouseButtonDown(button) || Input.GetKeyDown(key);
             }
 
             return Input.GetKeyDown(key);
