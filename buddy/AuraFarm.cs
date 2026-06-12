@@ -311,6 +311,19 @@ namespace HeartopiaMod
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate void MonoGcVoidDelegate();
 
+        // GC handles are the only reliable way to keep a MonoObject* alive across frames on
+        // this build (mono_gc_disable is unavailable): bdwgc does not move objects but does
+        // collect them once the game drops its last reference. Hold the uint handle, not the
+        // raw pointer, and re-read the target on every use.
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate uint MonoGcHandleNewDelegate(IntPtr obj, [MarshalAs(UnmanagedType.Bool)] bool pinned);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate IntPtr MonoGcHandleGetTargetDelegate(uint handle);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void MonoGcHandleFreeDelegate(uint handle);
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate IntPtr MonoClassGetElementClassDelegate(IntPtr klass);
 
@@ -402,6 +415,9 @@ namespace HeartopiaMod
         private static MonoClassGetRankDelegate auraMonoClassGetRank;
         private static MonoGcVoidDelegate auraMonoGcDisable;
         private static MonoGcVoidDelegate auraMonoGcEnable;
+        private static MonoGcHandleNewDelegate auraMonoGcHandleNew;
+        private static MonoGcHandleGetTargetDelegate auraMonoGcHandleGetTarget;
+        private static MonoGcHandleFreeDelegate auraMonoGcHandleFree;
         private static MonoClassGetElementClassDelegate auraMonoClassGetElementClass;
         private static MonoClassGetNameDelegate auraMonoClassGetName;
         private static MonoClassGetNamespaceDelegate auraMonoClassGetNamespace;
@@ -5569,6 +5585,9 @@ namespace HeartopiaMod
             auraMonoClassGetRank = this.GetAuraMonoExport<MonoClassGetRankDelegate>(monoModule, "mono_class_get_rank");
             auraMonoGcDisable = this.GetAuraMonoExport<MonoGcVoidDelegate>(monoModule, "mono_gc_disable");
             auraMonoGcEnable = this.GetAuraMonoExport<MonoGcVoidDelegate>(monoModule, "mono_gc_enable");
+            auraMonoGcHandleNew = this.GetAuraMonoExport<MonoGcHandleNewDelegate>(monoModule, "mono_gchandle_new");
+            auraMonoGcHandleGetTarget = this.GetAuraMonoExport<MonoGcHandleGetTargetDelegate>(monoModule, "mono_gchandle_get_target");
+            auraMonoGcHandleFree = this.GetAuraMonoExport<MonoGcHandleFreeDelegate>(monoModule, "mono_gchandle_free");
             auraMonoClassGetElementClass = this.GetAuraMonoExport<MonoClassGetElementClassDelegate>(monoModule, "mono_class_get_element_class");
             auraMonoClassGetName = this.GetAuraMonoExport<MonoClassGetNameDelegate>(monoModule, "mono_class_get_name");
             auraMonoClassGetNamespace = this.GetAuraMonoExport<MonoClassGetNamespaceDelegate>(monoModule, "mono_class_get_namespace");

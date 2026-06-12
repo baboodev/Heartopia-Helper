@@ -16,22 +16,23 @@ namespace HeartopiaMod
 				return true;
 			}
 
-			bool flag = __instance == null || __instance.gameObject == null;
-			bool result;
-			if (flag)
-            {
-                result = true;
-            }
-            else
-            {
-                bool flag2 = HeartopiaComplete.OverrideCameraPosition && __instance.gameObject.name == "Main Camera";
-                if (flag2)
-                {
-                    value = HeartopiaComplete.CameraOverrideRot;
-                }
-                result = true;
-            }
-            return result;
+			// Hot-path prefix called from native code — an escaping exception is fatal.
+			try
+			{
+				bool flag = __instance == null || __instance.gameObject == null;
+				if (!flag)
+				{
+					bool flag2 = HeartopiaComplete.OverrideCameraPosition && __instance.gameObject.name == "Main Camera";
+					if (flag2)
+					{
+						value = HeartopiaComplete.CameraOverrideRot;
+					}
+				}
+			}
+			catch
+			{
+			}
+			return true;
         }
     }
 }

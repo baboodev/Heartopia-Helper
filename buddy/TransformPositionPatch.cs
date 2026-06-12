@@ -16,33 +16,35 @@ namespace HeartopiaMod
 				return true;
 			}
 
-			bool flag = __instance == null || __instance.gameObject == null;
-			bool result;
-			if (flag)
+			// This prefix sits on a per-frame hot path inside native callers; an exception
+			// escaping it can take down the process, so never let one out.
+			try
 			{
-				result = true;
-            }
-			else
-			{
-				// Only override the local player's position (avoid affecting other players with the same name)
-				string gname = __instance.gameObject.name;
-				if (HeartopiaComplete.OverridePlayerPosition)
+				bool flag = __instance == null || __instance.gameObject == null;
+				if (!flag)
 				{
-					GameObject local = HeartopiaComplete.GetLocalPlayer();
-					bool flag2 = __instance.gameObject == local;
-					if (flag2)
+					// Only override the local player's position (avoid affecting other players with the same name)
+					string gname = __instance.gameObject.name;
+					if (HeartopiaComplete.OverridePlayerPosition)
 					{
-						value = HeartopiaComplete.OverridePosition;
+						GameObject local = HeartopiaComplete.GetLocalPlayer();
+						bool flag2 = __instance.gameObject == local;
+						if (flag2)
+						{
+							value = HeartopiaComplete.OverridePosition;
+						}
+					}
+					bool flag3 = HeartopiaComplete.OverrideCameraPosition && gname == "Main Camera";
+					if (flag3)
+					{
+						value = HeartopiaComplete.CameraOverridePos;
 					}
 				}
-				bool flag3 = HeartopiaComplete.OverrideCameraPosition && gname == "Main Camera";
-				if (flag3)
-				{
-                    value = HeartopiaComplete.CameraOverridePos;
-                }
-                result = true;
-            }
-            return result;
+			}
+			catch
+			{
+			}
+			return true;
         }
     }
 }

@@ -14,13 +14,20 @@ namespace HeartopiaMod
                 return true;
             }
 
-            if (__instance == null || __instance.gameObject == null) return true;
-
-            // Override player character rotation
-            if (__instance.gameObject.name == "p_player_skeleton(Clone)")
+            // Hot-path prefix called from native code — an escaping exception is fatal.
+            try
             {
-                // Replace the value being set with our override rotation
-                value = HeartopiaComplete.PlayerOverrideRot;
+                if (__instance == null || __instance.gameObject == null) return true;
+
+                // Override player character rotation
+                if (__instance.gameObject.name == "p_player_skeleton(Clone)")
+                {
+                    // Replace the value being set with our override rotation
+                    value = HeartopiaComplete.PlayerOverrideRot;
+                }
+            }
+            catch
+            {
             }
 
             return true; // Continue with setter using our modified value

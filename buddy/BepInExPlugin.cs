@@ -31,17 +31,36 @@ namespace HeartopiaMod
 
         private void Awake()
         {
-            ModCoroutines.SetHost(this);
-            _mod = new HeartopiaComplete();
-            _mod.OnInitializeMelon();
-            ModLogger.Msg("HeartopiaBehaviour Awake — Update/OnGUI active on BepInEx manager.");
+            try
+            {
+                ModCoroutines.SetHost(this);
+                _mod = new HeartopiaComplete();
+                _mod.OnInitializeMelon();
+                ModLogger.Msg("HeartopiaBehaviour Awake — Update/OnGUI active on BepInEx manager.");
+            }
+            catch (Exception ex)
+            {
+                ModEntryGuard.Report("Awake", ex);
+            }
         }
 
-        private void Update() => _mod?.OnUpdate();
+        private void Update()
+        {
+            try { _mod?.OnUpdate(); }
+            catch (Exception ex) { ModEntryGuard.Report("Update", ex); }
+        }
 
-        private void LateUpdate() => _mod?.OnLateUpdate();
+        private void LateUpdate()
+        {
+            try { _mod?.OnLateUpdate(); }
+            catch (Exception ex) { ModEntryGuard.Report("LateUpdate", ex); }
+        }
 
-        private void OnGUI() => _mod?.OnGUI();
+        private void OnGUI()
+        {
+            try { _mod?.OnGUI(); }
+            catch (Exception ex) { ModEntryGuard.Report("OnGUI", ex); }
+        }
 
         private void OnDestroy()
         {

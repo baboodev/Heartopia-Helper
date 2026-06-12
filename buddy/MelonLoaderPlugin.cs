@@ -16,11 +16,23 @@ namespace HeartopiaMod
             _mod.OnInitializeMelon();
         }
 
-        public override void OnLateUpdate() => _mod?.OnLateUpdate();
+        public override void OnLateUpdate()
+        {
+            try { _mod?.OnLateUpdate(); }
+            catch (System.Exception ex) { ModEntryGuard.Report("OnLateUpdate", ex); }
+        }
 
-        public override void OnUpdate() => _mod?.OnUpdate();
+        public override void OnUpdate()
+        {
+            try { _mod?.OnUpdate(); }
+            catch (System.Exception ex) { ModEntryGuard.Report("OnUpdate", ex); }
+        }
 
-        public override void OnGUI() => _mod?.OnGUI();
+        public override void OnGUI()
+        {
+            try { _mod?.OnGUI(); }
+            catch (System.Exception ex) { ModEntryGuard.Report("OnGUI", ex); }
+        }
 
         public override void OnDeinitializeMelon() => _mod?.OnDeinitializeMelon();
     }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 #if MELONLOADER
@@ -60,5 +61,37 @@ public static class ModLogger
         _log?.LogWarning(message);
         WriteFile("WARN", message);
 #endif
+    }
+}
+
+// Last-resort exception guard for the loader entry points (Update/LateUpdate/OnGUI).
+// An exception escaping those callbacks travels through the IL2CPP/interop trampoline,
+// where it can abort the process or silently kill the rest of the frame's features,
+// so callers catch at the boundary and report here. Reports are throttled per
+// site+exception so a fault that fires every frame cannot flood the log.
+public static class ModEntryGuard
+{
+    private const int ThrottleMs = 5000;
+    private static readonly Dictionary<int, int> _lastReportTick = new Dictionary<int, int>();
+
+    public static void Report(string site, Exception ex)
+    {
+        try
+        {
+            int key = (site?.GetHashCode() ?? 0) ^ ((ex.GetType().GetHashCode() * 397) ^ (ex.Message?.GetHashCode() ?? 0));
+            int now = Environment.TickCount;
+            lock (_lastReportTick)
+            {
+                if (_lastReportTick.TryGetValue(key, out int last) && unchecked(now - last) < ThrottleMs)
+                {
+                    return;
+                }
+                _lastReportTick[key] = now;
+            }
+            ModLogger.Warning("[Guard] Unhandled exception in " + site + ": " + ex);
+        }
+        catch
+        {
+        }
     }
 }
