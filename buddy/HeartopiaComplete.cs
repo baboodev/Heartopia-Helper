@@ -813,7 +813,21 @@ namespace HeartopiaMod
             public int Count;
             public string Descriptor = "";
             public object ManagedItem;
+            // MonoItem is only valid while MonoItemPin (pinned gchandle) roots it: the snapshot
+            // outlives the building tick, and SGen moves/collects unrooted objects — reading a
+            // stale MonoItem hit mono's "GC filler class" fatal assert (the recurring crash).
             public IntPtr MonoItem;
+            public uint MonoItemPin;
+        }
+
+        // The only sanctioned way to drop the snapshot list — releases the per-item GC pins.
+        private void ClearDirectBackpackRuntimeItems()
+        {
+            for (int i = 0; i < this.directBackpackRuntimeItems.Count; i++)
+            {
+                AuraMonoPinFree(this.directBackpackRuntimeItems[i].MonoItemPin);
+            }
+            this.directBackpackRuntimeItems.Clear();
         }
 
         // --- TARGET PATHS FOR PATROL ACTIONS ---
@@ -8502,12 +8516,25 @@ namespace HeartopiaMod
                     return false;
                 }
 
+                // Scannables are raw MonoObject*; the loop below reads members of each (boxing =
+                // mono-side allocations), and SGen can move not-yet-processed items meanwhile.
+                // Pin every item at enumeration time, release after the loop scalarizes them.
                 List<IntPtr> scannables = this.birdFarmAuraPhotoModeScannablesBuffer;
+                List<uint> scannablePins = this.birdFarmAuraPhotoModeScannablePins;
                 scannables.Clear();
-                if (!this.TryEnumerateAuraMonoCollectionItems(birdListObj, scannables) || scannables.Count == 0)
+                FreeAuraMonoPins(scannablePins);
+                int noEntityCount = 0;
+                int noNetIdCount = 0;
+                int filteredCount = 0;
+                int noStaticIdCount = 0;
+                int outOfRangeCount = 0;
+                int unresolvedActionCount = 0;
+                try
+                {
+                if (!this.TryEnumerateAuraMonoCollectionItems(birdListObj, scannables, scannablePins) || scannables.Count == 0)
                 {
                     if (!this.TryRefreshAuraMonoBirdPhotoModeComponents(photoModeObj)
-                        || !this.TryEnumerateAuraMonoCollectionItems(birdListObj, scannables)
+                        || !this.TryEnumerateAuraMonoCollectionItems(birdListObj, scannables, scannablePins)
                         || scannables.Count == 0)
                     {
                         status = "Aura PhotoMode bird list empty";
@@ -8525,12 +8552,6 @@ namespace HeartopiaMod
                 this.cachedBirdFarmAuraMoveTolerance = 3f;
                 this.cachedBirdFarmAuraEntityCount = scannables.Count;
                 this._auraMonoBirdRadarPositions.Clear();
-                int noEntityCount = 0;
-                int noNetIdCount = 0;
-                int filteredCount = 0;
-                int noStaticIdCount = 0;
-                int outOfRangeCount = 0;
-                int unresolvedActionCount = 0;
                 for (int i = 0; i < scannables.Count; i++)
                 {
                     IntPtr scannableObj = scannables[i];
@@ -8644,6 +8665,12 @@ namespace HeartopiaMod
                         IsPerchBird = candidateIsPerchBird
                     });
                     this._auraMonoBirdRadarPositions.Add(candidatePosition);
+                }
+                }
+                finally
+                {
+                    // Candidates are fully scalarized above — the raw pointers are dead now.
+                    FreeAuraMonoPins(scannablePins);
                 }
 
                 if (this.cachedBirdFarmAuraCandidates.Count == 0)
@@ -11134,11 +11161,26 @@ namespace HeartopiaMod
             return found;
         }
 
-        private bool TryEnumerateAuraMonoCollectionItems(IntPtr collectionObj, List<IntPtr> output)
+        // pins: optional parallel list of pinned GC handles, one per output item, pinned at the
+        // moment each item is obtained. REQUIRED whenever the caller reads members of the items
+        // afterwards: SGen is a moving collector, and any mono-side allocation between obtaining
+        // a raw MonoObject* and using it (incl. our own boxed MoveNext/member reads) can move the
+        // object, leaving the pointer on a GC filler ("mono_class_get_flags: unexpected GC filler
+        // class" fatal assert — the recurring AFK crash). Free via FreeAuraMonoPins.
+        private bool TryEnumerateAuraMonoCollectionItems(IntPtr collectionObj, List<IntPtr> output, List<uint> pins = null)
         {
             if (collectionObj == IntPtr.Zero || output == null || auraMonoObjectGetClass == null)
             {
                 return false;
+            }
+
+            void AddEnumeratedItem(IntPtr itemPtr)
+            {
+                output.Add(itemPtr);
+                if (pins != null)
+                {
+                    pins.Add(AuraMonoPinNew(itemPtr));
+                }
             }
 
             IntPtr collectionClass = auraMonoObjectGetClass(collectionObj);
@@ -11169,7 +11211,7 @@ namespace HeartopiaMod
                             IntPtr itemObj = Marshal.ReadIntPtr(arrayBase, i * IntPtr.Size);
                             if (itemObj != IntPtr.Zero)
                             {
-                                output.Add(itemObj);
+                                AddEnumeratedItem(itemObj);
                             }
                         }
 
@@ -11213,7 +11255,7 @@ namespace HeartopiaMod
                         IntPtr itemObj = auraMonoRuntimeInvoke(getItemMethod, collectionObj, (IntPtr)args, ref exc);
                         if (exc == IntPtr.Zero && itemObj != IntPtr.Zero)
                         {
-                            output.Add(itemObj);
+                            AddEnumeratedItem(itemObj);
                         }
                     }
                 }
@@ -11237,11 +11279,20 @@ namespace HeartopiaMod
                 // from MoveNext mid-walk. Retry once with a fresh enumerator instead of silently
                 // returning a partial result every frame.
                 int baselineCount = output.Count;
+                int pinsBaseline = pins != null ? pins.Count : 0;
                 for (int attempt = 0; attempt < 2; attempt++)
                 {
                     if (output.Count > baselineCount)
                     {
                         output.RemoveRange(baselineCount, output.Count - baselineCount);
+                        if (pins != null && pins.Count > pinsBaseline)
+                        {
+                            for (int k = pinsBaseline; k < pins.Count; k++)
+                            {
+                                AuraMonoPinFree(pins[k]);
+                            }
+                            pins.RemoveRange(pinsBaseline, pins.Count - pinsBaseline);
+                        }
                     }
 
                     IntPtr exc = IntPtr.Zero;
@@ -11306,7 +11357,7 @@ namespace HeartopiaMod
                         IntPtr currentObj = auraMonoRuntimeInvoke(getCurrentMethod, enumeratorObj, IntPtr.Zero, ref exc);
                         if (exc == IntPtr.Zero && currentObj != IntPtr.Zero)
                         {
-                            output.Add(currentObj);
+                            AddEnumeratedItem(currentObj);
                         }
 
                         safety++;
@@ -11328,7 +11379,7 @@ namespace HeartopiaMod
             {
                 if (this.TryGetMonoObjectMember(collectionObj, memberName, out IntPtr nested) && nested != IntPtr.Zero && nested != collectionObj)
                 {
-                    if (this.TryEnumerateAuraMonoCollectionItems(nested, output))
+                    if (this.TryEnumerateAuraMonoCollectionItems(nested, output, pins))
                     {
                         return output.Count > 0;
                     }
@@ -11347,7 +11398,7 @@ namespace HeartopiaMod
                 IntPtr nested = auraMonoRuntimeInvoke(methodPtr, collectionObj, IntPtr.Zero, ref exc);
                 if (exc == IntPtr.Zero && nested != IntPtr.Zero && nested != collectionObj)
                 {
-                    if (this.TryEnumerateAuraMonoCollectionItems(nested, output))
+                    if (this.TryEnumerateAuraMonoCollectionItems(nested, output, pins))
                     {
                         return output.Count > 0;
                     }
@@ -11371,7 +11422,7 @@ namespace HeartopiaMod
                         IntPtr valueObj = auraMonoRuntimeInvoke(getValueMethod, nodeObj, IntPtr.Zero, ref exc);
                         if (exc == IntPtr.Zero && valueObj != IntPtr.Zero)
                         {
-                            output.Add(valueObj);
+                            AddEnumeratedItem(valueObj);
                         }
 
                         exc = IntPtr.Zero;
@@ -53418,7 +53469,7 @@ namespace HeartopiaMod
         {
             this.directBackpackRuntimeSnapshotAt = -999f;
             this.directBackpackRuntimeSnapshotSource = "";
-            this.directBackpackRuntimeItems.Clear();
+            this.ClearDirectBackpackRuntimeItems();
             this.ClearCachedRepairKit();
             this.ClearCachedFood();
         }
@@ -58870,7 +58921,7 @@ namespace HeartopiaMod
                 return true;
             }
 
-            this.directBackpackRuntimeItems.Clear();
+            this.ClearDirectBackpackRuntimeItems();
             this.directBackpackRuntimeSnapshotSource = "";
             if (this.TryBuildDirectBackpackRuntimeSnapshotManaged())
             {
@@ -58880,7 +58931,7 @@ namespace HeartopiaMod
                 return true;
             }
 
-            this.directBackpackRuntimeItems.Clear();
+            this.ClearDirectBackpackRuntimeItems();
             if (DirectBackpackUnsafeAuraMonoFallbackEnabled && this.TryBuildDirectBackpackRuntimeSnapshotAuraMono())
             {
                 this.directBackpackRuntimeSnapshotAt = now;
@@ -58983,37 +59034,58 @@ namespace HeartopiaMod
                     return false;
                 }
 
+                // Pin every enumerated item the moment it is obtained: the member reads below box
+                // values (mono-side allocations), which can trigger a moving SGen collection that
+                // relocates the not-yet-processed items in this list. Pins for accepted entries
+                // are transferred into the snapshot (freed by ClearDirectBackpackRuntimeItems);
+                // pins for skipped items are freed here.
                 List<IntPtr> items = new List<IntPtr>();
-                if (!this.TryEnumerateAuraMonoCollectionItems(itemListObj, items) || items.Count == 0)
+                List<uint> itemPins = new List<uint>();
+                bool enumerated = this.TryEnumerateAuraMonoCollectionItems(itemListObj, items, itemPins);
+                try
                 {
-                    return false;
-                }
-
-                foreach (IntPtr itemObj in items)
-                {
-                    if (itemObj == IntPtr.Zero)
+                    if (!enumerated || items.Count == 0)
                     {
-                        continue;
+                        return false;
                     }
 
-                    if (!this.TryGetDirectBackpackItemNetId(itemObj, out uint itemNetId) || itemNetId == 0U)
+                    for (int i = 0; i < items.Count; i++)
                     {
-                        continue;
+                        IntPtr itemObj = items[i];
+                        uint itemPin = i < itemPins.Count ? itemPins[i] : 0U;
+                        if (itemObj == IntPtr.Zero)
+                        {
+                            continue;
+                        }
+
+                        if (!this.TryGetDirectBackpackItemNetId(itemObj, out uint itemNetId) || itemNetId == 0U)
+                        {
+                            continue;
+                        }
+
+                        DirectBackpackRuntimeItem entry = new DirectBackpackRuntimeItem
+                        {
+                            NetId = itemNetId,
+                            Descriptor = this.GetDirectBackpackItemDescriptor(itemObj).ToLowerInvariant(),
+                            MonoItem = itemObj,
+                            MonoItemPin = itemPin
+                        };
+                        if (i < itemPins.Count)
+                        {
+                            itemPins[i] = 0U; // ownership moved into the snapshot entry
+                        }
+                        this.TryGetDirectBackpackItemStaticId(itemObj, out entry.StaticId);
+                        this.TryGetDirectBackpackItemEntityType(itemObj, out entry.EntityType);
+                        this.TryGetDirectBackpackItemCount(itemObj, out entry.Count);
+                        this.directBackpackRuntimeItems.Add(entry);
                     }
 
-                    DirectBackpackRuntimeItem entry = new DirectBackpackRuntimeItem
-                    {
-                        NetId = itemNetId,
-                        Descriptor = this.GetDirectBackpackItemDescriptor(itemObj).ToLowerInvariant(),
-                        MonoItem = itemObj
-                    };
-                    this.TryGetDirectBackpackItemStaticId(itemObj, out entry.StaticId);
-                    this.TryGetDirectBackpackItemEntityType(itemObj, out entry.EntityType);
-                    this.TryGetDirectBackpackItemCount(itemObj, out entry.Count);
-                    this.directBackpackRuntimeItems.Add(entry);
+                    return this.directBackpackRuntimeItems.Count > 0;
                 }
-
-                return this.directBackpackRuntimeItems.Count > 0;
+                finally
+                {
+                    FreeAuraMonoPins(itemPins); // releases only the pins not transferred above
+                }
             }
             catch
             {
@@ -65784,6 +65856,7 @@ namespace HeartopiaMod
         private bool birdFarmSpamMaxPhotoModeActive = false;
         private readonly List<BirdFarmAuraCandidate> cachedBirdFarmAuraCandidates = new List<BirdFarmAuraCandidate>();
         private readonly List<IntPtr> birdFarmAuraPhotoModeScannablesBuffer = new List<IntPtr>(64);
+        private readonly List<uint> birdFarmAuraPhotoModeScannablePins = new List<uint>(64);
         private readonly HashSet<uint> birdFarmAuraPhotoModeSeenNetIds = new HashSet<uint>();
         private readonly List<IntPtr> birdFarmAuraComponentBuffer = new List<IntPtr>(64);
         private readonly List<IntPtr> birdFarmAuraLevelEntityComponentsBuffer = new List<IntPtr>(64);

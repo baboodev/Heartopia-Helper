@@ -539,6 +539,19 @@ namespace HeartopiaMod
             catch { }
         }
 
+        internal static void FreeAuraMonoPins(List<uint> pins)
+        {
+            if (pins == null)
+            {
+                return;
+            }
+            for (int i = 0; i < pins.Count; i++)
+            {
+                AuraMonoPinFree(pins[i]);
+            }
+            pins.Clear();
+        }
+
         // ---- AuraMono invoke guard ------------------------------------------------------------
         // Every call site in the mod invokes through the auraMonoRuntimeInvoke delegate, which is
         // bound to this method rather than to the raw mono_runtime_invoke export. Guarantees:
