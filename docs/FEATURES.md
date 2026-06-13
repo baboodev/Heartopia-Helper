@@ -61,6 +61,7 @@ Tab index **1** is unused in the main tab bar (historical gap).
 | Daily Quests | Auto-submit item delivery orders (CanSubmit) |
 | Homeland Farm | Crop-box farming: auto farm, water/weed/harvest/sow/fertilize in radius, seed/fertilizer selection |
 | Pictures | Decrypt / re-encrypt `ScreenCapture` cache (Photo, Draw, …). Draw files get a color preview via game `ColorLut`; index maps kept in `Draw/.index/` |
+| Extras | Ice skating: network "Perfect Ice Skating" sequences (`IceSkatingSequenceFeature`) + real-time **Auto Ice Skating** bot (`AutoIceSkatingFeature`) |
 
 Inventory scan / sort / filter rules for these (and Auto Sell, Bag transfer, pets): **[BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md)**.
 
@@ -605,6 +606,73 @@ Caps still apply as a safety bound on the fallback walk: the inspect cap and glo
 
 ---
 
+## New Features — Extras (Ice Skating)
+
+The **Extras** sub-tab (`newFeaturesSubTab == 4`) hosts two independent ice-skating tools, drawn top → bottom by `DrawIceSkatingExtrasTab` (`IceSkatingSequenceFeature.cs`), which renders the network-sequence buttons and then calls `DrawExtraTab` (`AutoIceSkatingFeature.cs`) underneath:
+
+1. **Perfect Ice Skating** (network sequences) — `IceSkatingSequenceFeature.cs`.
+2. **Auto Ice Skating** (real-time bot) — `AutoIceSkatingFeature.cs`.
+
+### Perfect Ice Skating (network sequences)
+
+Server-command driven runs that don't require you to be skating in real time:
+
+| Button | Action |
+|--------|--------|
+| Challenge (5 perfect, 1500) | Runs a scripted challenge sequence aiming for a perfect score (~1500). `Runs` field sets repetitions. |
+| Perfect Drill | Repeated perfect-action drill. `Runs` field sets repetitions. |
+
+A run count field (`DrawIceSkatingRunCountField`, clamped to `IceSkatingSequenceMaxRunCount`) sits beside each button. Only one sequence runs at a time (`iceSkatingSequenceCoroutine` gate). Loader log tag: `[IceSkatingSeq]`.
+
+### Auto Ice Skating (real-time bot)
+
+`AutoIceSkatingFeature.cs` — a `partial class HeartopiaComplete` split. Watches the local player's `GameSkateMode` each frame and **chains skate tricks automatically while you still control movement**. Toggle it on the Extras tab or via the **Auto Ice Skating** hotkey (Settings → Keybinds → PLAYER, default unbound).
+
+**Type resolution.** Managed reflection is tried first; if the managed types are absent (the BepInEx IL2CPP build), it falls back to the **AuraMono** native path (`mono_runtime_invoke`). Both execution paths are kept in full parity. Resolved surfaces: `LocalPlayerComponent.GetGameMode<GameSkateMode>` (or `Character.GetMode<…>`), `GameSkateMode` (`SkillTrigger`, `CanTriggerUltimate`, `CalculateSpeedRate`, `IsReceiver`, `GetRatioInConfiguredPhase`, `actived`, `Energy`, `SkateSkills`, `UltimateSkill`, `_currentCastAction`, `_skateActions`, `ChallengeInfo`), and `TableData` (`GetSkateAction`, `GetSkateActionType`, `GetSkateActionState`, `GetPairSkateUltimate`). Resolution retries every 5 s until the player enters the rink; a circuit breaker disables the tick after repeated exceptions.
+
+**Decision logic per frame** (`TickAutoIceSkating` / `TickAutoIceSkatingAura`):
+
+1. **Not skating / inactive / pair-receiver** → idle. Pair *receiver* is manual-only (the partner drives). After entering the ice there is a short warm-up, and at challenge start a 3 s countdown is skipped.
+2. **Performing an action** → first try an ultimate (see below); otherwise honour the **Perfect move** setting.
+3. **Idle (no action playing)** → try an ultimate, else pick and trigger the next simple move.
+
+**Simple-move selection** (`PickAutoIceSkatingBestSkill`): for each skill in the current tree it reads whether the action is **new** (challenge novelty bonus, `ChallengeData.IsNewAction`) and its **duration** (sum of phase spans from `TableSkateActionState.phase`). Ranking:
+
+- **Prefer new move** on (default): new actions outrank used ones; ties broken by shortest duration.
+- **Prefer new move** off: ranked purely by shortest duration.
+
+**Perfect-move timing** (`TryAutoIceSkatingTryPerfectInterrupt*`):
+
+- **Perfect move** on (default): the next move is triggered inside the perfect window (`GetRatioInConfiguredPhase` over the action's `prefectPhase`), so each chained trick scores its perfect bonus.
+- **Perfect move** off: the next move is chained **as soon as the game allows an interrupt** (the game's `SkillTrigger` still gates blend time / non-interruptible phases) — faster chaining, no waiting for perfect.
+
+**Ultimate selection** (`TryAutoIceSkatingSelectUltimate*`): scans the skill tree, resolves each branch's ultimate via `GetSkateActionType(actionType).ultimateActionId`, scores it, and picks the **shortest ultimate whose final score ≥ the Ultimate-cost slider**. Energy gate:
+
+- **Only x2 ultimate** on (default): an ultimate is cast only at energy tier ≥ x2 (≥ 200 energy).
+- **Only x2 ultimate** off: tier x1 (≥ 100) is allowed.
+- **Last 30s ultimate** on (default): when the challenge timer drops below 30 s, the gate falls to x1 regardless of the above — spend stored energy before it's wasted at time-up. The score floor (slider) still applies.
+
+Ultimate scoring mirrors the game's `GameSkateMode.SettleActionEnergy` / `CalculateBaseScore`: `final = (score + bonus·if-new) × (1 + prefectScoreRatio) × speedRate × repeat-decay`, where `speedRate` is 0.5–2.0 from `CalculateSpeedRate()` (your real speed) and pair skates override score/bonus via `TablePairSkateUltimate`. Keep your speed high for the ×2 multiplier. The scan result is cached briefly (≈0.35 s) keyed by the skill-set hash.
+
+**Controls** (Extras tab, under the network buttons):
+
+| Control | Default | Meaning |
+|---------|---------|---------|
+| Auto Ice Skating (toggle) | off | Master enable. |
+| Ultimate cost (min score) — slider | 900 | Minimum final score an ultimate must reach to be cast. Range 0–2000, step 50. |
+| Only x2 ultimate (skip x1) | on | Require energy tier x2 for ultimates. |
+| Last 30s ultimate | on | Allow x1 ultimate when challenge timer < 30 s. |
+| Perfect move | on | Off → chain moves as soon as available, not waiting for the perfect window. |
+| Prefer new move | on | Off → pick simple moves purely by shortest duration. |
+
+All controls and the hotkey are **persisted** in the keybind config (`KeybindConfigData`); defaults come from field initializers, so configs predating this feature upgrade to on / 900.
+
+**Debug logging.** `MasterLogAutoIceSkating` (top of `HeartopiaComplete.cs`, default `false`). When enabled, every trigger and every ultimate skip logs the full property dump of the action(s) — `id type dur score bonus new prefScore energy prefEnergy iconTip pair ult` — and selection logs list each candidate the same way, so you can see exactly how moves differ (duration, score, bonuses) and why an ultimate was skipped (`below-min` / `ok`).
+
+**Crash-hardening.** `GameSkateMode.ChallengeInfo` is a **struct** (`ChallengeData`) read raw into a stack buffer via `mono_field_get_value`. `mono_field_get_offset` is boxed-relative (includes the 16-byte object header), so the Aura path subtracts `2 * IntPtr.Size` for `UsedActions` / `Timestamp` / `Duration`; a missing subtraction read `Timestamp` as a fake pointer and hard-crashed mono at challenge start. Pointers read from the raw buffer are also alignment/`>= 0x10000` checked before any `mono_object_get_class` (native AVs are uncatchable). See `memory/auramono-struct-field-offsets.md`.
+
+---
+
 ## Settings Tab
 
 Sections typically include:
@@ -633,7 +701,7 @@ All default to **KeyCode.None** except menu toggle. Grouped as in Settings → K
 |---------|----------|
 | CORE | Toggle Menu (**Insert**), Toggle Radar, Bypass UI, Disable All, Inspect Player, Inspect Move |
 | AUTOMATION | Auto Foraging, Aura Farm, Water + Weed Radius, Auto Insect Farm, Auto Bird Farm, Fish Shadow Net, Mass Cook, Auto Puzzle, Auto Cat Play, Auto Dog Train, Auto Pet Wash, Feed All Cats, Feed All Dogs, Auto Snow Sculpture, Bird Vacuum, Spawn Bubble, Auto Repair, Auto Eat |
-| PLAYER | Noclip, Camera Toggle, Join My Town, Anti AFK, Bypass Overlap |
+| PLAYER | Noclip, Camera Toggle, Auto Ice Skating, Join My Town, Anti AFK, Bypass Overlap |
 | SPEED & TOOLS | Game Speed 1×/2×/5×/10×, Equip Axe / Net / Rod / Sprinkler / Bird Scanner / Pad, Pad Confirm / Cancel / Rotate / Move / Delete |
 
 Rebind by clicking the button in Settings and pressing a new key. Mouse buttons are bindable too. Layout note: panel section heights are sized by row count (`BeginKeybindSection` rowCount) and the scroll height by `CalculateSettingsTabHeight` — both must be bumped when adding rows, or the new rows render outside the panel/scroll.

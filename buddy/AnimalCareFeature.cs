@@ -78,7 +78,7 @@ namespace HeartopiaMod
 
             if (this.newFeaturesSubTab == 4)
             {
-                return 120f;
+                return 480f;
             }
 
             return 400f;

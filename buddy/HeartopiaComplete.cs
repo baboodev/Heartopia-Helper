@@ -61,6 +61,7 @@ namespace HeartopiaMod
         private KeyCode keyJoinMyTown = KeyCode.None;
         private KeyCode keyNoclip = KeyCode.None;
         private KeyCode keyCameraToggle = KeyCode.None;
+        private KeyCode keyAutoIceSkating = KeyCode.None;
         private KeyCode keyAutoEat = KeyCode.None;
         private KeyCode keyUseBait = KeyCode.None;
         private KeyCode keyAntiAfk = KeyCode.None;
@@ -136,6 +137,7 @@ namespace HeartopiaMod
         private const bool MasterLogHomelandFarm = true;
         private const bool MasterLogPadBuild = false;
         private const bool MasterLogWildAnimalGift = true;
+        private const bool MasterLogAutoIceSkating = false;
         private const bool MasterLogDailyQuestSubmit = true;
         internal const bool MasterLogDailyClaims = true;
         private const bool MasterLogBirdPhotoSubmit = false;
@@ -337,6 +339,7 @@ namespace HeartopiaMod
             public int keyJoinMyTown;
             public int keyNoclip;
             public int keyCameraToggle;
+            public int keyAutoIceSkating;
             public int keyAutoEat;
             public int keyUseBait;
             public int keyAntiAfk;
@@ -384,6 +387,12 @@ namespace HeartopiaMod
             public float cameraFOV;
             public bool hideJumpButtonEnabled;
             public bool bunnyHopEnabled;
+            public bool autoIceSkatingEnabled;
+            public int autoIceSkatingMinUltimateScore = 900;
+            public bool autoIceSkatingOnlyX2Ultimate = true;
+            public bool autoIceSkatingLast30sUltimate = true;
+            public bool autoIceSkatingPerfectMove = true;
+            public bool autoIceSkatingPreferNewMove = true;
             public bool fastBubbleGenEnabled;
             public float bubbleBubblesPerMinute;
             public float snowClickInterval;
@@ -941,6 +950,7 @@ namespace HeartopiaMod
             data.keyJoinMyTown = (int)this.keyJoinMyTown;
             data.keyNoclip = (int)this.keyNoclip;
             data.keyCameraToggle = (int)this.keyCameraToggle;
+            data.keyAutoIceSkating = (int)this.keyAutoIceSkating;
             data.keyAutoEat = (int)this.keyAutoEat;
             data.keyUseBait = (int)this.keyUseBait;
             data.keyAntiAfk = (int)this.keyAntiAfk;
@@ -988,6 +998,12 @@ namespace HeartopiaMod
             data.cameraFOV = this.cameraFOV;
             data.hideJumpButtonEnabled = this.hideJumpButtonEnabled;
             data.bunnyHopEnabled = this.bunnyHopEnabled;
+            data.autoIceSkatingEnabled = this.autoIceSkatingEnabled;
+            data.autoIceSkatingMinUltimateScore = this.autoIceSkatingMinUltimateScore;
+            data.autoIceSkatingOnlyX2Ultimate = this.autoIceSkatingOnlyX2Ultimate;
+            data.autoIceSkatingLast30sUltimate = this.autoIceSkatingLast30sUltimate;
+            data.autoIceSkatingPerfectMove = this.autoIceSkatingPerfectMove;
+            data.autoIceSkatingPreferNewMove = this.autoIceSkatingPreferNewMove;
             data.fastBubbleGenEnabled = this.fastBubbleGenEnabled;
             data.bubbleBubblesPerMinute = this.bubbleBubblesPerMinute;
             data.snowClickInterval = this.snowClickInterval;
@@ -1078,6 +1094,7 @@ namespace HeartopiaMod
             this.keyJoinMyTown = (KeyCode)data.keyJoinMyTown;
             this.keyNoclip = (KeyCode)data.keyNoclip;
             this.keyCameraToggle = (KeyCode)data.keyCameraToggle;
+            this.keyAutoIceSkating = (KeyCode)data.keyAutoIceSkating;
             this.keyAutoEat = (KeyCode)data.keyAutoEat;
             this.keyUseBait = (KeyCode)data.keyUseBait;
             this.keyAntiAfk = (KeyCode)data.keyAntiAfk;
@@ -1126,6 +1143,12 @@ namespace HeartopiaMod
             this.cameraFOV = data.cameraFOV;
             this.hideJumpButtonEnabled = data.hideJumpButtonEnabled;
             this.bunnyHopEnabled = data.bunnyHopEnabled;
+            this.autoIceSkatingEnabled = data.autoIceSkatingEnabled;
+            this.autoIceSkatingMinUltimateScore = Mathf.Clamp(data.autoIceSkatingMinUltimateScore, 0, AutoIceSkatingMinUltimateScoreSliderMax);
+            this.autoIceSkatingOnlyX2Ultimate = data.autoIceSkatingOnlyX2Ultimate;
+            this.autoIceSkatingLast30sUltimate = data.autoIceSkatingLast30sUltimate;
+            this.autoIceSkatingPerfectMove = data.autoIceSkatingPerfectMove;
+            this.autoIceSkatingPreferNewMove = data.autoIceSkatingPreferNewMove;
             this.fastBubbleGenEnabled = data.fastBubbleGenEnabled;
             this.bubbleBubblesPerMinute = Mathf.Clamp(data.bubbleBubblesPerMinute, 0f, 100f);
             this.snowClickInterval = data.snowClickInterval;
@@ -1442,6 +1465,7 @@ namespace HeartopiaMod
                         else if (line.Contains("keyFeedAllDogs")) this.keyFeedAllDogs = (KeyCode)GetJsonInt(line, "\"keyFeedAllDogs\":");
                         else if (line.Contains("keySpawnBubble")) this.keySpawnBubble = (KeyCode)GetJsonInt(line, "\"keySpawnBubble\":");
                         else if (line.Contains("keyCameraToggle")) this.keyCameraToggle = (KeyCode)GetJsonInt(line, "\"keyCameraToggle\":");
+                        else if (line.Contains("keyAutoIceSkating")) this.keyAutoIceSkating = (KeyCode)GetJsonInt(line, "\"keyAutoIceSkating\":");
                         else if (line.Contains("keyNoclip")) this.keyNoclip = (KeyCode)GetJsonInt(line, "\"keyNoclip\":");
                         else if (line.Contains("noclipSpeed")) this.noclipSpeed = GetJsonFloat(line, "\"noclipSpeed\":");
                         else if (line.Contains("noclipBoostMultiplier")) this.noclipBoostMultiplier = GetJsonFloat(line, "\"noclipBoostMultiplier\":");
@@ -1459,6 +1483,12 @@ namespace HeartopiaMod
                         else if (line.Contains("cameraFOV")) this.cameraFOV = GetJsonFloat(line, "\"cameraFOV\":");
                         else if (line.Contains("hideJumpButtonEnabled")) this.hideJumpButtonEnabled = GetJsonInt(line, "\"hideJumpButtonEnabled\":") != 0;
                         else if (line.Contains("bunnyHopEnabled")) this.bunnyHopEnabled = GetJsonInt(line, "\"bunnyHopEnabled\":") != 0;
+                        else if (line.Contains("autoIceSkatingMinUltimateScore")) this.autoIceSkatingMinUltimateScore = Mathf.Clamp(GetJsonInt(line, "\"autoIceSkatingMinUltimateScore\":"), 0, AutoIceSkatingMinUltimateScoreSliderMax);
+                        else if (line.Contains("autoIceSkatingOnlyX2Ultimate")) this.autoIceSkatingOnlyX2Ultimate = GetJsonInt(line, "\"autoIceSkatingOnlyX2Ultimate\":") != 0;
+                        else if (line.Contains("autoIceSkatingLast30sUltimate")) this.autoIceSkatingLast30sUltimate = GetJsonInt(line, "\"autoIceSkatingLast30sUltimate\":") != 0;
+                        else if (line.Contains("autoIceSkatingPerfectMove")) this.autoIceSkatingPerfectMove = GetJsonInt(line, "\"autoIceSkatingPerfectMove\":") != 0;
+                        else if (line.Contains("autoIceSkatingPreferNewMove")) this.autoIceSkatingPreferNewMove = GetJsonInt(line, "\"autoIceSkatingPreferNewMove\":") != 0;
+                        else if (line.Contains("autoIceSkatingEnabled")) this.autoIceSkatingEnabled = GetJsonInt(line, "\"autoIceSkatingEnabled\":") != 0;
                         else if (line.Contains("fastBubbleGenEnabled")) this.fastBubbleGenEnabled = GetJsonInt(line, "\"fastBubbleGenEnabled\":") != 0;
                         else if (line.Contains("bubbleBubblesPerMinute")) this.bubbleBubblesPerMinute = Mathf.Clamp(GetJsonFloat(line, "\"bubbleBubblesPerMinute\":"), 0f, 100f);
                         else if (line.Contains("snowClickInterval")) this.snowClickInterval = GetJsonFloat(line, "\"snowClickInterval\":");
@@ -2028,6 +2058,7 @@ namespace HeartopiaMod
             this.ProcessLodOverrideOnUpdate();
             this.ProcessHideJumpButtonOnUpdate();
             this.ProcessBunnyHopOnUpdate();
+            this.ProcessAutoIceSkatingOnUpdate();
             this.ProcessBubbleFeatureOnUpdate();
             this.FlushPendingGameSpeedConfigSave();
             this.FlushPendingRadarSettingsSave();
@@ -2290,6 +2321,28 @@ namespace HeartopiaMod
                     this.AddMenuNotification(
                         $"Camera Toggle {(this.mouseLookEnabled ? "Enabled" : "Disabled")}",
                         this.mouseLookEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
+                }
+                if (this.TryGetModHotkeyDown(this.keyAutoIceSkating))
+                {
+                    this.autoIceSkatingEnabled = !this.autoIceSkatingEnabled;
+                    if (this.autoIceSkatingEnabled)
+                    {
+                        this.autoIceSkatingReflectionRetryAt = -999f;
+                        this.autoIceSkatingLastLoggedStatus = string.Empty;
+                        this.AutoIceSkatingResetPerformingTrackers();
+                        this.AutoIceSkatingInvalidateMaxUltimateCache();
+                    }
+                    else
+                    {
+                        this.AutoIceSkatingResetPerformingTrackers();
+                        this.AutoIceSkatingInvalidateMaxUltimateCache();
+                        this.AutoIceSkatingSetStatus("Disabled.", force: true);
+                    }
+
+                    this.SaveKeybinds(false);
+                    this.AddMenuNotification(
+                        $"Auto Ice Skating {(this.autoIceSkatingEnabled ? "Enabled" : "Disabled")}",
+                        this.autoIceSkatingEnabled ? new Color(0.45f, 1f, 0.55f) : new Color(1f, 0.55f, 0.55f));
                 }
                 if (this.TryGetModHotkeyDown(this.keyAntiAfk))
                 {
@@ -3269,7 +3322,7 @@ namespace HeartopiaMod
             // Settings tab with sub-tabs
             if (this.settingsSubTab == 1)
             {
-                return string.IsNullOrEmpty(this.keyBindingActive) ? 1680f : 300f;
+                return string.IsNullOrEmpty(this.keyBindingActive) ? 1720f : 300f;
             }
             if (this.settingsSubTab == 2)
             {
@@ -23631,7 +23684,7 @@ namespace HeartopiaMod
                 tabs.Add(("Daily Quests", () => this.newFeaturesSubTab == 1, () => this.SetNewFeaturesSubTab(1)));
                 tabs.Add((this.L("homeland_farm.title"), () => this.newFeaturesSubTab == 2, () => this.SetNewFeaturesSubTab(2)));
                 tabs.Add((this.L("pictures.title"), () => this.newFeaturesSubTab == 3, () => this.SetNewFeaturesSubTab(3)));
-                tabs.Add(("Extras", () => this.newFeaturesSubTab == 4, () => this.SetNewFeaturesSubTab(4)));
+                tabs.Add(("Ice Skating", () => this.newFeaturesSubTab == 4, () => this.SetNewFeaturesSubTab(4)));
             }
             else if (this.selectedTab == 4)
             {
@@ -63260,9 +63313,10 @@ namespace HeartopiaMod
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Use Bait", ref this.keyUseBait);
             num += 14;
 
-            this.BeginKeybindSection(ref num, left, contentWidth, "PLAYER", 5, subHeaderStyle, accent, panelFill, panelLine);
+            this.BeginKeybindSection(ref num, left, contentWidth, "PLAYER", 6, subHeaderStyle, accent, panelFill, panelLine);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Noclip", ref this.keyNoclip);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Camera Toggle", ref this.keyCameraToggle);
+            this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Auto Ice Skating", ref this.keyAutoIceSkating);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Join My Town", ref this.keyJoinMyTown);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Anti AFK", ref this.keyAntiAfk);
             this.DrawKeybindRowInPanel(ref num, left, contentWidth, "Bypass Overlap", ref this.keyBypassOverlap);
@@ -63304,6 +63358,7 @@ namespace HeartopiaMod
                 this.keyAutoJoinFriend = KeyCode.None;
                 this.keyNoclip = KeyCode.None;
                 this.keyCameraToggle = KeyCode.None;
+                this.keyAutoIceSkating = KeyCode.None;
                 this.keyJoinPublic = KeyCode.None;
                 this.keyJoinMyTown = KeyCode.None;
                 this.keyAutoEat = KeyCode.None;
@@ -64372,6 +64427,7 @@ namespace HeartopiaMod
                 case "Auto Snow Sculpture": this.autoSnowHotkey = newKey; break;
                 case "Noclip": this.keyNoclip = newKey; break;
                 case "Camera Toggle": this.keyCameraToggle = newKey; break;
+                case "Auto Ice Skating": this.keyAutoIceSkating = newKey; break;
                 case "Join Public": this.keyJoinPublic = newKey; break;
                 case "Join My Town": this.keyJoinMyTown = newKey; break;
                 case "Auto Eat": this.keyAutoEat = newKey; break;

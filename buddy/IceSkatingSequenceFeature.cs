@@ -129,7 +129,10 @@ namespace HeartopiaMod
                 this.iceSkatingPerfectDrillRunCount);
 
             GUI.enabled = true;
-            return y + 40f;
+            y += 40f;
+
+            // Auto Ice Skating (perfect-chaining bot) controls live under the network buttons.
+            return this.DrawExtraTab(y);
         }
 
         private int DrawIceSkatingRunCountField(Rect rect, string label, int value)

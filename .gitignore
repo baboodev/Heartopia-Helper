@@ -18,6 +18,7 @@ tools/*.pyc
 tools/__pycache__
 tools/assets
 docs/superpowers
+docs/plans
 .cursor
 .claude
 ilspy-dumps*
