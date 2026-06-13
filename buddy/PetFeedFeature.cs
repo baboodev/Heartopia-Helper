@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using UnityEngine;
 
 namespace HeartopiaMod
@@ -15,6 +16,8 @@ namespace HeartopiaMod
         private const float PetFeedActionCooldownSeconds = 1.25f;
         private const int PetFeedFoodVisibleRows = 6;
         private const int PetFeedPetVisibleRows = 4;
+        private const int PetFeedFavoriteUiMaxVisibleRows = 6;
+        private const float PetFeedFavoriteUiRowHeight = 52f;
         private const int PetFeedEntityScanLimit = 650;
         private object petFeedAllCoroutine = null;
         private float petFeedAllBusyUntil = 0f;
@@ -32,6 +35,31 @@ namespace HeartopiaMod
         private MethodInfo petFeedGetFoodsMethod = null;
         private MethodInfo petFeedGetFoodBackpackItemsMethod = null;
         private MethodInfo petFeedGetEatenFavoriteFoodsMethod = null;
+        private Type petFeedPetSpatialDataCenterType = null;
+        private MethodInfo petFeedPetSpatialTryGetDataOptMethod = null;
+        private Type petFeedPetEntityOptDataType = null;
+        private Type petFeedPetBasePropertyType = null;
+        private PropertyInfo petFeedPetEntityOptDataBasePropertyProperty = null;
+        private MethodInfo petFeedEntityDataOptTryGetValueMethod = null;
+        private MethodInfo petFeedEcsTryGetSpatialServiceMethod = null;
+        private bool petFeedEcsFavoriteMetadataLoggedUnavailable = false;
+        private IntPtr petFeedAuraSpatialCenterClass = IntPtr.Zero;
+        private IntPtr petFeedAuraPetEntityOptDataClass = IntPtr.Zero;
+        private IntPtr petFeedAuraPetBasePropertyClass = IntPtr.Zero;
+        private IntPtr petFeedAuraPetFeedStateComponentClass = IntPtr.Zero;
+        private IntPtr petFeedAuraEntityDataOptClass = IntPtr.Zero;
+        private IntPtr petFeedAuraTryGetDataOptMethod = IntPtr.Zero;
+        private IntPtr petFeedAuraEntityDataOptTryGetValueOpenMethod = IntPtr.Zero;
+        private IntPtr petFeedAuraEntityDataOptTryGetValuePetBaseMethod = IntPtr.Zero;
+        private IntPtr petFeedAuraEntityDataOptTryGetOpenMethod = IntPtr.Zero;
+        private IntPtr petFeedAuraEntityDataOptTryGetPetBaseMethod = IntPtr.Zero;
+        private IntPtr petFeedAuraEcsEntityExtensionsClass = IntPtr.Zero;
+        private IntPtr petFeedAuraEcsEntityTryGetMayForWritePetBaseMethod = IntPtr.Zero;
+        private IntPtr petFeedAuraEntityDataOptHasOpenMethod = IntPtr.Zero;
+        private IntPtr petFeedAuraEntityDataOptHasPetBaseMethod = IntPtr.Zero;
+        private IntPtr petFeedAuraEntityDataOptHasPetFeedStateMethod = IntPtr.Zero;
+        private bool petFeedAuraFavoriteMetadataLoggedUnavailable = false;
+        private bool petFeedAuraSecretDiagnosticLogged = false;
         private bool petFeedManagedReflectionUnavailable = false;
         private string petFeedManagedReflectionUnavailableStatus = string.Empty;
         private IntPtr petFeedAuraPrepareMethod = IntPtr.Zero;
@@ -57,9 +85,19 @@ namespace HeartopiaMod
         private readonly Dictionary<int, int> petFeedFoodFullnessCache = new Dictionary<int, int>();
         private int petFeedSelectedFoodStaticId = 0;
         private string petFeedSelectedFoodName = "Any Food";
+        private bool petFeedSkipFiveStarFood = true;
         private readonly List<PetFeedTarget> petFeedDetectedPets = new List<PetFeedTarget>();
         private int petFeedPetListScrollIndex = 0;
         private string petFeedPetListStatus = "Scan pets to list cats and dogs.";
+        private readonly List<PetFeedFavoriteUiRow> petFeedFavoriteUiRows = new List<PetFeedFavoriteUiRow>();
+        private Vector2 petFeedFavoriteUiScroll = Vector2.zero;
+
+        private sealed class PetFeedFavoriteUiRow
+        {
+            public string Name;
+            public string Like;
+            public string Dislike;
+        }
 
         private sealed class PetFeedFoodOption
         {
@@ -75,6 +113,7 @@ namespace HeartopiaMod
             public int Count;
             public int Fullness;
             public int StaticId;
+            public int StarRate;
             public string Name;
             public bool IsLock;
         }
@@ -97,6 +136,8 @@ namespace HeartopiaMod
             public string Source;
             public List<int> FavoriteFoods;
             public List<int> DislikeFoods;
+            public List<int> SecretFavoriteFoods;
+            public List<int> SecretDislikeFoods;
             public string FavoriteSource;
             public bool IsDog;
             public string Name;
@@ -1027,6 +1068,7 @@ namespace HeartopiaMod
                 Count = count,
                 Fullness = fullness,
                 StaticId = staticId,
+                StarRate = this.TryReadPetFeedFoodStarRateAuraMono(foodObj),
                 Name = this.ResolvePetFeedFoodName(staticId, foodObj),
                 IsLock = isLock
             };
@@ -1652,7 +1694,7 @@ namespace HeartopiaMod
                 try
                 {
                     int value = Convert.ToInt32(item);
-                    if (value > 0 && !values.Contains(value))
+                    if (this.IsPlausiblePetFeedStaticId(value) && !values.Contains(value))
                     {
                         values.Add(value);
                     }
@@ -1710,13 +1752,48 @@ namespace HeartopiaMod
         private unsafe bool TryReadMonoIntListObject(IntPtr listObj, out List<int> values)
         {
             values = new List<int>();
-            if (listObj == IntPtr.Zero || auraMonoObjectUnbox == null)
+            if (listObj == IntPtr.Zero)
             {
                 values = null;
                 return false;
             }
 
-            if (auraMonoArrayLength != null && auraMonoArrayAddrWithSize != null)
+            if (auraMonoObjectGetClass != null && auraMonoRuntimeInvoke != null)
+            {
+                IntPtr listClass = auraMonoObjectGetClass(listObj);
+                IntPtr getCountMethod = this.FindAuraMonoMethodOnHierarchy(listClass, "get_Count", 0);
+                IntPtr getItemMethod = this.FindAuraMonoMethodOnHierarchy(listClass, "get_Item", 1);
+                bool isKeyedCollection = this.FindAuraMonoMethodOnHierarchy(listClass, "ContainsKey", 1) != IntPtr.Zero;
+                if (!isKeyedCollection && getCountMethod != IntPtr.Zero && getItemMethod != IntPtr.Zero)
+                {
+                    int count = Math.Min(this.GetAuraMonoIntCount(listObj, getCountMethod), 256);
+                    for (int i = 0; i < count; i++)
+                    {
+                        IntPtr exc = IntPtr.Zero;
+                        IntPtr* args = stackalloc IntPtr[1];
+                        args[0] = (IntPtr)(&i);
+                        IntPtr itemObj = auraMonoRuntimeInvoke(getItemMethod, listObj, (IntPtr)args, ref exc);
+                        if (exc != IntPtr.Zero || itemObj == IntPtr.Zero)
+                        {
+                            continue;
+                        }
+
+                        if (this.TryUnboxMonoInt32(itemObj, out int value)
+                            && this.IsPlausiblePetFeedStaticId(value)
+                            && !values.Contains(value))
+                        {
+                            values.Add(value);
+                        }
+                    }
+
+                    if (values.Count > 0)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            if (auraMonoArrayLength != null && auraMonoArrayAddrWithSize != null && this.IsAuraMonoArrayObject(listObj))
             {
                 try
                 {
@@ -1730,7 +1807,7 @@ namespace HeartopiaMod
                         }
 
                         int value = *(int*)raw;
-                        if (value > 0 && !values.Contains(value))
+                        if (this.IsPlausiblePetFeedStaticId(value) && !values.Contains(value))
                         {
                             values.Add(value);
                         }
@@ -1760,26 +1837,15 @@ namespace HeartopiaMod
                     continue;
                 }
 
-                try
+                if (this.TryUnboxMonoInt32(itemObj, out int value)
+                    && this.IsPlausiblePetFeedStaticId(value)
+                    && !values.Contains(value))
                 {
-                    IntPtr raw = auraMonoObjectUnbox(itemObj);
-                    if (raw == IntPtr.Zero)
-                    {
-                        continue;
-                    }
-
-                    int value = *(int*)raw;
-                    if (value > 0 && !values.Contains(value))
-                    {
-                        values.Add(value);
-                    }
-                }
-                catch
-                {
+                    values.Add(value);
                 }
             }
 
-            return true;
+            return values.Count > 0;
         }
 
         private void MergePetFeedIntList(ref List<int> target, List<int> values)
@@ -1796,11 +1862,16 @@ namespace HeartopiaMod
 
             foreach (int value in values)
             {
-                if (value > 0 && !target.Contains(value))
+                if (this.IsPlausiblePetFeedStaticId(value) && !target.Contains(value))
                 {
                     target.Add(value);
                 }
             }
+        }
+
+        private bool IsPlausiblePetFeedStaticId(int staticId)
+        {
+            return staticId > 0 && staticId < 5000000;
         }
 
         private void RefreshPetFeedPetList()
@@ -2431,6 +2502,7 @@ namespace HeartopiaMod
                     Count = Math.Max(1, entry.Count),
                     Fullness = fullness,
                     StaticId = entry.StaticId,
+                    StarRate = entry.StarRate,
                     Name = this.GetPetFeedFoodDisplayName(entry.StaticId, entry.DisplayName),
                     IsLock = false
                 });
@@ -2454,12 +2526,200 @@ namespace HeartopiaMod
 
         private List<PetFeedFoodSupply> GetPetFeedFoodsForTarget(List<PetFeedFoodSupply> foods, PetFeedTarget target)
         {
-            return foods;
+            if (foods == null || foods.Count == 0 || target == null)
+            {
+                return new List<PetFeedFoodSupply>();
+            }
+
+            this.PopulatePetFeedTargetFavoriteMetadata(target);
+
+            HashSet<int> secretFavorites = this.BuildPetFeedStaticIdSet(target.SecretFavoriteFoods);
+            HashSet<int> knownFavorites = this.BuildPetFeedStaticIdSet(target.FavoriteFoods);
+            HashSet<int> dislikes = this.BuildPetFeedStaticIdSet(target.SecretDislikeFoods);
+            if (target.DislikeFoods != null)
+            {
+                foreach (int staticId in target.DislikeFoods)
+                {
+                    if (staticId > 0)
+                    {
+                        dislikes.Add(staticId);
+                    }
+                }
+            }
+
+            List<PetFeedFoodSupply> candidates = new List<PetFeedFoodSupply>();
+            foreach (PetFeedFoodSupply food in foods)
+            {
+                if (food == null || food.Count <= 0 || food.Fullness <= 0 || food.NetId == 0U || food.IsLock)
+                {
+                    continue;
+                }
+
+                if (food.StaticId > 0 && dislikes.Contains(food.StaticId))
+                {
+                    continue;
+                }
+
+                candidates.Add(food);
+            }
+
+            bool hungry = target.CurrentFullness < target.MaxFullness;
+            candidates = this.FilterPetFeedFiveStarCandidates(candidates, hungry);
+
+            candidates.Sort((a, b) =>
+            {
+                int rankA = this.GetPetFeedFoodPreferenceRank(a, secretFavorites, knownFavorites);
+                int rankB = this.GetPetFeedFoodPreferenceRank(b, secretFavorites, knownFavorites);
+                if (rankA != rankB)
+                {
+                    return rankA.CompareTo(rankB);
+                }
+
+                int cmp = a.Fullness.CompareTo(b.Fullness);
+                if (cmp != 0)
+                {
+                    return cmp;
+                }
+
+                return a.StaticId.CompareTo(b.StaticId);
+            });
+
+            return candidates;
+        }
+
+        private HashSet<int> BuildPetFeedStaticIdSet(List<int> staticIds)
+        {
+            HashSet<int> set = new HashSet<int>();
+            if (staticIds == null)
+            {
+                return set;
+            }
+
+            foreach (int staticId in staticIds)
+            {
+                if (staticId > 0)
+                {
+                    set.Add(staticId);
+                }
+            }
+
+            return set;
+        }
+
+        private int GetPetFeedFoodPreferenceRank(PetFeedFoodSupply food, HashSet<int> secretFavorites, HashSet<int> knownFavorites)
+        {
+            if (food == null || food.StaticId <= 0)
+            {
+                return 2;
+            }
+
+            if (secretFavorites.Contains(food.StaticId))
+            {
+                return 0;
+            }
+
+            if (knownFavorites.Contains(food.StaticId))
+            {
+                return 1;
+            }
+
+            return 2;
+        }
+
+        private List<PetFeedFoodSupply> FilterPetFeedFiveStarCandidates(List<PetFeedFoodSupply> candidates, bool allowFiveStarFallback)
+        {
+            if (!this.petFeedSkipFiveStarFood || candidates == null || candidates.Count == 0)
+            {
+                return candidates ?? new List<PetFeedFoodSupply>();
+            }
+
+            List<PetFeedFoodSupply> filtered = new List<PetFeedFoodSupply>();
+            foreach (PetFeedFoodSupply food in candidates)
+            {
+                if (food != null && food.StarRate != 5)
+                {
+                    filtered.Add(food);
+                }
+            }
+
+            if (filtered.Count > 0 || !allowFiveStarFallback)
+            {
+                return filtered;
+            }
+
+            return candidates;
+        }
+
+        private int TryReadPetFeedFoodStarRate(object foodObj)
+        {
+            if (foodObj == null)
+            {
+                return 0;
+            }
+
+            if (this.TryReadIntFromMember(foodObj, "starRate", out int starRate) && starRate > 0)
+            {
+                return starRate;
+            }
+
+            if (this.TryReadIntFromMember(foodObj, "StarRate", out starRate) && starRate > 0)
+            {
+                return starRate;
+            }
+
+            return 0;
+        }
+
+        private int TryReadPetFeedFoodStarRateAuraMono(IntPtr foodObj)
+        {
+            if (foodObj == IntPtr.Zero)
+            {
+                return 0;
+            }
+
+            if (this.TryGetMonoIntMember(foodObj, "starRate", out int starRate) && starRate > 0)
+            {
+                return starRate;
+            }
+
+            if (this.TryGetMonoIntMember(foodObj, "_starRate", out starRate) && starRate > 0)
+            {
+                return starRate;
+            }
+
+            if (this.TryGetMonoIntMember(foodObj, "StarRate", out starRate) && starRate > 0)
+            {
+                return starRate;
+            }
+
+            return 0;
         }
 
         private string FormatPetFeedTargetPreferenceStatus(PetFeedTarget target, List<PetFeedUsedFood> usedFoods)
         {
-            return string.Empty;
+            if (target == null || usedFoods == null || usedFoods.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            HashSet<int> secretFavorites = this.BuildPetFeedStaticIdSet(target.SecretFavoriteFoods);
+            HashSet<int> knownFavorites = this.BuildPetFeedStaticIdSet(target.FavoriteFoods);
+            int favoriteUsed = 0;
+            foreach (PetFeedUsedFood food in usedFoods)
+            {
+                if (food == null || food.StaticId <= 0)
+                {
+                    continue;
+                }
+
+                if (secretFavorites.Contains(food.StaticId) || knownFavorites.Contains(food.StaticId))
+                {
+                    favoriteUsed++;
+                }
+            }
+
+            return " favoriteUsed=" + favoriteUsed + "/" + usedFoods.Count
+                + " skip5Star=" + (this.petFeedSkipFiveStarFood ? "on" : "off");
         }
 
         private string FormatPetFeedSelectedFoodStatus()
@@ -2492,6 +2752,11 @@ namespace HeartopiaMod
                 {
                     return cachedName;
                 }
+            }
+
+            if (this.TryGetPetFeedFoodDisplayNameFromTables(staticId, out string tableName))
+            {
+                return tableName;
             }
 
             if (this.TryGetSpecialPetFeedLabel(staticId, out string specialLabel))
@@ -2527,6 +2792,141 @@ namespace HeartopiaMod
             }
 
             return staticId > 0 ? ("Food #" + staticId) : "Unknown Food";
+        }
+
+        private bool TryGetPetFeedFoodDisplayNameFromTables(int staticId, out string displayName)
+        {
+            displayName = string.Empty;
+            if (staticId <= 0)
+            {
+                return false;
+            }
+
+            if (this.TryGetResolvedFoodNameFromStaticId(staticId, out displayName)
+                && !string.IsNullOrWhiteSpace(displayName))
+            {
+                displayName = this.CleanPetFeedFoodName(displayName);
+                return !string.IsNullOrWhiteSpace(displayName);
+            }
+
+            if (this.TryResolvePetFeedFoodNameFromBackpackItemTypeManaged(staticId, 0, 0U, out displayName)
+                || this.TryResolvePetFeedFoodNameFromBackpackItemAuraMono(staticId, 0, 0U, out displayName)
+                || this.TryResolvePetFeedFoodNameFromEntityTableManaged(staticId, out displayName)
+                || this.TryResolvePetFeedFoodNameFromEntityTableAuraMono(staticId, out displayName)
+                || this.TryResolvePetFeedFoodNameFromManagedTable(staticId, out displayName)
+                || this.TryResolvePetFeedFoodNameFromAuraMonoTable(staticId, out displayName))
+            {
+                displayName = this.CleanPetFeedFoodName(displayName);
+                if (!string.IsNullOrWhiteSpace(displayName) && !int.TryParse(displayName, out _))
+                {
+                    if (staticId > 0)
+                    {
+                        this.petFeedFoodNameByStaticId[staticId] = displayName;
+                    }
+
+                    return true;
+                }
+            }
+
+            displayName = string.Empty;
+            return false;
+        }
+
+        private unsafe bool TryResolvePetFeedFoodNameFromBackpackItemAuraMono(int staticId, int step, uint netId, out string name)
+        {
+            name = string.Empty;
+            if (staticId <= 0 || !this.EnsureAuraMonoApiReady() || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                IntPtr backpackClass = this.FindAuraMonoClassByFullName("XDTGameSystem.UISystem.BackPack.BackpackItem");
+                if (backpackClass == IntPtr.Zero)
+                {
+                    backpackClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                        "XDTGameSystem.UISystem.BackPack",
+                        "BackpackItem");
+                }
+
+                if (backpackClass == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                IntPtr method = this.FindAuraMonoMethodOnHierarchy(backpackClass, "GetBackPackName", 3);
+                if (method == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                IntPtr exc = IntPtr.Zero;
+                IntPtr* args = stackalloc IntPtr[3];
+                args[0] = (IntPtr)(&staticId);
+                args[1] = (IntPtr)(&step);
+                args[2] = (IntPtr)(&netId);
+                IntPtr nameObj = auraMonoRuntimeInvoke(method, IntPtr.Zero, (IntPtr)args, ref exc);
+                if (exc != IntPtr.Zero || nameObj == IntPtr.Zero || !this.TryReadMonoString(nameObj, out string rawName))
+                {
+                    return false;
+                }
+
+                name = this.CleanPetFeedFoodName(rawName);
+                return !string.IsNullOrWhiteSpace(name) && !int.TryParse(name, out _);
+            }
+            catch
+            {
+                name = string.Empty;
+                return false;
+            }
+        }
+
+        private unsafe bool TryResolvePetFeedFoodNameFromEntityTableAuraMono(int staticId, out string name)
+        {
+            name = string.Empty;
+            if (staticId <= 0 || !this.EnsureAuraMonoApiReady() || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                IntPtr tableDataClass = this.TryGetPetFeedAuraMonoTableDataClass();
+                if (tableDataClass == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                IntPtr getEntityMethod = this.FindAuraMonoMethodOnHierarchy(tableDataClass, "GetEntity", 2);
+                if (getEntityMethod == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                bool needException = false;
+                IntPtr exc = IntPtr.Zero;
+                IntPtr* args = stackalloc IntPtr[2];
+                args[0] = (IntPtr)(&staticId);
+                args[1] = (IntPtr)(&needException);
+                IntPtr entityObj = auraMonoRuntimeInvoke(getEntityMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+                if (exc != IntPtr.Zero || entityObj == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                if (this.TryReadPetFeedFoodNameFromAuraMonoObject(entityObj, out name))
+                {
+                    name = this.CleanPetFeedFoodName(name);
+                    return !string.IsNullOrWhiteSpace(name) && !int.TryParse(name, out _);
+                }
+            }
+            catch
+            {
+            }
+
+            name = string.Empty;
+            return false;
         }
 
         private bool TryGetSpecialPetFeedLabel(int staticId, out string label)
@@ -3086,6 +3486,7 @@ namespace HeartopiaMod
                             this.TryResolvePetFeedFoodNameFromEntityTableManaged(staticId, out name);
                         }
                         name = this.NormalizePetFeedFoodName(staticId, name);
+                        int itemStarRate = this.TryReadPetFeedFoodStarRate(item);
 
                         if (!byStaticId.TryGetValue(staticId, out PetFeedFoodSupply supply))
                         {
@@ -3095,6 +3496,7 @@ namespace HeartopiaMod
                                 Count = 0,
                                 Fullness = this.TryGetPetFeedFoodFullnessCached(staticId, out int fullness) ? fullness : 1,
                                 NetId = netId,
+                                StarRate = itemStarRate,
                                 Name = name,
                                 IsLock = false
                             };
@@ -3102,6 +3504,10 @@ namespace HeartopiaMod
                         }
 
                         supply.Count += count;
+                        if (itemStarRate > supply.StarRate)
+                        {
+                            supply.StarRate = itemStarRate;
+                        }
                         if (supply.NetId == 0U)
                         {
                             supply.NetId = netId;
@@ -3183,6 +3589,7 @@ namespace HeartopiaMod
                             this.TryResolvePetFeedFoodNameFromEntityTableManaged(staticId, out name);
                         }
                         name = this.NormalizePetFeedFoodName(staticId, name);
+                        int itemStarRate = this.TryReadPetFeedFoodStarRateAuraMono(item);
 
                         if (!byStaticId.TryGetValue(staticId, out PetFeedFoodSupply supply))
                         {
@@ -3192,6 +3599,7 @@ namespace HeartopiaMod
                                 Count = 0,
                                 Fullness = this.TryGetPetFeedFoodFullnessCached(staticId, out int fullness) ? fullness : 1,
                                 NetId = netId,
+                                StarRate = itemStarRate,
                                 Name = name,
                                 IsLock = false
                             };
@@ -3199,6 +3607,10 @@ namespace HeartopiaMod
                         }
 
                         supply.Count += count;
+                        if (itemStarRate > supply.StarRate)
+                        {
+                            supply.StarRate = itemStarRate;
+                        }
                         if (supply.NetId == 0U)
                         {
                             supply.NetId = netId;
@@ -3815,6 +4227,7 @@ namespace HeartopiaMod
                 Count = count,
                 Fullness = fullness,
                 StaticId = staticId,
+                StarRate = this.TryReadPetFeedFoodStarRate(foodObj),
                 Name = this.ResolvePetFeedFoodName(staticId, foodObj),
                 IsLock = isLock
             };
@@ -4271,8 +4684,8 @@ namespace HeartopiaMod
                 }
 
                 object rawName = method.Invoke(null, new object[] { staticId, step, netId });
-                name = this.NormalizePetFeedFoodName(staticId, rawName?.ToString());
-                return !string.IsNullOrWhiteSpace(name);
+                name = this.CleanPetFeedFoodName(rawName?.ToString());
+                return !string.IsNullOrWhiteSpace(name) && !int.TryParse(name, out _);
             }
             catch
             {
@@ -4372,7 +4785,7 @@ namespace HeartopiaMod
                     return false;
                 }
 
-                foreach (string methodName in new[] { "GetPetFood", "GetDogfood", "GetCatfood" })
+                foreach (string methodName in new[] { "GetPetFood", "GetDogfood", "GetCatfood", "GetFish", "GetEntity" })
                 {
                     MethodInfo method = tableDataType.GetMethod(methodName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(int), typeof(bool) }, null);
                     if (method == null)
@@ -4386,7 +4799,8 @@ namespace HeartopiaMod
                         continue;
                     }
 
-                    if (this.TryResolvePetFeedFoodNameFromManagedTableObject(tableObj, staticId, out name))
+                    if (this.TryResolvePetFeedFoodNameFromManagedTableObject(tableObj, staticId, out name)
+                        || this.TryReadPetFeedFoodNameFromManagedObject(tableObj, out name))
                     {
                         return true;
                     }
@@ -4615,7 +5029,7 @@ namespace HeartopiaMod
                     return false;
                 }
 
-                foreach (string methodName in new[] { "GetPetFood", "GetDogfood", "GetCatfood" })
+                foreach (string methodName in new[] { "GetPetFood", "GetDogfood", "GetCatfood", "GetFish", "GetEntity" })
                 {
                     IntPtr method = this.FindAuraMonoMethodOnHierarchy(tableDataClass, methodName, 2);
                     if (method == IntPtr.Zero)
@@ -4634,7 +5048,8 @@ namespace HeartopiaMod
                         continue;
                     }
 
-                    if (this.TryResolvePetFeedFoodNameFromAuraMonoTableObject(tableObj, staticId, out name))
+                    if (this.TryResolvePetFeedFoodNameFromAuraMonoTableObject(tableObj, staticId, out name)
+                        || this.TryReadPetFeedFoodNameFromAuraMonoObject(tableObj, out name))
                     {
                         return true;
                     }
@@ -5143,6 +5558,1306 @@ namespace HeartopiaMod
             catch
             {
             }
+        }
+
+        private void LogPetFeedFavoriteReport(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+            {
+                return;
+            }
+
+            try
+            {
+                ModLogger.Msg("[PetFeedFavorites] " + message);
+            }
+            catch
+            {
+            }
+        }
+
+        private void LogNearbyPetFavoriteFoods()
+        {
+            if (!this.RefreshPetFeedFavoriteUiRows(writeLog: true))
+            {
+                return;
+            }
+
+            int secretKnown = 0;
+            foreach (PetFeedFavoriteUiRow row in this.petFeedFavoriteUiRows)
+            {
+                if (row != null && !string.IsNullOrWhiteSpace(row.Like) && !string.Equals(row.Like, "(none)", StringComparison.Ordinal))
+                {
+                    secretKnown++;
+                }
+            }
+
+            this.AddMenuNotification(
+                "Pet favorites: " + this.petFeedFavoriteUiRows.Count + " pets (" + secretKnown + " with likes)",
+                new Color(0.45f, 1f, 0.55f));
+        }
+
+        private bool RefreshPetFeedFavoriteUiRows(bool writeLog)
+        {
+            this.petFeedFavoriteUiRows.Clear();
+            this.petFeedFavoriteUiScroll = Vector2.zero;
+
+            List<PetFeedTarget> pets = new List<PetFeedTarget>();
+            int catCount = 0;
+            int dogCount = 0;
+            string catStatus;
+            string dogStatus;
+            bool catOk = this.TryCollectPetFeedPetList(false, pets, out catCount, out catStatus);
+            bool dogOk = this.TryCollectPetFeedPetList(true, pets, out dogCount, out dogStatus);
+
+            foreach (PetFeedTarget pet in pets)
+            {
+                if (pet != null)
+                {
+                    pet.FavoriteFoods = null;
+                    pet.SecretFavoriteFoods = null;
+                    pet.SecretDislikeFoods = null;
+                    this.PopulatePetFeedTargetFavoriteMetadata(pet);
+                }
+            }
+
+            if (writeLog)
+            {
+                this.LogPetFeedFavoriteReport(
+                    "Scan radius=" + PetFeedWorldScanRadius.ToString("F0") + "m"
+                    + " cats=" + catCount + " dogs=" + dogCount
+                    + " total=" + pets.Count
+                    + " catStatus=" + catStatus
+                    + " dogStatus=" + dogStatus);
+            }
+
+            if (!catOk && !dogOk)
+            {
+                if (writeLog)
+                {
+                    this.LogPetFeedFavoriteReport("Scan failed: no pets resolved.");
+                    this.AddMenuNotification("Pet favorite log: scan failed", new Color(1f, 0.58f, 0.42f));
+                }
+
+                return false;
+            }
+
+            if (pets.Count == 0)
+            {
+                if (writeLog)
+                {
+                    this.LogPetFeedFavoriteReport("No cats or dogs found in range.");
+                    this.AddMenuNotification("Pet favorite log: none in range", new Color(0.45f, 0.88f, 1f));
+                }
+
+                return false;
+            }
+
+            pets.Sort((a, b) =>
+            {
+                if (a == null && b == null) return 0;
+                if (a == null) return 1;
+                if (b == null) return -1;
+                int kind = a.IsDog.CompareTo(b.IsDog);
+                if (kind != 0) return kind;
+                return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+            });
+
+            foreach (PetFeedTarget pet in pets)
+            {
+                if (pet == null)
+                {
+                    continue;
+                }
+
+                bool hasSecret = pet.SecretFavoriteFoods != null && pet.SecretFavoriteFoods.Count > 0;
+                string kind = pet.IsDog ? "dog" : "cat";
+                string owner = pet.IsMine == true ? "mine" : (pet.IsMine == false ? "other" : "unknownOwner");
+                string petName = string.IsNullOrWhiteSpace(pet.Name) ? ("#" + pet.NetId) : pet.Name;
+                List<int> knownFoods = pet.FavoriteFoods ?? new List<int>();
+                List<int> lockedFoods = this.GetPetFeedLockedFavoriteFoods(pet);
+                List<int> likeFoods = this.GetPetFeedAllLikeFoods(pet);
+                string knownLabel = this.FormatPetFeedStaticIdListForLog(knownFoods);
+                string likeLabel = this.FormatPetFeedStaticIdListForLog(likeFoods);
+                string lockedLabel = hasSecret
+                    ? this.FormatPetFeedStaticIdListForLog(lockedFoods)
+                    : "(secret unavailable)";
+                string dislikeLabel = this.FormatPetFeedStaticIdListForLog(pet.SecretDislikeFoods);
+
+                this.petFeedFavoriteUiRows.Add(new PetFeedFavoriteUiRow
+                {
+                    Name = petName,
+                    Like = likeLabel,
+                    Dislike = dislikeLabel
+                });
+
+                if (writeLog)
+                {
+                    this.LogPetFeedFavoriteReport(
+                        kind + " \"" + petName + "\""
+                        + " netId=" + pet.NetId
+                        + " breed=" + pet.BreedId
+                        + " " + owner
+                        + " source=" + (string.IsNullOrWhiteSpace(pet.Source) ? "unknown" : pet.Source)
+                        + " | known: " + knownLabel
+                        + " | locked: " + lockedLabel
+                        + " | dislikes: " + dislikeLabel);
+                }
+            }
+
+            return this.petFeedFavoriteUiRows.Count > 0;
+        }
+
+        private List<int> GetPetFeedAllLikeFoods(PetFeedTarget pet)
+        {
+            if (pet == null)
+            {
+                return new List<int>();
+            }
+
+            if (pet.SecretFavoriteFoods != null && pet.SecretFavoriteFoods.Count > 0)
+            {
+                return pet.SecretFavoriteFoods;
+            }
+
+            return pet.FavoriteFoods ?? new List<int>();
+        }
+
+        private float GetPetFeedFavoriteUiTableHeight()
+        {
+            if (this.petFeedFavoriteUiRows.Count == 0)
+            {
+                return 0f;
+            }
+
+            int visibleRows = Math.Min(PetFeedFavoriteUiMaxVisibleRows, this.petFeedFavoriteUiRows.Count);
+            return 34f + visibleRows * PetFeedFavoriteUiRowHeight + 20f;
+        }
+
+        private float DrawPetFeedFavoriteFoodsTable(float left, float width, float startY, GUIStyle labelStyle)
+        {
+            if (this.petFeedFavoriteUiRows.Count == 0)
+            {
+                return startY;
+            }
+
+            Color textColor = new Color(this.uiTextR, this.uiTextG, this.uiTextB);
+            Color mutedColor = new Color(this.uiSubTabTextR, this.uiSubTabTextG, this.uiSubTabTextB);
+
+            GUIStyle headerStyle = new GUIStyle(labelStyle)
+            {
+                fontSize = 11,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleLeft
+            };
+            headerStyle.normal.textColor = mutedColor;
+
+            GUIStyle cellStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 11,
+                fontStyle = FontStyle.Normal,
+                alignment = TextAnchor.UpperLeft,
+                wordWrap = true
+            };
+            cellStyle.normal.textColor = textColor;
+
+            float colName = 92f;
+            float innerWidth = width - 32f;
+            float colLike = (innerWidth - colName) * 0.52f;
+            float colDislike = innerWidth - colName - colLike;
+            int visibleRows = Math.Min(PetFeedFavoriteUiMaxVisibleRows, this.petFeedFavoriteUiRows.Count);
+            float headerHeight = 22f;
+            float bodyHeight = visibleRows * PetFeedFavoriteUiRowHeight;
+            float panelHeight = headerHeight + bodyHeight + 18f;
+
+            Rect panelRect = new Rect(left, startY, width, panelHeight);
+            GUI.Box(panelRect, string.Empty, this.themePanelStyle ?? GUI.skin.box);
+            this.DrawCardOutline(panelRect, 1f);
+            GUI.Label(new Rect(panelRect.x + 16f, panelRect.y + 8f, 220f, 18f), "FAVORITE FOODS", labelStyle);
+
+            float tableX = panelRect.x + 12f;
+            float tableY = panelRect.y + 30f;
+            GUI.Label(new Rect(tableX, tableY, colName, headerHeight), "name", headerStyle);
+            GUI.Label(new Rect(tableX + colName, tableY, colLike, headerHeight), "like", headerStyle);
+            GUI.Label(new Rect(tableX + colName + colLike, tableY, colDislike, headerHeight), "dislike", headerStyle);
+
+            Rect viewRect = new Rect(tableX, tableY + headerHeight, panelRect.width - 24f, bodyHeight);
+            Rect contentRect = new Rect(0f, 0f, viewRect.width - 18f, this.petFeedFavoriteUiRows.Count * PetFeedFavoriteUiRowHeight);
+            this.petFeedFavoriteUiScroll = GUI.BeginScrollView(viewRect, this.petFeedFavoriteUiScroll, contentRect, false, true);
+
+            for (int i = 0; i < this.petFeedFavoriteUiRows.Count; i++)
+            {
+                PetFeedFavoriteUiRow row = this.petFeedFavoriteUiRows[i];
+                if (row == null)
+                {
+                    continue;
+                }
+
+                float rowY = i * PetFeedFavoriteUiRowHeight;
+                GUI.Label(new Rect(0f, rowY, colName - 4f, PetFeedFavoriteUiRowHeight - 4f), row.Name ?? "?", cellStyle);
+                GUI.Label(new Rect(colName, rowY, colLike - 4f, PetFeedFavoriteUiRowHeight - 4f), row.Like ?? "(none)", cellStyle);
+                GUI.Label(new Rect(colName + colLike, rowY, colDislike - 4f, PetFeedFavoriteUiRowHeight - 4f), row.Dislike ?? "(none)", cellStyle);
+            }
+
+            GUI.EndScrollView();
+            return startY + panelHeight + 14f;
+        }
+
+        private void PopulatePetFeedTargetFavoriteMetadata(PetFeedTarget target)
+        {
+            if (target == null || target.NetId == 0U)
+            {
+                return;
+            }
+
+            bool eatenPopulated = false;
+            if (this.EnsurePetFeedReflection(out _))
+            {
+                try
+                {
+                    object petSystem = this.petFeedPetSystemInstanceProperty?.GetValue(null, null);
+                    if (petSystem != null)
+                    {
+                        this.TryPopulatePetFeedKnownFavoriteFoodsManaged(petSystem, target);
+                        eatenPopulated = target.FavoriteFoods != null && target.FavoriteFoods.Count > 0;
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            if (!eatenPopulated)
+            {
+                this.TryPopulatePetFeedKnownFavoriteFoodsViaAuraMono(target);
+            }
+
+            if (!this.TryPopulatePetFeedSecretFavoritesManaged(target))
+            {
+                this.TryPopulatePetFeedSecretFavoritesAuraMono(target);
+            }
+        }
+
+        private unsafe void TryPopulatePetFeedKnownFavoriteFoodsViaAuraMono(PetFeedTarget target)
+        {
+            if (target == null || target.NetId == 0U || !this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread() || auraMonoRuntimeInvoke == null)
+            {
+                return;
+            }
+
+            if (this.TryResolveAuraMonoModule("XDTGameSystem.GameplaySystem.Pet.PetSystem", out IntPtr petSystemObj)
+                && petSystemObj != IntPtr.Zero
+                && auraMonoObjectGetClass != null)
+            {
+                IntPtr getEatenFavoriteFoodsMethod = this.FindAuraMonoMethodOnHierarchy(
+                    auraMonoObjectGetClass(petSystemObj),
+                    "GetEatenFavoriteFoods",
+                    1);
+                if (getEatenFavoriteFoodsMethod != IntPtr.Zero)
+                {
+                    this.TryPopulatePetFeedKnownFavoriteFoodsAuraMono(petSystemObj, getEatenFavoriteFoodsMethod, target);
+                    if (target.FavoriteFoods != null && target.FavoriteFoods.Count > 0)
+                    {
+                        return;
+                    }
+                }
+            }
+
+            IntPtr protocolClass = this.FindAuraMonoClassByFullName("XDTDataAndProtocol.ProtocolService.Pet.PetProtocolManager");
+            if (protocolClass == IntPtr.Zero)
+            {
+                protocolClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                    "XDTDataAndProtocol.ProtocolService.Pet",
+                    "PetProtocolManager");
+            }
+
+            IntPtr staticMethod = protocolClass != IntPtr.Zero
+                ? this.FindAuraMonoMethodOnHierarchy(protocolClass, "GetEatenFavoriteFoods", 1)
+                : IntPtr.Zero;
+            if (staticMethod == IntPtr.Zero)
+            {
+                return;
+            }
+
+            try
+            {
+                uint netId = target.NetId;
+                IntPtr* args = stackalloc IntPtr[1];
+                args[0] = (IntPtr)(&netId);
+                IntPtr exc = IntPtr.Zero;
+                IntPtr favoriteObj = auraMonoRuntimeInvoke(staticMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero && this.TryReadMonoIntListObject(favoriteObj, out List<int> favoriteFoods) && favoriteFoods.Count > 0)
+                {
+                    this.MergePetFeedIntList(ref target.FavoriteFoods, favoriteFoods);
+                    target.FavoriteSource = string.IsNullOrEmpty(target.FavoriteSource) ? "eatenFavorites" : target.FavoriteSource + "+eatenFavorites";
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private bool EnsurePetFeedEcsFavoriteMetadataReflection()
+        {
+            if (this.petFeedEcsTryGetSpatialServiceMethod != null
+                && this.petFeedPetSpatialTryGetDataOptMethod != null
+                && this.petFeedEntityDataOptTryGetValueMethod != null)
+            {
+                return true;
+            }
+
+            this.petFeedPetSpatialDataCenterType = this.FindLoadedType(
+                "XDT.Scene.Shared.DataCenter.Pet.PetSpatialDataCenter",
+                "Il2CppXDT.Scene.Shared.DataCenter.Pet.PetSpatialDataCenter",
+                "PetSpatialDataCenter");
+            this.petFeedPetEntityOptDataType = this.FindLoadedType(
+                "XDT.Scene.Shared.Entity.EntityOptData.PetEntityOptData",
+                "Il2CppXDT.Scene.Shared.Entity.EntityOptData.PetEntityOptData",
+                "PetEntityOptData");
+            this.petFeedPetBasePropertyType = this.FindLoadedType(
+                "XDT.Scene.Shared.Modules.Pet.PetBaseProperty",
+                "Il2CppXDT.Scene.Shared.Modules.Pet.PetBaseProperty",
+                "PetBaseProperty");
+            Type entityDataOptType = this.FindLoadedType(
+                "XDT.Scene.Shared.Entity.EntityOptData.EntityDataOpt",
+                "Il2CppXDT.Scene.Shared.Entity.EntityOptData.EntityDataOpt",
+                "EntityDataOpt");
+            Type ecsServiceType = this.FindLoadedType(
+                "XDTDataAndProtocol.ProtocolService.EcsService",
+                "Il2CppXDTDataAndProtocol.ProtocolService.EcsService",
+                "EcsService")
+                ?? this.FindLoadedTypeBySuffix("ProtocolService.EcsService", "EcsService")
+                ?? this.FindLoadedEcsServiceType();
+
+            if (this.petFeedPetSpatialDataCenterType == null
+                || this.petFeedPetEntityOptDataType == null
+                || this.petFeedPetBasePropertyType == null
+                || entityDataOptType == null
+                || ecsServiceType == null)
+            {
+                if (!this.petFeedEcsFavoriteMetadataLoggedUnavailable)
+                {
+                    this.petFeedEcsFavoriteMetadataLoggedUnavailable = true;
+                    this.LogPetFeedFavoriteReport(
+                        "ECS favorite metadata types unavailable. spatial="
+                        + (this.petFeedPetSpatialDataCenterType != null)
+                        + " dataOpt=" + (this.petFeedPetEntityOptDataType != null)
+                        + " baseProperty=" + (this.petFeedPetBasePropertyType != null)
+                        + " entityDataOpt=" + (entityDataOptType != null)
+                        + " ecsService=" + (ecsServiceType != null));
+                }
+
+                return false;
+            }
+
+            MethodInfo tryGetGeneric = ecsServiceType
+                .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .FirstOrDefault(m => m.Name == "TryGet" && m.IsGenericMethodDefinition && m.GetParameters().Length == 2);
+            if (tryGetGeneric == null)
+            {
+                return false;
+            }
+
+            this.petFeedEcsTryGetSpatialServiceMethod = tryGetGeneric.MakeGenericMethod(this.petFeedPetSpatialDataCenterType);
+            this.petFeedPetSpatialTryGetDataOptMethod = this.petFeedPetSpatialDataCenterType.GetMethod(
+                "TryGetDataOpt",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                null,
+                new[] { typeof(uint), this.petFeedPetEntityOptDataType.MakeByRefType() },
+                null);
+            this.petFeedPetEntityOptDataBasePropertyProperty = this.petFeedPetEntityOptDataType.GetProperty(
+                "PetBaseProperty",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            this.petFeedEntityDataOptTryGetValueMethod = entityDataOptType
+                .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .FirstOrDefault(m => m.Name == "TryGetValue" && m.IsGenericMethodDefinition && m.GetParameters().Length == 2);
+
+            return this.petFeedPetSpatialTryGetDataOptMethod != null
+                && this.petFeedPetEntityOptDataBasePropertyProperty != null
+                && this.petFeedEntityDataOptTryGetValueMethod != null;
+        }
+
+        private bool TryResolvePetFeedSpatialDataCenter(out object service)
+        {
+            service = null;
+            if (!this.EnsurePetFeedEcsFavoriteMetadataReflection())
+            {
+                return false;
+            }
+
+            try
+            {
+                object[] args = new object[] { null, false };
+                object result = this.petFeedEcsTryGetSpatialServiceMethod.Invoke(null, args);
+                if (result is bool ok && ok && args[0] != null)
+                {
+                    service = args[0];
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
+        private void LogPetFeedAuraSecretDiagnosticOnce(string message)
+        {
+            if (this.petFeedAuraSecretDiagnosticLogged || string.IsNullOrWhiteSpace(message))
+            {
+                return;
+            }
+
+            this.petFeedAuraSecretDiagnosticLogged = true;
+            this.LogPetFeedFavoriteReport(message);
+        }
+
+        private void TryPopulatePetFeedSecretFavorites(PetFeedTarget target)
+        {
+            if (target == null || target.NetId == 0U)
+            {
+                return;
+            }
+
+            if (!this.TryPopulatePetFeedSecretFavoritesManaged(target))
+            {
+                this.TryPopulatePetFeedSecretFavoritesAuraMono(target);
+            }
+        }
+
+        private bool TryPopulatePetFeedSecretFavoritesManaged(PetFeedTarget target)
+        {
+            if (target == null || target.NetId == 0U || !this.TryResolvePetFeedSpatialDataCenter(out object service))
+            {
+                return false;
+            }
+
+            int beforeFavorites = target.SecretFavoriteFoods != null ? target.SecretFavoriteFoods.Count : 0;
+            int beforeDislikes = target.SecretDislikeFoods != null ? target.SecretDislikeFoods.Count : 0;
+
+            try
+            {
+                object dataOpt = Activator.CreateInstance(this.petFeedPetEntityOptDataType);
+                object[] dataArgs = new object[] { target.NetId, dataOpt };
+                if (!(this.petFeedPetSpatialTryGetDataOptMethod.Invoke(service, dataArgs) is bool hasData) || !hasData)
+                {
+                    return false;
+                }
+
+                dataOpt = dataArgs[1];
+                object petBaseOpt = this.petFeedPetEntityOptDataBasePropertyProperty.GetValue(dataOpt, null);
+                if (petBaseOpt == null)
+                {
+                    return false;
+                }
+
+                MethodInfo tryGetValue = this.petFeedEntityDataOptTryGetValueMethod.MakeGenericMethod(this.petFeedPetBasePropertyType);
+                object baseProperty = Activator.CreateInstance(this.petFeedPetBasePropertyType);
+                object[] getValueArgs = new object[] { petBaseOpt, baseProperty };
+                if (!(tryGetValue.Invoke(null, getValueArgs) is bool hasBase) || !hasBase)
+                {
+                    return false;
+                }
+
+                baseProperty = getValueArgs[1];
+                if (this.TryReadIntListFromMember(baseProperty, "FavoriteFoods", out List<int> secretFavorites))
+                {
+                    this.MergePetFeedIntList(ref target.SecretFavoriteFoods, secretFavorites);
+                }
+
+                if (this.TryReadIntListFromMember(baseProperty, "DislikeFoods", out List<int> secretDislikes))
+                {
+                    this.MergePetFeedIntList(ref target.SecretDislikeFoods, secretDislikes);
+                }
+
+                if ((target.SecretFavoriteFoods != null && target.SecretFavoriteFoods.Count > 0)
+                    || (target.SecretDislikeFoods != null && target.SecretDislikeFoods.Count > 0))
+                {
+                    target.FavoriteSource = string.IsNullOrEmpty(target.FavoriteSource)
+                        ? "petBaseProperty"
+                        : target.FavoriteSource + "+petBaseProperty";
+                }
+            }
+            catch (Exception ex)
+            {
+                this.LogPetFeedFavoriteReport("Secret favorites managed netId=" + target.NetId + ": " + ex.GetType().Name);
+                return false;
+            }
+
+            return (target.SecretFavoriteFoods != null ? target.SecretFavoriteFoods.Count : 0) > beforeFavorites
+                || (target.SecretDislikeFoods != null ? target.SecretDislikeFoods.Count : 0) > beforeDislikes;
+        }
+
+        private unsafe bool EnsurePetFeedAuraFavoriteMetadataReady()
+        {
+            if (this.petFeedAuraSpatialCenterClass != IntPtr.Zero
+                && this.petFeedAuraTryGetDataOptMethod != IntPtr.Zero
+                && (this.petFeedAuraEcsEntityTryGetMayForWritePetBaseMethod != IntPtr.Zero
+                    || this.petFeedAuraEntityDataOptTryGetValuePetBaseMethod != IntPtr.Zero
+                    || this.petFeedAuraEntityDataOptTryGetPetBaseMethod != IntPtr.Zero))
+            {
+                return true;
+            }
+
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                return false;
+            }
+
+            this.petFeedAuraSpatialCenterClass = this.FindAuraMonoClassByFullName("XDT.Scene.Shared.DataCenter.Pet.PetSpatialDataCenter");
+            if (this.petFeedAuraSpatialCenterClass == IntPtr.Zero)
+            {
+                this.petFeedAuraSpatialCenterClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                    "XDT.Scene.Shared.DataCenter.Pet",
+                    "PetSpatialDataCenter");
+            }
+
+            this.petFeedAuraPetEntityOptDataClass = this.FindAuraMonoClassByFullName("XDT.Scene.Shared.Entity.EntityOptData.PetEntityOptData");
+            if (this.petFeedAuraPetEntityOptDataClass == IntPtr.Zero)
+            {
+                this.petFeedAuraPetEntityOptDataClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                    "XDT.Scene.Shared.Entity.EntityOptData",
+                    "PetEntityOptData");
+            }
+
+            this.petFeedAuraPetBasePropertyClass = this.FindAuraMonoClassByFullName("XDT.Scene.Shared.Modules.Pet.PetBaseProperty");
+            if (this.petFeedAuraPetBasePropertyClass == IntPtr.Zero)
+            {
+                this.petFeedAuraPetBasePropertyClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                    "XDT.Scene.Shared.Modules.Pet",
+                    "PetBaseProperty");
+            }
+
+            this.petFeedAuraEntityDataOptClass = this.FindAuraMonoClassByFullName("XDT.Scene.Shared.Entity.EntityOptData.EntityDataOpt");
+            if (this.petFeedAuraEntityDataOptClass == IntPtr.Zero)
+            {
+                this.petFeedAuraEntityDataOptClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                    "XDT.Scene.Shared.Entity.EntityOptData",
+                    "EntityDataOpt");
+            }
+
+            if (this.petFeedAuraSpatialCenterClass == IntPtr.Zero
+                || this.petFeedAuraPetEntityOptDataClass == IntPtr.Zero
+                || this.petFeedAuraPetBasePropertyClass == IntPtr.Zero
+                || this.petFeedAuraEntityDataOptClass == IntPtr.Zero)
+            {
+                if (!this.petFeedAuraFavoriteMetadataLoggedUnavailable)
+                {
+                    this.petFeedAuraFavoriteMetadataLoggedUnavailable = true;
+                    this.LogPetFeedFavoriteReport(
+                        "AuraMono favorite metadata classes unavailable. spatial=0x"
+                        + this.petFeedAuraSpatialCenterClass.ToInt64().ToString("X")
+                        + " dataOpt=0x" + this.petFeedAuraPetEntityOptDataClass.ToInt64().ToString("X")
+                        + " baseProperty=0x" + this.petFeedAuraPetBasePropertyClass.ToInt64().ToString("X")
+                        + " entityDataOpt=0x" + this.petFeedAuraEntityDataOptClass.ToInt64().ToString("X"));
+                }
+
+                return false;
+            }
+
+            if (this.petFeedAuraTryGetDataOptMethod == IntPtr.Zero)
+            {
+                this.TryResolvePetFeedAuraTryGetDataOptUIntMethod(IntPtr.Zero, 0U);
+            }
+
+            if (this.petFeedAuraEntityDataOptTryGetValueOpenMethod == IntPtr.Zero)
+            {
+                this.petFeedAuraEntityDataOptTryGetValueOpenMethod = this.FindAuraMonoMethodOnHierarchy(
+                    this.petFeedAuraEntityDataOptClass,
+                    "TryGetValue",
+                    2);
+            }
+
+            if (this.petFeedAuraEntityDataOptTryGetOpenMethod == IntPtr.Zero)
+            {
+                this.petFeedAuraEntityDataOptTryGetOpenMethod = this.FindAuraMonoMethodOnHierarchy(
+                    this.petFeedAuraEntityDataOptClass,
+                    "TryGet",
+                    2);
+            }
+
+            this.TryInflatePetFeedAuraEntityDataOptPetBaseMethod(
+                this.petFeedAuraEntityDataOptTryGetValueOpenMethod,
+                ref this.petFeedAuraEntityDataOptTryGetValuePetBaseMethod);
+            this.TryInflatePetFeedAuraEntityDataOptPetBaseMethod(
+                this.petFeedAuraEntityDataOptTryGetOpenMethod,
+                ref this.petFeedAuraEntityDataOptTryGetPetBaseMethod);
+            this.TryEnsurePetFeedAuraEcsEntityTryGetPetBasePropertyMethod();
+            this.TryEnsurePetFeedAuraEntityDataOptHasMethods();
+
+            bool ready = this.petFeedAuraTryGetDataOptMethod != IntPtr.Zero
+                && (this.petFeedAuraEcsEntityTryGetMayForWritePetBaseMethod != IntPtr.Zero
+                    || this.petFeedAuraEntityDataOptTryGetValuePetBaseMethod != IntPtr.Zero
+                    || this.petFeedAuraEntityDataOptTryGetPetBaseMethod != IntPtr.Zero);
+            if (!ready)
+            {
+                this.LogPetFeedAuraSecretDiagnosticOnce(
+                    "AuraMono secret metadata methods incomplete. tryGetDataOpt=0x"
+                    + this.petFeedAuraTryGetDataOptMethod.ToInt64().ToString("X")
+                    + " entityTryGet=0x" + this.petFeedAuraEcsEntityTryGetMayForWritePetBaseMethod.ToInt64().ToString("X")
+                    + " tryGetValue=0x" + this.petFeedAuraEntityDataOptTryGetValuePetBaseMethod.ToInt64().ToString("X")
+                    + " tryGet=0x" + this.petFeedAuraEntityDataOptTryGetPetBaseMethod.ToInt64().ToString("X"));
+            }
+
+            return ready;
+        }
+
+        private unsafe void TryInflatePetFeedAuraEntityDataOptPetBaseMethod(IntPtr openMethod, ref IntPtr inflatedMethod)
+        {
+            if (openMethod == IntPtr.Zero
+                || inflatedMethod != IntPtr.Zero
+                || auraMonoClassGetType == null
+                || auraMonoClassInflateGenericMethod == null
+                || auraMonoMetadataGetGenericInst == null
+                || this.petFeedAuraPetBasePropertyClass == IntPtr.Zero)
+            {
+                return;
+            }
+
+            IntPtr petBaseType = auraMonoClassGetType(this.petFeedAuraPetBasePropertyClass);
+            if (petBaseType == IntPtr.Zero)
+            {
+                return;
+            }
+
+            IntPtr* typeArgs = stackalloc IntPtr[1];
+            typeArgs[0] = petBaseType;
+            IntPtr genericInst = auraMonoMetadataGetGenericInst(1, (IntPtr)typeArgs);
+            if (genericInst == IntPtr.Zero)
+            {
+                return;
+            }
+
+            MonoGenericContext context = new MonoGenericContext
+            {
+                class_inst = IntPtr.Zero,
+                method_inst = genericInst
+            };
+            IntPtr inflated = auraMonoClassInflateGenericMethod(openMethod, ref context);
+            if (inflated == IntPtr.Zero || !AuraMonoMethodParamCountIs(inflated, 2))
+            {
+                return;
+            }
+
+            if (auraMonoCompileMethod != null)
+            {
+                try
+                {
+                    auraMonoCompileMethod(inflated);
+                }
+                catch
+                {
+                }
+            }
+
+            inflatedMethod = inflated;
+        }
+
+        private void TryEnsurePetFeedAuraEcsEntityTryGetPetBasePropertyMethod()
+        {
+            if (this.petFeedAuraEcsEntityTryGetMayForWritePetBaseMethod != IntPtr.Zero
+                || this.petFeedAuraPetBasePropertyClass == IntPtr.Zero)
+            {
+                return;
+            }
+
+            if (this.petFeedAuraEcsEntityExtensionsClass == IntPtr.Zero)
+            {
+                this.petFeedAuraEcsEntityExtensionsClass = this.FindAuraMonoClassByFullName("XD.GameGerm.Ecs.EcsEntityExtensions");
+                if (this.petFeedAuraEcsEntityExtensionsClass == IntPtr.Zero)
+                {
+                    this.petFeedAuraEcsEntityExtensionsClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                        "XD.GameGerm.Ecs",
+                        "EcsEntityExtensions");
+                }
+            }
+
+            if (this.petFeedAuraEcsEntityExtensionsClass == IntPtr.Zero)
+            {
+                return;
+            }
+
+            IntPtr openMethod = this.FindAuraMonoMethodOnHierarchy(this.petFeedAuraEcsEntityExtensionsClass, "TryGetMayForWrite", 2);
+            this.TryInflatePetFeedAuraEntityDataOptPetBaseMethod(openMethod, ref this.petFeedAuraEcsEntityTryGetMayForWritePetBaseMethod);
+        }
+
+        private void TryEnsurePetFeedAuraEntityDataOptHasMethods()
+        {
+            if (this.petFeedAuraEntityDataOptClass == IntPtr.Zero)
+            {
+                return;
+            }
+
+            if (this.petFeedAuraEntityDataOptHasOpenMethod == IntPtr.Zero)
+            {
+                this.petFeedAuraEntityDataOptHasOpenMethod = this.FindAuraMonoMethodOnHierarchy(
+                    this.petFeedAuraEntityDataOptClass,
+                    "Has",
+                    1);
+            }
+
+            if (this.petFeedAuraEntityDataOptHasPetBaseMethod == IntPtr.Zero)
+            {
+                this.TryInflatePetFeedAuraEntityDataOptPetBaseMethod(
+                    this.petFeedAuraEntityDataOptHasOpenMethod,
+                    ref this.petFeedAuraEntityDataOptHasPetBaseMethod);
+            }
+
+            if (this.petFeedAuraEntityDataOptHasPetFeedStateMethod == IntPtr.Zero
+                && this.petFeedAuraPetFeedStateComponentClass == IntPtr.Zero)
+            {
+                this.petFeedAuraPetFeedStateComponentClass = this.FindAuraMonoClassByFullName(
+                    "XDT.Scene.Shared.Modules.Pet.PetFeedStateComponent");
+                if (this.petFeedAuraPetFeedStateComponentClass == IntPtr.Zero)
+                {
+                    this.petFeedAuraPetFeedStateComponentClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                        "XDT.Scene.Shared.Modules.Pet",
+                        "PetFeedStateComponent");
+                }
+            }
+
+            if (this.petFeedAuraEntityDataOptHasPetFeedStateMethod == IntPtr.Zero
+                && this.petFeedAuraPetFeedStateComponentClass != IntPtr.Zero)
+            {
+                IntPtr openMethod = this.petFeedAuraEntityDataOptHasOpenMethod;
+                IntPtr inflated = IntPtr.Zero;
+                if (openMethod != IntPtr.Zero
+                    && auraMonoClassGetType != null
+                    && auraMonoClassInflateGenericMethod != null
+                    && auraMonoMetadataGetGenericInst != null)
+                {
+                    IntPtr feedStateType = auraMonoClassGetType(this.petFeedAuraPetFeedStateComponentClass);
+                    if (feedStateType != IntPtr.Zero)
+                    {
+                        unsafe
+                        {
+                            IntPtr* typeArgs = stackalloc IntPtr[1];
+                            typeArgs[0] = feedStateType;
+                            IntPtr genericInst = auraMonoMetadataGetGenericInst(1, (IntPtr)typeArgs);
+                            if (genericInst != IntPtr.Zero)
+                            {
+                                MonoGenericContext context = new MonoGenericContext
+                                {
+                                    class_inst = IntPtr.Zero,
+                                    method_inst = genericInst
+                                };
+                                inflated = auraMonoClassInflateGenericMethod(openMethod, ref context);
+                            }
+                        }
+                    }
+                }
+
+                if (inflated != IntPtr.Zero && AuraMonoMethodParamCountIs(inflated, 1))
+                {
+                    this.petFeedAuraEntityDataOptHasPetFeedStateMethod = inflated;
+                }
+            }
+        }
+
+        private unsafe bool TryPopulatePetFeedSecretListsFromDataOptEntityDataOpt(IntPtr dataOptObj, PetFeedTarget target)
+        {
+            if (dataOptObj == IntPtr.Zero || target == null || auraMonoObjectUnbox == null || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr dataOptPtr = auraMonoObjectUnbox(dataOptObj);
+            if (dataOptPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (this.petFeedAuraEntityDataOptTryGetValuePetBaseMethod != IntPtr.Zero && auraMonoObjectNew != null)
+            {
+                IntPtr basePropertyObj = auraMonoObjectNew(this.auraMonoRootDomain, this.petFeedAuraPetBasePropertyClass);
+                if (basePropertyObj != IntPtr.Zero)
+                {
+                    IntPtr basePropertyOutPtr = auraMonoObjectUnbox(basePropertyObj);
+                    if (basePropertyOutPtr != IntPtr.Zero)
+                    {
+                        IntPtr* valueArgs = stackalloc IntPtr[2];
+                        valueArgs[0] = dataOptPtr;
+                        valueArgs[1] = basePropertyOutPtr;
+                        IntPtr exc = IntPtr.Zero;
+                        IntPtr hasBaseObj = auraMonoRuntimeInvoke(
+                            this.petFeedAuraEntityDataOptTryGetValuePetBaseMethod,
+                            IntPtr.Zero,
+                            (IntPtr)valueArgs,
+                            ref exc);
+                        if (exc == IntPtr.Zero
+                            && this.TryUnboxMonoBoolean(hasBaseObj, out bool hasBase)
+                            && hasBase
+                            && this.TryMergePetFeedSecretListsFromAuraMonoBasePropertyObject(basePropertyObj, target))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            if (this.petFeedAuraEntityDataOptTryGetPetBaseMethod != IntPtr.Zero)
+            {
+                int hasValueInt = 0;
+                IntPtr* tryGetArgs = stackalloc IntPtr[2];
+                tryGetArgs[0] = dataOptPtr;
+                tryGetArgs[1] = (IntPtr)(&hasValueInt);
+                IntPtr exc = IntPtr.Zero;
+                IntPtr basePropertyObj = auraMonoRuntimeInvoke(
+                    this.petFeedAuraEntityDataOptTryGetPetBaseMethod,
+                    IntPtr.Zero,
+                    (IntPtr)tryGetArgs,
+                    ref exc);
+                if (exc == IntPtr.Zero && hasValueInt != 0 && basePropertyObj != IntPtr.Zero
+                    && this.TryMergePetFeedSecretListsFromAuraMonoBasePropertyObject(basePropertyObj, target))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private unsafe bool TryProbePetFeedAuraDataOptComponentPresence(IntPtr dataOptObj, out bool hasPetBase, out bool hasFeedState)
+        {
+            hasPetBase = false;
+            hasFeedState = false;
+            if (dataOptObj == IntPtr.Zero || auraMonoObjectUnbox == null || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr dataOptPtr = auraMonoObjectUnbox(dataOptObj);
+            if (dataOptPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr* args = stackalloc IntPtr[1];
+            args[0] = dataOptPtr;
+            IntPtr exc = IntPtr.Zero;
+
+            if (this.petFeedAuraEntityDataOptHasPetBaseMethod != IntPtr.Zero)
+            {
+                IntPtr hasObj = auraMonoRuntimeInvoke(this.petFeedAuraEntityDataOptHasPetBaseMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero)
+                {
+                    this.TryUnboxMonoBoolean(hasObj, out hasPetBase);
+                }
+            }
+
+            if (this.petFeedAuraEntityDataOptHasPetFeedStateMethod != IntPtr.Zero)
+            {
+                exc = IntPtr.Zero;
+                IntPtr hasObj = auraMonoRuntimeInvoke(this.petFeedAuraEntityDataOptHasPetFeedStateMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero)
+                {
+                    this.TryUnboxMonoBoolean(hasObj, out hasFeedState);
+                }
+            }
+
+            return true;
+        }
+
+        private unsafe bool TryPopulatePetFeedSecretListsFromDataOptEntity(IntPtr dataOptObj, PetFeedTarget target)
+        {
+            if (dataOptObj == IntPtr.Zero || target == null || auraMonoObjectGetClass == null || auraMonoFieldGetValue == null)
+            {
+                return false;
+            }
+
+            IntPtr dataOptClass = auraMonoObjectGetClass(dataOptObj);
+            IntPtr entityField = this.FindAuraMonoFieldOnHierarchy(dataOptClass, "Entity");
+            if (entityField == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            byte* entityBuffer = stackalloc byte[32];
+            auraMonoFieldGetValue(dataOptObj, entityField, (IntPtr)entityBuffer);
+
+            if (this.petFeedAuraEcsEntityTryGetMayForWritePetBaseMethod != IntPtr.Zero && auraMonoRuntimeInvoke != null)
+            {
+                int hasValue = 0;
+                IntPtr* args = stackalloc IntPtr[2];
+                args[0] = (IntPtr)entityBuffer;
+                args[1] = (IntPtr)(&hasValue);
+                IntPtr exc = IntPtr.Zero;
+                IntPtr basePropertyObj = auraMonoRuntimeInvoke(this.petFeedAuraEcsEntityTryGetMayForWritePetBaseMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+                if (exc == IntPtr.Zero && hasValue != 0 && basePropertyObj != IntPtr.Zero
+                    && this.TryMergePetFeedSecretListsFromAuraMonoBasePropertyObject(basePropertyObj, target))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private List<IntPtr> CollectPetFeedAuraTryGetDataOptCandidates()
+        {
+            List<IntPtr> candidates = new List<IntPtr>();
+            if (this.petFeedAuraSpatialCenterClass == IntPtr.Zero
+                || auraMonoClassGetMethods == null
+                || auraMonoMethodGetName == null)
+            {
+                return candidates;
+            }
+
+            IntPtr iter = IntPtr.Zero;
+            while (true)
+            {
+                IntPtr method = auraMonoClassGetMethods(this.petFeedAuraSpatialCenterClass, ref iter);
+                if (method == IntPtr.Zero)
+                {
+                    break;
+                }
+
+                string name = auraMonoMethodGetName != null
+                    ? Marshal.PtrToStringAnsi(auraMonoMethodGetName(method)) ?? string.Empty
+                    : string.Empty;
+                if (!string.Equals(name, "TryGetDataOpt", StringComparison.Ordinal)
+                    || !AuraMonoMethodParamCountIs(method, 2))
+                {
+                    continue;
+                }
+
+                candidates.Add(method);
+            }
+
+            return candidates;
+        }
+
+        private unsafe bool TryPetFeedAuraTryGetDataOptInvoke(
+            IntPtr serviceObj,
+            IntPtr tryGetDataOptMethod,
+            uint netId,
+            out IntPtr dataOptObj)
+        {
+            dataOptObj = IntPtr.Zero;
+            if (serviceObj == IntPtr.Zero
+                || tryGetDataOptMethod == IntPtr.Zero
+                || this.petFeedAuraPetEntityOptDataClass == IntPtr.Zero
+                || auraMonoObjectNew == null
+                || auraMonoObjectUnbox == null
+                || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr boxedDataOpt = auraMonoObjectNew(this.auraMonoRootDomain, this.petFeedAuraPetEntityOptDataClass);
+            if (boxedDataOpt == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr dataOptOutPtr = auraMonoObjectUnbox(boxedDataOpt);
+            if (dataOptOutPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            uint handle = netId;
+            IntPtr* dataArgs = stackalloc IntPtr[2];
+            dataArgs[0] = (IntPtr)(&handle);
+            dataArgs[1] = dataOptOutPtr;
+            IntPtr exc = IntPtr.Zero;
+            IntPtr hasDataObj = auraMonoRuntimeInvoke(tryGetDataOptMethod, serviceObj, (IntPtr)dataArgs, ref exc);
+            if (exc != IntPtr.Zero
+                || !this.TryUnboxMonoBoolean(hasDataObj, out bool hasData)
+                || !hasData)
+            {
+                return false;
+            }
+
+            dataOptObj = boxedDataOpt;
+            return true;
+        }
+
+        private unsafe bool TryResolvePetFeedAuraTryGetDataOptUIntMethod(IntPtr serviceObj, uint probeNetId)
+        {
+            if (this.petFeedAuraTryGetDataOptMethod != IntPtr.Zero)
+            {
+                return true;
+            }
+
+            List<IntPtr> candidates = this.CollectPetFeedAuraTryGetDataOptCandidates();
+            if (candidates.Count == 0)
+            {
+                return false;
+            }
+
+            if (serviceObj != IntPtr.Zero && probeNetId != 0U)
+            {
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    if (this.TryPetFeedAuraTryGetDataOptInvoke(serviceObj, candidates[i], probeNetId, out IntPtr _))
+                    {
+                        this.petFeedAuraTryGetDataOptMethod = candidates[i];
+                        return true;
+                    }
+                }
+            }
+
+            // PetSpatialDataCenter declares TryGetDataOpt(EcsEntity, ...) before TryGetDataOpt(uint, ...).
+            // mono_class_get_method_from_name returns the first overload and causes NRE when passed a uint*.
+            IntPtr fallback = candidates.Count >= 2 ? candidates[1] : candidates[0];
+            this.petFeedAuraTryGetDataOptMethod = fallback;
+            return fallback != IntPtr.Zero;
+        }
+
+        private unsafe bool TryPetFeedAuraTryGetDataOptForNetId(IntPtr serviceObj, uint netId, out IntPtr dataOptObj)
+        {
+            dataOptObj = IntPtr.Zero;
+            if (serviceObj == IntPtr.Zero || netId == 0U)
+            {
+                return false;
+            }
+
+            if (this.petFeedAuraTryGetDataOptMethod == IntPtr.Zero
+                && !this.TryResolvePetFeedAuraTryGetDataOptUIntMethod(serviceObj, netId))
+            {
+                return false;
+            }
+
+            return this.TryPetFeedAuraTryGetDataOptInvoke(serviceObj, this.petFeedAuraTryGetDataOptMethod, netId, out dataOptObj);
+        }
+
+        private unsafe bool TryPopulatePetFeedSecretFavoritesAuraMono(PetFeedTarget target)
+        {
+            if (target == null || target.NetId == 0U
+                || !this.EnsurePetFeedAuraFavoriteMetadataReady()
+                || !this.EnsureDailyClaimsAuraMonoEcsTryGetOpenMethod()
+                || auraMonoRuntimeInvoke == null
+                || auraMonoObjectNew == null
+                || auraMonoObjectGetClass == null)
+            {
+                return false;
+            }
+
+            if (!this.TryDailyClaimsAuraMonoEcsTryGet(this.petFeedAuraSpatialCenterClass, false, out IntPtr serviceObj, out string tryGetStatus)
+                || serviceObj == IntPtr.Zero)
+            {
+                this.LogPetFeedAuraSecretDiagnosticOnce("AuraMono PetSpatialDataCenter unavailable: " + tryGetStatus);
+                return false;
+            }
+
+            int beforeFavorites = target.SecretFavoriteFoods != null ? target.SecretFavoriteFoods.Count : 0;
+            int beforeDislikes = target.SecretDislikeFoods != null ? target.SecretDislikeFoods.Count : 0;
+
+            try
+            {
+                if (!this.TryPetFeedAuraTryGetDataOptForNetId(serviceObj, target.NetId, out IntPtr dataOptObj)
+                    || dataOptObj == IntPtr.Zero)
+                {
+                    this.LogPetFeedAuraSecretDiagnosticOnce(
+                        "AuraMono TryGetDataOpt miss netId=" + target.NetId
+                        + " method=0x" + this.petFeedAuraTryGetDataOptMethod.ToInt64().ToString("X"));
+                    return false;
+                }
+
+                if (this.TryPopulatePetFeedSecretListsFromDataOptEntityDataOpt(dataOptObj, target))
+                {
+                    if ((target.SecretFavoriteFoods != null && target.SecretFavoriteFoods.Count > 0)
+                        || (target.SecretDislikeFoods != null && target.SecretDislikeFoods.Count > 0))
+                    {
+                        target.FavoriteSource = string.IsNullOrEmpty(target.FavoriteSource)
+                            ? "petBaseProperty"
+                            : target.FavoriteSource + "+petBaseProperty";
+                    }
+                }
+                else if (this.TryPopulatePetFeedSecretListsFromDataOptEntity(dataOptObj, target))
+                {
+                    if ((target.SecretFavoriteFoods != null && target.SecretFavoriteFoods.Count > 0)
+                        || (target.SecretDislikeFoods != null && target.SecretDislikeFoods.Count > 0))
+                    {
+                        target.FavoriteSource = string.IsNullOrEmpty(target.FavoriteSource)
+                            ? "petBaseProperty"
+                            : target.FavoriteSource + "+petBaseProperty";
+                    }
+                }
+                else if (this.TryPopulatePetFeedSecretListsFromDataOptPropertyOpt(dataOptObj, target))
+                {
+                    if ((target.SecretFavoriteFoods != null && target.SecretFavoriteFoods.Count > 0)
+                        || (target.SecretDislikeFoods != null && target.SecretDislikeFoods.Count > 0))
+                    {
+                        target.FavoriteSource = string.IsNullOrEmpty(target.FavoriteSource)
+                            ? "petBaseProperty"
+                            : target.FavoriteSource + "+petBaseProperty";
+                    }
+                }
+                else
+                {
+                    this.TryProbePetFeedAuraDataOptComponentPresence(dataOptObj, out bool hasPetBase, out bool hasFeedState);
+                    this.LogPetFeedAuraSecretDiagnosticOnce(
+                        "AuraMono PetBaseProperty lists empty netId=" + target.NetId
+                        + " hasPetBaseProperty=" + hasPetBase
+                        + " hasPetFeedState=" + hasFeedState
+                        + " knownCount=" + (target.FavoriteFoods != null ? target.FavoriteFoods.Count : 0));
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                this.LogPetFeedAuraSecretDiagnosticOnce("Secret favorites AuraMono netId=" + target.NetId + ": " + ex.GetType().Name);
+                return false;
+            }
+
+            return (target.SecretFavoriteFoods != null ? target.SecretFavoriteFoods.Count : 0) > beforeFavorites
+                || (target.SecretDislikeFoods != null ? target.SecretDislikeFoods.Count : 0) > beforeDislikes;
+        }
+
+        private unsafe bool TryPopulatePetFeedSecretListsFromDataOptPropertyOpt(IntPtr dataOptObj, PetFeedTarget target)
+        {
+            if (dataOptObj == IntPtr.Zero || target == null || auraMonoObjectGetClass == null || auraMonoRuntimeInvoke == null)
+            {
+                return false;
+            }
+
+            IntPtr dataOptClass = auraMonoObjectGetClass(dataOptObj);
+            IntPtr getPetBasePropertyMethod = this.FindAuraMonoMethodOnHierarchy(dataOptClass, "get_PetBaseProperty", 0);
+            if (getPetBasePropertyMethod == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            IntPtr exc = IntPtr.Zero;
+            IntPtr petBaseOptObj = auraMonoRuntimeInvoke(getPetBasePropertyMethod, dataOptObj, IntPtr.Zero, ref exc);
+            if (exc != IntPtr.Zero || petBaseOptObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            return this.TryPopulatePetFeedSecretListsFromAuraMonoBaseProperty(petBaseOptObj, target);
+        }
+
+        private unsafe bool TryPopulatePetFeedSecretListsFromAuraMonoBaseProperty(IntPtr petBaseOptObj, PetFeedTarget target)
+        {
+            if (petBaseOptObj == IntPtr.Zero || target == null || auraMonoRuntimeInvoke == null || auraMonoObjectNew == null)
+            {
+                return false;
+            }
+
+            if (this.petFeedAuraEntityDataOptTryGetValuePetBaseMethod != IntPtr.Zero && auraMonoObjectUnbox != null)
+            {
+                IntPtr petBaseOptPtr = auraMonoObjectUnbox(petBaseOptObj);
+                IntPtr basePropertyObj = auraMonoObjectNew(this.auraMonoRootDomain, this.petFeedAuraPetBasePropertyClass);
+                if (petBaseOptPtr != IntPtr.Zero && basePropertyObj != IntPtr.Zero)
+                {
+                    IntPtr basePropertyOutPtr = auraMonoObjectUnbox(basePropertyObj);
+                    if (basePropertyOutPtr != IntPtr.Zero)
+                    {
+                        IntPtr* valueArgs = stackalloc IntPtr[2];
+                        valueArgs[0] = petBaseOptPtr;
+                        valueArgs[1] = basePropertyOutPtr;
+                        IntPtr exc = IntPtr.Zero;
+                        IntPtr hasBaseObj = auraMonoRuntimeInvoke(this.petFeedAuraEntityDataOptTryGetValuePetBaseMethod, IntPtr.Zero, (IntPtr)valueArgs, ref exc);
+                        if (exc == IntPtr.Zero
+                            && this.TryUnboxMonoBoolean(hasBaseObj, out bool hasBase)
+                            && hasBase
+                            && this.TryMergePetFeedSecretListsFromAuraMonoBasePropertyObject(basePropertyObj, target))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            if (this.petFeedAuraEntityDataOptTryGetPetBaseMethod != IntPtr.Zero && auraMonoObjectUnbox != null)
+            {
+                IntPtr petBaseOptPtr = auraMonoObjectUnbox(petBaseOptObj);
+                if (petBaseOptPtr != IntPtr.Zero)
+                {
+                    int hasValueInt = 0;
+                    IntPtr* tryGetArgs = stackalloc IntPtr[2];
+                    tryGetArgs[0] = petBaseOptPtr;
+                    tryGetArgs[1] = (IntPtr)(&hasValueInt);
+                    IntPtr exc = IntPtr.Zero;
+                    IntPtr basePropertyObj = auraMonoRuntimeInvoke(this.petFeedAuraEntityDataOptTryGetPetBaseMethod, IntPtr.Zero, (IntPtr)tryGetArgs, ref exc);
+                    if (exc == IntPtr.Zero && hasValueInt != 0 && basePropertyObj != IntPtr.Zero
+                        && this.TryMergePetFeedSecretListsFromAuraMonoBasePropertyObject(basePropertyObj, target))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private bool TryMergePetFeedSecretListsFromAuraMonoBasePropertyObject(IntPtr basePropertyObj, PetFeedTarget target)
+        {
+            if (basePropertyObj == IntPtr.Zero || target == null)
+            {
+                return false;
+            }
+
+            bool added = false;
+            if (this.TryReadMonoIntListMember(basePropertyObj, "FavoriteFoods", out List<int> secretFavorites))
+            {
+                this.MergePetFeedIntList(ref target.SecretFavoriteFoods, secretFavorites);
+                added = secretFavorites != null && secretFavorites.Count > 0;
+            }
+
+            if (this.TryReadMonoIntListMember(basePropertyObj, "DislikeFoods", out List<int> secretDislikes))
+            {
+                this.MergePetFeedIntList(ref target.SecretDislikeFoods, secretDislikes);
+                added = added || (secretDislikes != null && secretDislikes.Count > 0);
+            }
+
+            return added;
+        }
+
+        private List<int> GetPetFeedLockedFavoriteFoods(PetFeedTarget pet)
+        {
+            List<int> locked = new List<int>();
+            if (pet == null || pet.SecretFavoriteFoods == null || pet.SecretFavoriteFoods.Count == 0)
+            {
+                return locked;
+            }
+
+            HashSet<int> known = new HashSet<int>();
+            if (pet.FavoriteFoods != null)
+            {
+                foreach (int staticId in pet.FavoriteFoods)
+                {
+                    if (staticId > 0)
+                    {
+                        known.Add(staticId);
+                    }
+                }
+            }
+
+            foreach (int staticId in pet.SecretFavoriteFoods)
+            {
+                if (staticId > 0 && !known.Contains(staticId))
+                {
+                    locked.Add(staticId);
+                }
+            }
+
+            return locked;
+        }
+
+        private string FormatPetFeedStaticIdListForLog(List<int> staticIds)
+        {
+            if (staticIds == null || staticIds.Count == 0)
+            {
+                return "(none)";
+            }
+
+            List<string> names = new List<string>();
+            foreach (int staticId in staticIds)
+            {
+                if (staticId <= 0)
+                {
+                    continue;
+                }
+
+                names.Add(this.GetPetFeedFoodDisplayName(staticId, string.Empty));
+            }
+
+            return names.Count > 0 ? string.Join(", ", names.ToArray()) : "(none)";
         }
     }
 }

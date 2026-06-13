@@ -3285,7 +3285,7 @@ namespace HeartopiaMod
 
             if (this.automationSubTab == 7)
             {
-                return 820f;
+                return 898f + this.GetPetFeedFavoriteUiTableHeight();
             }
 
             return 900f;
@@ -62355,21 +62355,30 @@ namespace HeartopiaMod
 
             try
             {
+                Type backpackItemType = this.FindLoadedType(
+                    "BackpackItem",
+                    "XDTGameSystem.UISystem.BackPack.BackpackItem",
+                    "UISystem.BackPack.BackpackItem");
+                MethodInfo getBackpackNameMethod = backpackItemType?.GetMethod(
+                    "GetBackPackName",
+                    BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
+                    null,
+                    new[] { typeof(int), typeof(int), typeof(uint) },
+                    null);
+                if (getBackpackNameMethod != null)
+                {
+                    object rawName = getBackpackNameMethod.Invoke(null, new object[] { staticId, 0, 0U });
+                    string cleanedName = this.CleanResolvedBagFoodName(rawName?.ToString());
+                    if (!string.IsNullOrWhiteSpace(cleanedName))
+                    {
+                        displayName = cleanedName;
+                        return true;
+                    }
+                }
+
                 Type tableDataType = this.FindLoadedType("TableData", "EcsClient.TableData");
                 if (tableDataType != null)
                 {
-                    MethodInfo getBackpackNameMethod = tableDataType.GetMethod("GetBackPackName", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(int), typeof(int), typeof(uint) }, null);
-                    if (getBackpackNameMethod != null)
-                    {
-                        object rawName = getBackpackNameMethod.Invoke(null, new object[] { staticId, 0, 0U });
-                        string cleanedName = this.CleanResolvedBagFoodName(rawName?.ToString());
-                        if (!string.IsNullOrWhiteSpace(cleanedName))
-                        {
-                            displayName = cleanedName;
-                            return true;
-                        }
-                    }
-
                     MethodInfo getEntityMethod = tableDataType.GetMethod("GetEntity", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(int), typeof(bool) }, null);
                     if (getEntityMethod != null)
                     {
@@ -62398,6 +62407,38 @@ namespace HeartopiaMod
 
             try
             {
+                IntPtr backpackClass = this.FindAuraMonoClassByFullName("XDTGameSystem.UISystem.BackPack.BackpackItem");
+                if (backpackClass == IntPtr.Zero)
+                {
+                    backpackClass = this.FindAuraMonoClassAcrossLoadedAssemblies(
+                        "XDTGameSystem.UISystem.BackPack",
+                        "BackpackItem");
+                }
+
+                if (backpackClass != IntPtr.Zero)
+                {
+                    IntPtr getBackpackNameMethod = this.FindAuraMonoMethodOnHierarchy(backpackClass, "GetBackPackName", 3);
+                    if (getBackpackNameMethod != IntPtr.Zero)
+                    {
+                        int starRate = 0;
+                        uint netId = 0U;
+                        IntPtr exc = IntPtr.Zero;
+                        IntPtr* args = stackalloc IntPtr[3];
+                        args[0] = (IntPtr)(&staticId);
+                        args[1] = (IntPtr)(&starRate);
+                        args[2] = (IntPtr)(&netId);
+                        IntPtr nameObj = auraMonoRuntimeInvoke(getBackpackNameMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+                        if (exc == IntPtr.Zero && nameObj != IntPtr.Zero && this.TryReadMonoString(nameObj, out string rawName))
+                        {
+                            displayName = this.CleanResolvedBagFoodName(rawName);
+                            if (!string.IsNullOrWhiteSpace(displayName))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+
                 IntPtr ecsImage = this.FindAuraMonoImage(new[] { "EcsClient", "EcsClient.dll" });
                 if (ecsImage == IntPtr.Zero)
                 {
@@ -62415,20 +62456,18 @@ namespace HeartopiaMod
                     return false;
                 }
 
-                IntPtr getBackpackNameMethod = this.FindAuraMonoMethodOnHierarchy(tableDataClass, "GetBackPackName", 3);
-                if (getBackpackNameMethod != IntPtr.Zero)
+                IntPtr getEntityMethod = this.FindAuraMonoMethodOnHierarchy(tableDataClass, "GetEntity", 2);
+                if (getEntityMethod != IntPtr.Zero)
                 {
-                    int starRate = 0;
-                    uint netId = 0U;
+                    bool needException = false;
                     IntPtr exc = IntPtr.Zero;
-                    IntPtr* args = stackalloc IntPtr[3];
+                    IntPtr* args = stackalloc IntPtr[2];
                     args[0] = (IntPtr)(&staticId);
-                    args[1] = (IntPtr)(&starRate);
-                    args[2] = (IntPtr)(&netId);
-                    IntPtr nameObj = auraMonoRuntimeInvoke(getBackpackNameMethod, IntPtr.Zero, (IntPtr)args, ref exc);
-                    if (exc == IntPtr.Zero && nameObj != IntPtr.Zero && this.TryReadMonoString(nameObj, out string rawName))
+                    args[1] = (IntPtr)(&needException);
+                    IntPtr entityObj = auraMonoRuntimeInvoke(getEntityMethod, IntPtr.Zero, (IntPtr)args, ref exc);
+                    if (exc == IntPtr.Zero && entityObj != IntPtr.Zero && this.TryGetMonoStringMember(entityObj, "name", out string entityName))
                     {
-                        displayName = this.CleanResolvedBagFoodName(rawName);
+                        displayName = this.CleanResolvedBagFoodName(entityName);
                         if (!string.IsNullOrWhiteSpace(displayName))
                         {
                             return true;

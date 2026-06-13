@@ -302,7 +302,7 @@ namespace HeartopiaMod
 
             num += Mathf.CeilToInt(foodSelectorHeight + 14f);
 
-            Rect feedActionRect = new Rect(left, num, width, 82f);
+            Rect feedActionRect = new Rect(left, num, width, 160f);
             GUI.Box(feedActionRect, string.Empty, this.themePanelStyle ?? GUI.skin.box);
             this.DrawCardOutline(feedActionRect, 1f);
             GUI.Label(new Rect(feedActionRect.x + 16f, feedActionRect.y + 12f, 180f, 20f), "FEEDING", labelStyle);
@@ -321,7 +321,23 @@ namespace HeartopiaMod
             }
             GUI.enabled = true;
 
-            num += Mathf.CeilToInt(feedActionRect.height + 18f);
+            float toggleY = buttonY + 40f;
+            bool nextSkipFiveStar = this.DrawSwitchToggle(
+                new Rect(feedActionRect.x + 16f, toggleY, width - 32f, 28f),
+                this.petFeedSkipFiveStarFood,
+                this.L("Skip 5 star food"));
+            if (nextSkipFiveStar != this.petFeedSkipFiveStarFood)
+            {
+                this.petFeedSkipFiveStarFood = nextSkipFiveStar;
+            }
+
+            if (GUI.Button(new Rect(feedActionRect.x + 16f, toggleY + 34f, width - 32f, 30f), this.L("Show pets favorite food"), this.themePrimaryButtonStyle ?? GUI.skin.button))
+            {
+                this.LogNearbyPetFavoriteFoods();
+            }
+
+            num = this.DrawPetFeedFavoriteFoodsTable(left, width, feedActionRect.yMax + 12f, labelStyle);
+
             return num + 40f;
         }
 
