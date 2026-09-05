@@ -517,6 +517,7 @@ namespace HeartopiaMod
 
             this.netCookCaptureGeneration++;
             this.netCookCaptureInProgress = false;
+            this.netCookCapturePending = false; // Reset Capture also cancels a queued click
             HeartopiaComplete.DebugEspClearGroup("mass-cook-capture");
 
             this.netCookCookerNetId = 0U;
@@ -3689,6 +3690,17 @@ namespace HeartopiaMod
         private void UpdateNetCookRuntimeReadiness()
         {
             float now = Time.unscaledTime;
+            // Sampled on a timer rather than every frame: this now ticks unconditionally (it used to
+            // run only while the Mass Cook tab was open, which meant the 3s stability window started
+            // when the tab opened — so an immediate Capture click always lost, however long the game
+            // had been running). A GameObject.Find four times a second is nothing; the window it feeds
+            // is 3s wide.
+            if (now < this.nextNetCookRuntimeReadinessSampleAt)
+            {
+                return;
+            }
+            this.nextNetCookRuntimeReadinessSampleAt = now + NetCookRuntimeReadinessSampleSeconds;
+
             bool playerReady = false;
             try
             {
@@ -3714,14 +3726,92 @@ namespace HeartopiaMod
             }
         }
 
+        // The Capture Stoves button. Never refuses outright for a closed runtime gate: the click IS the
+        // user's intent, and making them read a countdown and click again is friction for nothing. If
+        // the gate is shut the request is remembered and fired the moment it opens
+        // (ProcessNetCookPendingCapture). Only the explicit button goes through here — the internal
+        // start paths keep their own retry semantics.
+        private bool RequestNetCookCapture(out bool queued, out string status)
+        {
+            queued = false;
+            if (!this.IsNetCookRuntimeCaptureReady(out string gateStatus))
+            {
+                this.netCookCapturePending = true;
+                this.netCookCapturePendingSince = Time.unscaledTime;
+                status = gateStatus;
+                this.netCookStatus = gateStatus;
+                this.NetCookLog("Capture queued while the runtime gate is closed: " + gateStatus);
+                queued = true;
+                return false;
+            }
+
+            this.netCookCapturePending = false;
+            bool captured = this.TryCaptureNetCookFromCurrentTarget();
+            status = this.netCookStatus;
+            return captured;
+        }
+
+        // Runs every frame (see the OnUpdate tick) so a queued capture fires the instant the gate opens.
+        private void ProcessNetCookPendingCapture()
+        {
+            if (!this.netCookCapturePending)
+            {
+                return;
+            }
+
+            float now = Time.unscaledTime;
+            if (now - this.netCookCapturePendingSince > NetCookPendingCaptureTimeoutSeconds)
+            {
+                // Do not surprise the player with a capture minutes after they asked for one.
+                this.netCookCapturePending = false;
+                this.netCookStatus = "Capture request expired — the world never became ready. Try Capture Stoves again.";
+                this.NetCookLog(this.netCookStatus);
+                this.AddMenuNotification(this.netCookStatus, new Color(1f, 0.55f, 0.55f));
+                return;
+            }
+
+            if (!this.IsNetCookRuntimeCaptureReady(out _))
+            {
+                return;
+            }
+
+            this.netCookCapturePending = false;
+            this.NetCookLog("Runtime gate opened after " + (now - this.netCookCapturePendingSince).ToString("F1")
+                + "s — running the queued capture.");
+            if (this.TryCaptureNetCookFromCurrentTarget())
+            {
+                bool expanding = this.netCookCaptureCoroutine != null;
+                string notice = expanding
+                    ? "Expanding stove capture..."
+                    : (string.IsNullOrWhiteSpace(this.netCookStatus) ? "Mass cook stoves captured" : this.netCookStatus);
+                this.AddMenuNotification(notice, expanding ? new Color(1f, 0.85f, 0.45f) : new Color(0.45f, 1f, 0.55f));
+                return;
+            }
+
+            // A cooldown or a scan that found nothing: keep waiting rather than dropping the request,
+            // the gate check above already proved the runtime is up.
+            if (this.netCookCaptureInProgress || Time.unscaledTime < this.nextNetCookCaptureAllowedAt)
+            {
+                this.netCookCapturePending = true;
+                return;
+            }
+
+            this.AddMenuNotification(this.netCookStatus ?? "Capture failed.", new Color(1f, 0.55f, 0.55f));
+        }
+
         private bool IsNetCookRuntimeCaptureReady(out string status)
         {
             this.UpdateNetCookRuntimeReadiness();
 
             float now = Time.unscaledTime;
-            if (now < NetCookMinimumStartupCaptureDelaySeconds)
+            // The world-ready gate, not a stopwatch from process start. The old check refused for the
+            // first 12s of the PROCESS, which is both too much (it blocked a legitimate capture in a
+            // world that was already up) and too little (it was long satisfied by the time a homeland
+            // swap tore the world down again). IsWorldReady carries its own settle grace and closes
+            // during transitions that produce no loading screen at all.
+            if (!this.IsWorldReady)
             {
-                status = "Game is still warming up. Try Capture Stoves again in " + Mathf.CeilToInt(NetCookMinimumStartupCaptureDelaySeconds - now) + "s.";
+                status = "World is still loading. Capture will run as soon as it is ready.";
                 return false;
             }
 

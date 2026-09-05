@@ -1263,7 +1263,7 @@ namespace HeartopiaMod
         {
             try
             {
-                if (this.TryCaptureNetCookFromCurrentTarget())
+                if (this.RequestNetCookCapture(out bool captureQueued, out string requestStatus))
                 {
                     bool expandingCapture = this.netCookCaptureCoroutine != null;
                     string captureNotice = expandingCapture
@@ -1275,6 +1275,13 @@ namespace HeartopiaMod
                     }
                     this.AddMenuNotification(captureNotice,
                         expandingCapture ? new Color(1f, 0.85f, 0.45f) : new Color(0.45f, 1f, 0.55f));
+                }
+                else if (captureQueued)
+                {
+                    // Not a failure — the click is remembered and runs by itself once the world is up.
+                    this.AddMenuNotification(
+                        string.IsNullOrWhiteSpace(requestStatus) ? "Capture queued." : requestStatus,
+                        new Color(1f, 0.85f, 0.45f));
                 }
                 else
                 {
