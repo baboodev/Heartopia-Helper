@@ -789,6 +789,9 @@ namespace HeartopiaMod
                 }
             }
 
+            // Rarity dominates on purpose: one tier is worth 60 m of distance, and the top tier
+            // (gold, 4) is worth 240 m -- far more than any scan radius, so a gold shadow anywhere in
+            // range outranks everything else. See GetFishShadowVisualPriority for the tier table.
             score -= visualPriority * 360f;
             return score;
         }
@@ -1030,6 +1033,33 @@ namespace HeartopiaMod
             return this.GetFishShadowVisualPriority(candidate, out _, out _);
         }
 
+        // Rarity tier of a shadow, worth -360 each in GetFishShadowTargetScore. Matched on the SIZE
+        // SEGMENT of the prefab name, never on the whole name.
+        //
+        // The five rows of the Fishshadow table are the entire population, and the segment after
+        // "_shadow_" is the tier code (heights and point values from the decrypted tables, species
+        // counts are distinct ids in Fish.fishShadowModel):
+        //     s_1  small        height 0.2313   SeaPartyPoint  1   97 species
+        //     m_2  medium       height 0.3465   SeaPartyPoint  2   48 species
+        //     l_4  large        height 0.4866   SeaPartyPoint  5   31 species
+        //     g_4  GOLD large   height 0.4866   SeaPartyPoint 10   12 species -- whale shark, mako,
+        //                                                          oarfish, golden king crab, opah
+        //     g_2  GOLD medium  height 0.3465   SeaPartyPoint 10    3 species -- the attractor fish
+        // Gold takes tier 4, ABOVE large's 3, even when it is the smaller shadow: the game itself
+        // prices both gold shadows at 10 against large's 5, so ranking g_2 by its size would push the
+        // rarest catch in the game below an ordinary big one. And gold-medium cannot be told from
+        // plain medium geometrically -- they share the prefab height, so their shadow objects sit at
+        // the same world Y (verified live: both at y=19.6735, exactly waterY - 0.3465). The name is
+        // the only signal that separates them, which is why this function has to be right.
+        //
+        // MATCH THE SEGMENT, NOT THE FULL NAME. Until 2026-09-07 this looked for the literal
+        // "p_fishshadow_shadow_l_4_t" / "..._m_2_t" while the live objects are named
+        // "p_fishshadow_shadow_l_4_dots(Clone)" -- "_4_d", not "_4_t". Nothing ever matched; the
+        // colour-word fallback below does not fire on these names either; so EVERY shadow scored
+        // priority 0, the -360 term was dead, and targeting ran on distance and camera alone.
+        // Measured live over 12 shadows: the code picked a medium at 5.2 m while a gold sat at 4.0 m.
+        // The same "_dots" suffix already bit the radar icon maps (memory:
+        // radar-species-icon-maps-go-stale) -- assume it will drift again, and never anchor on it.
         private int GetFishShadowVisualPriority(GameObject candidate, out int fishId, out string source)
         {
             fishId = 0;
@@ -1041,18 +1071,35 @@ namespace HeartopiaMod
 
             this.TryGetFishShadowFishId(candidate, out fishId);
             string lowerName = string.IsNullOrEmpty(candidate.name) ? string.Empty : candidate.name.ToLowerInvariant();
-            if (lowerName.Contains("p_fishshadow_shadow_l_4_t"))
+            if (lowerName.Contains("_shadow_g_"))
             {
-                source = "prefab-name-gold";
+                source = "prefab-segment-gold";
+                return 4;
+            }
+
+            if (lowerName.Contains("_shadow_l_"))
+            {
+                source = "prefab-segment-large";
                 return 3;
             }
 
-            if (lowerName.Contains("p_fishshadow_shadow_m_2_t"))
+            if (lowerName.Contains("_shadow_m_"))
             {
-                source = "prefab-name-lightblue";
+                source = "prefab-segment-medium";
                 return 2;
             }
 
+            if (lowerName.Contains("_shadow_s_"))
+            {
+                // Tier 0 like an unmatched name, but the source still says so -- "matched, ordinary"
+                // and "matched nothing at all" are the two cases this whole comment exists about.
+                source = "prefab-segment-small";
+                return 0;
+            }
+
+            // Colour-word fallback, kept for a build that ever names shadows some other way. It has
+            // never fired on an observed name; it is what is left if the "_shadow_<code>_" convention
+            // itself changes.
             if (lowerName.Contains("gold") || lowerName.Contains("rare") || lowerName.Contains("rainbow"))
             {
                 source = "object-name";
