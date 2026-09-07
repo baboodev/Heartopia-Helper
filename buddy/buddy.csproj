@@ -310,6 +310,7 @@
     <Compile Include="HeartopiaComplete.UguiGameKeysContent.cs" />
     <Compile Include="AnimalCareFeature.cs" />
     <Compile Include="CarpetStampFeature.cs" />
+    <Compile Include="ClearMissedCallsFeature.cs" />
     <Compile Include="CraftAnimationSkipFeature.cs" />
     <Compile Include="AutoLearnRecipeFeature.cs" />
     <Compile Include="RepairThrowAnimationTrimFeature.cs" />

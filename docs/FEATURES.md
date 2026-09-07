@@ -62,7 +62,7 @@ Tab index **1** is unused in the main tab bar (historical gap).
 | Homeland Farm | Crop-box farming: auto farm, water/weed/harvest/sow/fertilize in radius, seed/fertilizer selection |
 | Pictures | Decrypt / re-encrypt `ScreenCapture` cache (Photo, Draw, …). Draw files get a color preview via game `ColorLut`; index maps kept in `Draw/.index/` |
 | Extras | Ice skating: network "Perfect Ice Skating" sequences (`IceSkatingSequenceFeature`) + real-time **Auto Ice Skating** bot (`AutoIceSkatingFeature`) |
-| Extra | Open Craft panel; **Analog Move** gamepad-stick → character bridge (`MovementInputFeature`); **Carpet Stamp** — scan party carpets + send a single step-on/step-off (`CarpetStampFeature`); **Sanrio Gacha Finder** — locate SANRIO event gacha machines (3 Star Town scene machines + player-placed ones via UGC actor scan), auto map pins + teleport (`SanrioGachaFinderFeature`) |
+| Extra | Open Craft panel; **Clear Missed Calls** — empty the watch's missed-call list (`ClearMissedCallsFeature`); **Analog Move** gamepad-stick → character bridge (`MovementInputFeature`); **Carpet Stamp** — scan party carpets + send a single step-on/step-off (`CarpetStampFeature`); **Sanrio Gacha Finder** — locate SANRIO event gacha machines (3 Star Town scene machines + player-placed ones via UGC actor scan), auto map pins + teleport (`SanrioGachaFinderFeature`) |
 | Sand Sculpture | Fully-automatic beach sand-sculpting: auto-place base + auto-sculpt correct model + auto-collect (`SandSculptureFeature`) |
 
 Inventory scan / sort / filter rules for these (and Auto Sell, Bag transfer, pets): **[BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md)**.
@@ -1599,6 +1599,47 @@ returns 0 under "Input System (New)". This bridge fixes that.
 
 Pipeline details: **[TECHNICAL.md § Analog movement bridge](./TECHNICAL.md)**; resolver facts in
 `memory/analog-move-injection.md`.
+
+---
+
+## New Features — Extra (Clear Missed Calls)
+
+**Tab:** New Features → Extra. **Source:** `ClearMissedCallsFeature.cs`. Research:
+[docs/plans/2026-09-07-clear-missed-calls.md](./plans/2026-09-07-clear-missed-calls.md).
+
+One button that empties the missed-call list on the player's watch — the backlog the Auto-Decline
+toggles leave behind. Everything lives in `DataModule<PhoneSystem>`
+(`XDTLevelAndEntity.Game.Module.Phone`), which holds two lists that the watch's phone app shows as
+one:
+
+- **`_recallData` — missed invites** (`EventCallData`, `PartyCallData`, `SelfRoomInviteCallData`,
+  `MultiBuildCallData`). Removed for real, one `PhoneSystem.RemoveInviteCall(entry)` per entry — the
+  call the game itself makes from `PhoneEndAction()`. It matches on the entry's own `IsSameCall`,
+  removes it and deactivates its red point through `RefreshReCallDataRedPoint`.
+- **`_taskCallData` — quest calls.** Only **muted**, never removed: `InitUnAnswerCall()` rebuilds
+  this list from `TaskSystem` on every `TaskUpdated` and whenever the phone app opens, and the rows
+  are live quest hints. `ReadUnAnswerCall(entry)` parks the id in `readUnAnswerCallIds` so later
+  rebuilds register the red point as inactive — exactly what `PhoneWatchAppWidget.RefreshRedPoint`
+  does when the app closes.
+
+A final `RefreshReCallDataRedPoint(null)` settles the tree. `WatchPanel.CheckItemDisplay` shows the
+phone tile only while `GetRecallCount() > 0`, so a successful clear makes the tile — and the red dot
+on the watch — disappear.
+
+- **Refuses while the watch is open** (`IUIManager.GetView(typeof(WatchPanel)) != null`):
+  `PhoneWatchAppWidget` keeps its own copy of the list, so clearing behind it would leave rows whose
+  "call back" button answers a dead invite. The guard fails open if the UI manager cannot be
+  resolved.
+- **Nothing is sent to the server.** Red points are a client-side node tree; the list itself is
+  never persisted. It is scoped to `GameLevel_Login`, the **root** of the level tree, so it survives
+  Town ↔ MicroHome ↔ Craft and a clear holds until logout.
+- **Never** `PhoneEndAction()` (that is the *accept* path — joins friend rooms, joins multi-builds,
+  and calls `ClientAcceptTask` / `ClientSubmitTask`), never an invoke of `PhoneCallData`'s abstract
+  members (`BadImageFormatException`), never `List<T>.Clear()` (generic inflation + stranded red
+  points).
+
+Zero detours, zero `.text` patches, zero event subscriptions, zero per-frame work. Every outcome —
+including every refusal — goes to the log as Tier 1.
 
 ---
 

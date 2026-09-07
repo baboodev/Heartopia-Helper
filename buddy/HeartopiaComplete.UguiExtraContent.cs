@@ -8,13 +8,17 @@ namespace HeartopiaMod
     // ============================================================================================
     // UGUI SHELL — Phase 3 tab CONTENT, New Features round (migration plan item 12): the EXTRA
     // sub-tab — DrawExtraFeaturesTab (AnimalCareFeature.cs:72-94), newFeaturesSubTab == 5
-    // (AnimalCareFeature.cs:54-57 dispatcher). Three source files stack vertically into this ONE
-    // sub-tab, in the source's own order:
+    // (AnimalCareFeature.cs:54-57 dispatcher). Four sections stack vertically into this ONE
+    // sub-tab, the first three in the source's own order:
     //   1. AnimalCareFeature.cs:72-94   — header + the Open Craft Panel button (toast-only
     //      feedback; NO persistent status field exists for it and none is invented here);
-    //   2. CarpetStampFeature.cs:466-555 — DrawCarpetStampSection (scan/step controls + the
+    //   2. ClearMissedCallsFeature.cs   — Missed Calls. The one section with NO IMGUI ancestor:
+    //      the feature postdates the migration, so it is authored here rather than mirrored.
+    //      Header / hint / one primary button / status line — Carpet Stamp's shape, deliberately,
+    //      and fixed-height, so it costs the relayout nothing;
+    //   3. CarpetStampFeature.cs:466-555 — DrawCarpetStampSection (scan/step controls + the
     //      scan-result list with per-row CONDITIONAL tails);
-    //   3. SanrioGachaFinderFeature.cs:848-967 — DrawSanrioGachaSection (toggle-gated block:
+    //   4. SanrioGachaFinderFeature.cs:848-967 — DrawSanrioGachaSection (toggle-gated block:
     //      hint, daily counter, 3 fixed Star Town rows, the frame-resorted placed-machine list,
     //      overflow + empty-state).
     //
@@ -106,11 +110,15 @@ namespace HeartopiaMod
     // wide 500/520 roles panelW-mapped — the Animal Care convention):
     //   extra header y=8 (460x24 bold 14)                      (+34)
     //   craft button y=42 (200x34 PRIMARY)                     (+42)
-    //   carpet header y=84 (460x24 bold 14)                    (+28)
-    //   carpet hint y=112 (panelW x20)                         (+24)
-    //   Scan y=136 (200x30 PRIMARY) | Step On Nearest x=218 (200x30 Secondary)   (+36)
-    //   carpet status y=172 (panelW x20)                       (+26)
-    //   carpet rows top y=198 — FIXED (rows h=22, pitch 24, ≤ CarpetStampMaxRowsShown=12)
+    //   missed-calls header y=84 (460x24 bold 14)              (+28)
+    //   missed-calls hint y=112 (panelW x20)                   (+24)
+    //   Clear Missed Calls y=136 (200x30 PRIMARY)              (+36)
+    //   missed-calls status y=172 (panelW x20)                 (+26)
+    //   carpet header y=198 (460x24 bold 14)                   (+28)
+    //   carpet hint y=226 (panelW x20)                         (+24)
+    //   Scan y=250 (200x30 PRIMARY) | Step On Nearest x=218 (200x30 Secondary)   (+36)
+    //   carpet status y=286 (panelW x20)                       (+26)
+    //   carpet rows top y=312 — FIXED (rows h=22, pitch 24, ≤ CarpetStampMaxRowsShown=12)
     //   [overflow +22]  → +8 (section return)  → +14 (the dispatcher's inter-section gap)
     //   sanrio header (460x24)  (+30)  toggle (360x30)  (+36)
     //   [details: hint (panelW x measured, +H+4); counter (+26); 3 scene rows (h=26, pitch 28 —
@@ -144,6 +152,10 @@ namespace HeartopiaMod
             public Transform ScrollContent;
             public float PanelW;
             public Color MutedColor;              // the Sanrio bodyStyle color (grow-time rows)
+
+            // -------- Missed Calls --------
+            public GameObject MissedCallsStatusLabel;
+            public string MissedCallsStatusShown;  // composed label text last written
 
             // -------- Carpet Stamp --------
             public GameObject CarpetStatusLabel;
@@ -198,7 +210,9 @@ namespace HeartopiaMod
         private static readonly Color UguiExtraFailColor = new Color(1f, 0.5f, 0.4f);
 
         // Carpet rows' fixed region top (everything above it is static — file header cursor).
-        private const float UguiExtraCarpetRowsTopY = 198f;
+        // 198 before the Missed Calls section was inserted above it; that block is fixed-height,
+        // so the only layout consequence is this constant and the four carpet chrome positions.
+        private const float UguiExtraCarpetRowsTopY = 312f;
 
         // Cached sort state for the per-frame placed resort (file header: identical ordering to
         // the source's per-frame lambda, without its per-frame closure allocation).
@@ -272,32 +286,57 @@ namespace HeartopiaMod
                 this.L("craft.open"), new System.Action(this.OnUguiExtraOpenCraftClicked));
             PlaceUguiTopLeft(craftButton, 8f, 42f, 200f, 34f);
 
-            // ==================== Part 2 — Carpet Stamp ====================
+            // ==================== Part 2 — Missed Calls ====================
+            // ClearMissedCallsFeature.cs — this round's only NEW section (no IMGUI ancestor: the
+            // feature postdates the migration). Shape copied from Carpet Stamp below it —
+            // header / hint / one primary button / status line — so the tab reads as one thing.
+            // Everything is static: the section's height never changes, which is why the carpet
+            // block's fixed cursor simply starts 114px lower and the relayout is untouched.
+
+            GameObject missedHeader = this.CreateUguiLabel(scrollContent, "MissedCallsHeader",
+                this.L("Missed Calls"), 14f, headerColor, false);
+            this.TrySetUguiLabelBold(missedHeader);
+            PlaceUguiTopLeft(missedHeader, 8f, 84f, 460f, 24f);
+
+            GameObject missedHint = this.CreateUguiBodyLabel(scrollContent, "MissedCallsHint",
+                this.L("Empty the missed-call list on your watch: invites are removed, quest calls only lose their red dot."), 13f);
+            PlaceUguiTopLeft(missedHint, 8f, 112f, panelW, 20f);
+
+            GameObject clearMissedButton = this.CreateUguiPrimaryButton(scrollContent, "ClearMissedCallsButton",
+                this.L("Clear Missed Calls"), new System.Action(this.OnUguiExtraClearMissedCallsClicked));
+            PlaceUguiTopLeft(clearMissedButton, 8f, 136f, 200f, 30f);
+
+            handle.MissedCallsStatusShown = this.LF("Status: {0}", this.GetClearMissedCallsStatus());
+            handle.MissedCallsStatusLabel = this.CreateUguiBodyLabel(scrollContent, "MissedCallsStatus",
+                handle.MissedCallsStatusShown, 13f);
+            PlaceUguiTopLeft(handle.MissedCallsStatusLabel, 8f, 172f, panelW, 20f);
+
+            // ==================== Part 3 — Carpet Stamp ====================
 
             // CarpetStampFeature.cs:470-472.
             GameObject carpetHeader = this.CreateUguiLabel(scrollContent, "CarpetHeader",
                 this.L("Carpet Stamp (Slippery Rug)"), 14f, headerColor, false);
             this.TrySetUguiLabelBold(carpetHeader);
-            PlaceUguiTopLeft(carpetHeader, 8f, 84f, 460f, 24f);
+            PlaceUguiTopLeft(carpetHeader, 8f, 198f, 460f, 24f);
 
             // :475 — a plain default GUI.Label → kit body label (the Radar credits mapping).
             GameObject carpetHint = this.CreateUguiBodyLabel(scrollContent, "CarpetHint",
                 this.L("Scan party carpets on the map, send a single step-on (server speed buff)."), 13f);
-            PlaceUguiTopLeft(carpetHint, 8f, 112f, panelW, 20f);
+            PlaceUguiTopLeft(carpetHint, 8f, 226f, panelW, 20f);
 
             // :478-483 primary Scan / :485 plain-button Step On Nearest → Secondary tier.
             GameObject scanButton = this.CreateUguiPrimaryButton(scrollContent, "ScanCarpetsButton",
                 this.L("Scan Carpets"), new System.Action(this.OnUguiExtraCarpetScanClicked));
-            PlaceUguiTopLeft(scanButton, 8f, 136f, 200f, 30f);
+            PlaceUguiTopLeft(scanButton, 8f, 250f, 200f, 30f);
             GameObject stepNearestButton = this.CreateUguiSecondaryButton(scrollContent, "StepOnNearestButton",
                 this.L("Step On Nearest"), new System.Action(this.OnUguiExtraCarpetStepOnNearestClicked));
-            PlaceUguiTopLeft(stepNearestButton, 218f, 136f, 200f, 30f);
+            PlaceUguiTopLeft(stepNearestButton, 218f, 250f, 200f, 30f);
 
             // :514 — live status line ("Status: " prefix is a source literal).
             handle.CarpetStatusRaw = this.carpetStampStatus;
             handle.CarpetStatusLabel = this.CreateUguiBodyLabel(scrollContent, "CarpetStatus",
                 "Status: " + this.carpetStampStatus, 13f);
-            PlaceUguiTopLeft(handle.CarpetStatusLabel, 8f, 172f, panelW, 20f);
+            PlaceUguiTopLeft(handle.CarpetStatusLabel, 8f, 286f, panelW, 20f);
 
             // :548-551 — overflow label (position/visibility owned by the relayout).
             handle.CarpetOverflowLabel = this.CreateUguiBodyLabel(scrollContent, "CarpetOverflow", "", 13f);
@@ -306,7 +345,7 @@ namespace HeartopiaMod
             // Rows themselves are pooled on demand by SyncUguiExtraCarpetRows (fixed region top —
             // nothing above them ever moves).
 
-            // ==================== Part 3 — Sanrio Gacha Machines ====================
+            // ==================== Part 4 — Sanrio Gacha Machines ====================
 
             // :857 — header (positions from here down are owned by the relayout — the carpet
             // list above changes their y).
@@ -873,6 +912,18 @@ namespace HeartopiaMod
                 if (Time.unscaledTime >= handle.NextSlowSyncAt)
                 {
                     handle.NextSlowSyncAt = Time.unscaledTime + 0.5f;
+
+                    // Missed-calls status. Composed through LF, so it cannot be reference-diffed
+                    // like the carpet's raw field — a value compare on the 0.5s tick instead of a
+                    // per-frame string.Format. The click handler writes it immediately, so this is
+                    // only the language-switch / external-edit path.
+                    string missedStatus = this.LF("Status: {0}", this.GetClearMissedCallsStatus());
+                    if (!string.Equals(missedStatus, handle.MissedCallsStatusShown, StringComparison.Ordinal))
+                    {
+                        handle.MissedCallsStatusShown = missedStatus;
+                        this.SetUguiLabelText(handle.MissedCallsStatusLabel, missedStatus);
+                    }
+
                     if (this.sanrioGachaFinderEnabled)
                     {
                         if (!handle.SanrioHintMeasureOk)
@@ -916,6 +967,26 @@ namespace HeartopiaMod
         {
             bool ok = this.TryOpenCraftPanel(out string status);
             this.AddMenuNotification(status, ok ? UguiExtraOkColor : UguiExtraFailColor);
+        }
+
+        // ClearMissedCallsFeature.cs — one shot: remove the missed invites, mute the quest calls,
+        // refresh the red points. Green whenever the pass COMPLETED (an already-empty list is a
+        // success), red only on a real refusal; the reason is in the status line and in the log
+        // either way. The label is written here rather than waiting for the 0.5s tick, so the
+        // result is on screen in the same frame as the click (Carpet scan precedent).
+        private void OnUguiExtraClearMissedCallsClicked()
+        {
+            bool ok = this.ClearMissedCalls();
+            string status = this.GetClearMissedCallsStatus();
+            this.AddMenuNotification(this.LF("Missed calls: {0}", status),
+                ok ? UguiExtraOkColor : UguiExtraFailColor);
+
+            UguiShellNewFeaturesExtraHandle handle = this.uguiShellNewFeaturesExtra;
+            if (handle != null && handle.Root != null)
+            {
+                handle.MissedCallsStatusShown = this.LF("Status: {0}", status);
+                this.SetUguiLabelText(handle.MissedCallsStatusLabel, handle.MissedCallsStatusShown);
+            }
         }
 
         // CarpetStampFeature.cs:478-483 — scan, status write, prefixed toast; then an immediate
