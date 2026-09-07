@@ -94,7 +94,10 @@ namespace HeartopiaMod
         // Taking a dream reward makes the server push the dream data back, which dispatches
         // RefreshDreamEvent again. The pass is idempotent (a target with nothing left simply stops
         // being lit), so the interval is only there to keep the _nodeDic walk rare.
-        private const float DailyClaimsAutoDreamMinIntervalSeconds = 3f;
+        // Raised from 3 s when TaskUpdated joined RefreshDreamEvent as a trigger: that one fires
+        // in the hundreds per frame, and this pass walks the whole node map, so the interval is what
+        // keeps the walk rare. Nothing here is time-critical.
+        private const float DailyClaimsAutoDreamMinIntervalSeconds = 10f;
         private const int DailyClaimsAutoDreamPerPass = 8;
 
         // Sticker theme bonuses have no server RedPointType either. This is what the server sync of
@@ -128,6 +131,13 @@ namespace HeartopiaMod
         // in the game — Quest Assistant measured 600-700 dispatches in a single frame — so the
         // handler does nothing but flip a bool and the interval below does the coalescing.
         private const string DailyClaimsTaskUpdatedEventName = "XDTDataAndProtocol.Events.TaskUpdated";
+
+        // The other half of DreamTaskReward. DreamSystem lights it from OnTaskUpdated for ordinary
+        // dream tasks but from OnLoopTaskUpdate for taskType 1, and only DreamSyncSystem dispatches
+        // this one — so it is both dream-specific and quiet, unlike TaskUpdated.
+        private const string DailyClaimsLoopTaskUpdateEventName =
+            "ScriptsRefactory.DataAndProtocol.Events.LoopTaskUpdateEvent";
+        private const int DailyClaimsLoopTaskUpdateEventBytes = 8;   // int gameTaskId, uint completedTimes
         private const int DailyClaimsTaskUpdatedEventBytes = 8;   // uint taskNetId@0, int taskStaticId@4
         private const float DailyClaimsAutoWhalefallMinIntervalSeconds = 5f;
 
@@ -291,15 +301,19 @@ namespace HeartopiaMod
                     DailyClaimsSocialReportUpdateEventName,
                     DailyClaimsSocialReportUpdateEventBytes,
                     this.OnDailyClaimsAutoSocialReportUpdateEvent);
+                bool loopTask = this.RegisterGameEventHook(
+                    DailyClaimsLoopTaskUpdateEventName,
+                    DailyClaimsLoopTaskUpdateEventBytes,
+                    this.OnDailyClaimsAutoLoopTaskUpdateEvent);
 
                 this.dailyClaimsAutoHooksRegistered =
                     redPoint || activityTasks || mail || dream || sticker || battlePass
-                    || taskUpdated || seaCycle || socialReport;
+                    || taskUpdated || seaCycle || socialReport || loopTask;
                 this.DailyClaimsLog("auto-claim hooks registered: redPoint=" + redPoint
                     + " activityTasks=" + activityTasks + " mail=" + mail + " dream=" + dream
                     + " sticker=" + sticker + " battlePass=" + battlePass
                     + " taskUpdated=" + taskUpdated + " seaCycle=" + seaCycle
-                    + " socialReport=" + socialReport);
+                    + " socialReport=" + socialReport + " loopTask=" + loopTask);
 
                 if (!this.dailyClaimsAutoHooksRegistered)
                 {
@@ -486,6 +500,25 @@ namespace HeartopiaMod
             // whether the id is one of ours would pay that cost per dispatch. The drain checks the
             // seven ids once per interval instead.
             this.dailyClaimsAutoPendingWhalefall = true;
+
+            // Dream tasks are game tasks too. DreamSystem lights DreamTaskReward from its own
+            // TaskUpdated listener, and RefreshDreamEvent — the dream pass's only other trigger —
+            // does NOT fire for that, so without this a dream task that became submittable
+            // mid-session sat lit until the next world change. Both passes are gated on what is
+            // actually lit, so arming them costs a walk, not a command.
+            this.dailyClaimsAutoPendingDream = true;
+        }
+
+        private void OnDailyClaimsAutoLoopTaskUpdateEvent(GameEventSnapshot e)
+        {
+            if (!this.dailyClaimsAutoClaimEnabled)
+            {
+                return;
+            }
+
+            this.DailyClaimsLog("loop task update gameTaskId=" + e.ReadInt32(0)
+                + " completedTimes=" + e.ReadUInt32(4));
+            this.dailyClaimsAutoPendingDream = true;
         }
 
         private void OnDailyClaimsAutoSocialReportUpdateEvent(GameEventSnapshot e)
