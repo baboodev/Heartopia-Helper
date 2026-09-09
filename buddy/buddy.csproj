@@ -303,6 +303,8 @@
     <Compile Include="InputRebindFeature.cs" />
     <Compile Include="EmoteUnlockFeature.cs" />
     <Compile Include="PaintStyleUnlockFeature.cs" />
+    <Compile Include="HeartopiaComplete.UguiColorPicker.cs" />
+    <Compile Include="FurnitureDyeFeature.cs" />
     <Compile Include="ActionPanelFeature.cs" />
     <Compile Include="ForagingAnimationFeature.cs" />
     <Compile Include="FriendInteractUnlockFeature.cs" />

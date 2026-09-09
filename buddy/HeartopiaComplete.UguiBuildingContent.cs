@@ -185,6 +185,9 @@ namespace HeartopiaMod
             // Paint Style Unlock lives ONLY on this page, not in the shared Free Placement tree:
             // the floating Move Panel is a during-placement tool, and this is a one-off switch.
             public Toggle PaintStyleToggle;
+            public Toggle DyePickerToggle;
+            public GameObject DyeStatusLabel;
+            public string DyeStatusShown;
             public GameObject PaintStyleStatusLabel;
             public string PaintStyleStatusShown;
             public int ErrorCount;      // per-frame sync disabled at 3 (LIVE rail idiom)
@@ -771,6 +774,18 @@ namespace HeartopiaMod
                 handle.PaintStyleStatusShown, 11f, statusColor, false);
             PlaceUguiTopLeft(handle.PaintStyleStatusLabel, pad + 22f, paintY, w - pad * 2f - 22f, 20f);
 
+            paintY += 26f;
+            handle.DyePickerToggle = this.CreateUguiCheckbox(block.transform, "DyePickerToggle",
+                this.L("Free colour picker for furniture"), this.furnitureDyePickerEnabled,
+                new System.Action<bool>(this.OnUguiBuildingDyePickerToggled));
+            PlaceUguiTopLeft(handle.DyePickerToggle.gameObject, pad, paintY, w - pad * 2f, 24f);
+
+            paintY += 26f;
+            handle.DyeStatusShown = this.DescribeUguiDyeFocus();
+            handle.DyeStatusLabel = this.CreateUguiLabel(block.transform, "DyeStatus",
+                handle.DyeStatusShown, 11f, statusColor, false);
+            PlaceUguiTopLeft(handle.DyeStatusLabel, pad + 22f, paintY, w - pad * 2f - 22f, 20f);
+
             handle.Root = block;
             this.uguiShellSelfBuilding = handle;
             return block;
@@ -809,6 +824,42 @@ namespace HeartopiaMod
             try { this.SaveKeybinds(false); } catch { }
         }
 
+        // The picker builds itself lazily on the first frame a dyeable object is focused, so this
+        // only flips the flag — no window work from a UI callback.
+        private void OnUguiBuildingDyePickerToggled(bool value)
+        {
+            if (value == this.furnitureDyePickerEnabled)
+            {
+                return;
+            }
+
+            this.furnitureDyePickerEnabled = value;
+            FeatureLog.Toggle(FurnitureDyeTag, value);
+            this.AddMenuNotification(
+                value ? "Colour picker on — focus a piece of furniture in build mode"
+                      : "Colour picker off",
+                value ? new Color(0.55f, 0.88f, 1f) : new Color(0.85f, 0.85f, 0.85f));
+            try { this.SaveKeybinds(false); } catch { }
+        }
+
+        // What the picker can see right now, in one line — this is the page's answer to "can the
+        // thing I am pointing at be dyed?", and it stays useful when the floating panel is hidden
+        // precisely BECAUSE the answer is no.
+        private string DescribeUguiDyeFocus()
+        {
+            if (!this.furnitureDyePickerEnabled)
+            {
+                return "Off.";
+            }
+            FurnitureDyeTarget target = this.FurnitureDyeFocusedTarget;
+            if (target == null)
+            {
+                string why = this.FurnitureDyeWhyNot;
+                return string.IsNullOrEmpty(why) ? "No dyeable object focused." : why;
+            }
+            return "Dyeable: #" + target.StaticId + ", " + target.Parts.Count + " part(s).";
+        }
+
         // Called every frame from ProcessUguiShellOnUpdate; skips in a few comparisons unless
         // the shell is visible ON Self→Building.
         private void ProcessUguiShellSelfBuildingOnUpdate()
@@ -825,6 +876,13 @@ namespace HeartopiaMod
                 this.SyncUguiFreePlacementControls(handle.Controls);
 
                 this.SyncUguiToggleFromField(handle.PaintStyleToggle, this.paintStyleUnlockEnabled);
+                this.SyncUguiToggleFromField(handle.DyePickerToggle, this.furnitureDyePickerEnabled);
+                string dyeStatus = this.DescribeUguiDyeFocus();
+                if (handle.DyeStatusShown != dyeStatus)
+                {
+                    handle.DyeStatusShown = dyeStatus;
+                    this.SetUguiLabelText(handle.DyeStatusLabel, dyeStatus);
+                }
                 if (handle.PaintStyleStatusShown != this.paintStyleUnlockStatus)
                 {
                     handle.PaintStyleStatusShown = this.paintStyleUnlockStatus;

@@ -241,6 +241,7 @@ namespace HeartopiaMod
             data.quietBpPayRewardPopup = this.quietBpPayRewardPopup;
             data.emoteUnlockEnabled = this.emoteUnlockEnabled;
             data.paintStyleUnlockEnabled = this.paintStyleUnlockEnabled;
+            data.furnitureDyePickerEnabled = this.furnitureDyePickerEnabled;
             data.friendInteractUnlockEnabled = this.friendInteractUnlockEnabled;
             data.foragingAnimEnabled = this.foragingAnimEnabled;
             data.skipCraftDyeAnimations = this.skipCraftDyeAnimations;
@@ -625,6 +626,7 @@ namespace HeartopiaMod
             this.quietBpPayRewardPopup = data.quietBpPayRewardPopup;
             this.emoteUnlockEnabled = data.emoteUnlockEnabled;
             this.paintStyleUnlockEnabled = data.paintStyleUnlockEnabled;
+            this.furnitureDyePickerEnabled = data.furnitureDyePickerEnabled;
             this.friendInteractUnlockEnabled = data.friendInteractUnlockEnabled;
             this.foragingAnimEnabled = data.foragingAnimEnabled;
             this.skipCraftDyeAnimations = data.skipCraftDyeAnimations;

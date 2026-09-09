@@ -448,6 +448,38 @@ Implementation is a three-tier `BuildModule` resolution (managed → AuraMono `M
 - Toggle persisted in config (`paintStyleUnlockEnabled`). Implementation:
   `PaintStyleUnlockFeature.cs`; UI row in `HeartopiaComplete.UguiBuildingContent.cs`.
 
+### Building — Free colour picker for furniture (Self → Building sub-tab)
+
+- A floating window with a graphics-app picker (SV square + hue strip + hex field + the item's own
+  palette), shown automatically while a **dyeable** object is focused in build mode.
+- **Why it is possible at all:** the game's palette is a client-UI limit, not a data or server one.
+  `DyeColorData.color` is a raw packed int, the live renderer `DyeColorClientUtil.GetDyeColor` uses
+  it directly with no palette lookup, and `DyeColorCosts` keys on `(staticId, body)` — the PART, so
+  the price does not depend on the colour. Measured 2026-09-09 on Workbench 330001: a pure-magenta
+  `0xFF00FFFF` applied, saved, survived a level transition out of the build sandbox, and the server
+  **charged 2 units of Dye (41001), 11 → 9**. A rejected op would have hit
+  `RevertInvalidLocalOperations` + `CraftBank.RevertCurrency` instead.
+- The game itself ships an unreachable version of this: `DyeColorPanel_Auto` binds
+  `customDyeBar@go` (H/S/V sliders, three recent-colour slots, confirm/cancel) and the server syncs
+  `LatestUsedDayColorComponent` for the recent list — but the only code that reveals it hangs off a
+  list cell at `index == colors.Length` while the list is filled with `SetCount(colors.Length)`, and
+  nothing binds the sliders.
+- **Dyeable** = not structure (`HomelandSystem.CheckCanPaint` — EntityType wall/floor/quarterwall
+  take the paint-style flow) **and** at least one `ColorPart` with a non-empty `colors` array in
+  `DyeColorConfig.itemDyeColorConfigs[staticId]`. The Building page shows the verdict as a line
+  under the toggle, including the reason when the answer is no.
+- ⚠ Walls / floors / ceilings are deliberately refused: their colour lives in the bake as ONE BYTE
+  of palette index per location, re-resolved as `material.colorThemes[colorindex]` in
+  `BakeRenderingProcessorFloor`/`Wall`. An arbitrary RGB has nowhere to live there.
+- Implementation notes: the SV square is three stacked Images (hue fill + white saturation ramp +
+  black value ramp), so only a `img.color =` changes with the hue — no per-frame texture rebuild.
+  Pointer input is POLLED like the kit's window drag (no injected `IDragHandler`). The object
+  recolours live, throttled to 12.5 Hz with a guaranteed apply on release; the focus walk runs at
+  10 Hz and pauses entirely during a drag. Nothing is sent: the change rides the player's own build
+  confirm and the server prices it normally.
+- Toggle persisted in config (`furnitureDyePickerEnabled`). Implementation:
+  `FurnitureDyeFeature.cs` (model) + `HeartopiaComplete.UguiColorPicker.cs` (window).
+
 ### Chat Translate Unlock
 
 - Unlocks chat translation for messages the game refuses to translate: the game tags every

@@ -815,6 +815,7 @@ namespace HeartopiaMod
             // (that early-returns until the shell is first built; this panel must auto-show with
             // the shell never opened).
             this.ProcessUguiBuildingMovePanelOnUpdate();
+            this.ProcessUguiDyePickerOnUpdate();
             // Floating UGUI Quest Assistant window — deliberately NOT inside ProcessUguiShellOnUpdate
             // (that early-returns until the shell is first built; this window must work with the
             // shell never opened). Gated on questAssistantWindowVisible ALONE — its IMGUI twin has
