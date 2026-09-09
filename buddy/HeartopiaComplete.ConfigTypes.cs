@@ -227,6 +227,7 @@ namespace HeartopiaMod
             public bool quietCongratsPopups;
             public bool quietBpPayRewardPopup;
             public bool emoteUnlockEnabled;
+            public bool paintStyleUnlockEnabled;
             public bool friendInteractUnlockEnabled;
             public bool foragingAnimEnabled;
             public bool skipCraftDyeAnimations;

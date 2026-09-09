@@ -182,6 +182,11 @@ namespace HeartopiaMod
         {
             public GameObject Root;
             public UguiFreePlacementControlsHandle Controls;
+            // Paint Style Unlock lives ONLY on this page, not in the shared Free Placement tree:
+            // the floating Move Panel is a during-placement tool, and this is a one-off switch.
+            public Toggle PaintStyleToggle;
+            public GameObject PaintStyleStatusLabel;
+            public string PaintStyleStatusShown;
             public int ErrorCount;      // per-frame sync disabled at 3 (LIVE rail idiom)
         }
 
@@ -745,9 +750,63 @@ namespace HeartopiaMod
 
             handle.Controls = this.BuildUguiFreePlacementControls(block.transform, pad, 44f, w - pad * 2f);
 
+            // Second section, below the full-height (god rows included) Free Placement block.
+            float paintY = 44f + UguiFreePlacementFullH + 20f;
+            GameObject paintHeader = this.CreateUguiLabel(block.transform, "PaintHeader",
+                this.L("Paint styles"), 14f, this.UguiKitTextColor(), false);
+            this.TrySetUguiLabelBold(paintHeader);
+            PlaceUguiTopLeft(paintHeader, pad, paintY, w - pad * 2f, 22f);
+
+            paintY += 26f;
+            handle.PaintStyleToggle = this.CreateUguiCheckbox(block.transform, "PaintStyleToggle",
+                this.L("Unlock all wall / floor paint styles"), this.paintStyleUnlockEnabled,
+                new System.Action<bool>(this.OnUguiBuildingPaintStyleUnlockToggled));
+            PlaceUguiTopLeft(handle.PaintStyleToggle.gameObject, pad, paintY, w - pad * 2f, 24f);
+
+            paintY += 26f;
+            Color statusColor = this.UguiKitTextColor();
+            statusColor.a = 0.7f;
+            handle.PaintStyleStatusShown = this.paintStyleUnlockStatus;
+            handle.PaintStyleStatusLabel = this.CreateUguiLabel(block.transform, "PaintStyleStatus",
+                handle.PaintStyleStatusShown, 11f, statusColor, false);
+            PlaceUguiTopLeft(handle.PaintStyleStatusLabel, pad + 22f, paintY, w - pad * 2f - 22f, 20f);
+
             handle.Root = block;
             this.uguiShellSelfBuilding = handle;
             return block;
+        }
+
+        // The hooks are installed by the feature tick, never from this callback — a UI event must
+        // not run native code. All this does is flip the flag and persist it.
+        private void OnUguiBuildingPaintStyleUnlockToggled(bool value)
+        {
+            if (value == this.paintStyleUnlockEnabled)
+            {
+                return;
+            }
+
+            this.paintStyleUnlockEnabled = value;
+            if (!value)
+            {
+                // The detours stay applied for the process lifetime (tearing one down across a
+                // world change corrupts); switching off just makes both hooks fall through to
+                // their trampolines, which is the stock behaviour.
+                this.paintStyleUnlockStatus = "Off — reopen the paint panel to see the stock list.";
+            }
+            else if (this.paintStyleUnlockHookTried)
+            {
+                // Re-enabled after an off: the install already happened, so the tick will not
+                // rewrite the status line. Say what it is now rather than leave the "Off —" text.
+                this.paintStyleUnlockStatus = paintStyleUnlockDetour != null
+                    ? "Active — reopen the paint panel to see all styles."
+                    : this.paintStyleUnlockStatus;
+            }
+
+            FeatureLog.Toggle(PaintStyleUnlockTag, value);
+            this.AddMenuNotification(
+                value ? "Paint styles unlocked — reopen the paint panel" : "Paint styles back to stock",
+                value ? new Color(0.55f, 0.88f, 1f) : new Color(0.85f, 0.85f, 0.85f));
+            try { this.SaveKeybinds(false); } catch { }
         }
 
         // Called every frame from ProcessUguiShellOnUpdate; skips in a few comparisons unless
@@ -764,6 +823,13 @@ namespace HeartopiaMod
             try
             {
                 this.SyncUguiFreePlacementControls(handle.Controls);
+
+                this.SyncUguiToggleFromField(handle.PaintStyleToggle, this.paintStyleUnlockEnabled);
+                if (handle.PaintStyleStatusShown != this.paintStyleUnlockStatus)
+                {
+                    handle.PaintStyleStatusShown = this.paintStyleUnlockStatus;
+                    this.SetUguiLabelText(handle.PaintStyleStatusLabel, handle.PaintStyleStatusShown);
+                }
             }
             catch (Exception ex)
             {

@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
     <Platform Condition="'$(Platform)' == ''">AnyCPU</Platform>
@@ -302,6 +302,7 @@
     <Compile Include="HookFreeDelegate.cs" />
     <Compile Include="InputRebindFeature.cs" />
     <Compile Include="EmoteUnlockFeature.cs" />
+    <Compile Include="PaintStyleUnlockFeature.cs" />
     <Compile Include="ActionPanelFeature.cs" />
     <Compile Include="ForagingAnimationFeature.cs" />
     <Compile Include="FriendInteractUnlockFeature.cs" />

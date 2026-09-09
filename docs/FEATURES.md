@@ -413,6 +413,41 @@ Implementation is a three-tier `BuildModule` resolution (managed → AuraMono `M
 - Applies additional Harmony patch on demand (`EnsureBypassPatched`).
 - Credits third-party contributor in UI.
 
+### Building — Unlock all wall / floor paint styles (Self → Building sub-tab)
+
+- Lists every `Housetexture` row in the build paint panel, not just the ones the account owns.
+  137 rows total (type 1 = wall 64, 2 = floor 50, 3 = ceiling 19, plus 4 with type 0); only **43**
+  carry no unlock condition. The other 94 carry `PlayerHomeLevel >= 999` (93) or
+  `PlayerHomeLevel <= -10` (1) — deliberately unsatisfiable, i.e. reachable only through a
+  server-synced unlock entity.
+- `BuildPaintPanel` has no lock check of its own: the single filter in the whole path is
+  `HouseTextureClientService.GetAllUnlockTexture()`, which admits a row when
+  `HouseUnlockClientService.IsHouseBuildUnlock(Texture, id)` says so, or when the row's
+  `unlockConditionExpression` evaluates true locally.
+- **Two Mono `NativeDetour`s**, no Harmony / IL2CPP `.text` patch:
+  - `HouseUnlockClientService.IsHouseBuildUnlock(type, id)` → true **for `Texture` only**; every
+    other type falls through to the trampoline. `HouseBuildItemUnlockType` is
+    `{ None, Material, Texture }` and the same method also gates the build-shop catalogue
+    (`HouseMaterialClientService.MaterialIsUnlock`) and house modules — answering true for those
+    would advertise furniture the server refuses at save time anyway with
+    `ErrorCode.ShopConditionNotEnough` (→ loc 92889, *"Shop unlock conditions not met."*).
+  - `HouseTextureClientService.TextureIsUnlock(id)` → true. `GetAllUnlockTexture` does **not**
+    call it (the logic is duplicated inline), but `CraftBank.CheckTextureIsLock` →
+    `BuildModule.CheckCanPutModule` does: without this second hook a blueprint/module carrying a
+    locked texture would still be refused.
+- Both delegates return `byte`, never `bool` — Mono hands a 1-byte result back in AL and the
+  default `Boolean` marshalling would read all four bytes of EAX off the trampoline.
+- The detours are installed once and **never undone** (tearing a live detour down across a world
+  change corrupts); the toggle only flips a static bool the hook bodies read, so switching off
+  restores stock behaviour without touching native code from a UI callback. Reopen the paint panel
+  after toggling — the list is rebuilt on `RefreshChosen()`.
+- **Unverified:** whether the server keeps a style it never granted.
+  `XDT.Scene.Shared.Modules.Player.ErrorCode` has ~40 build codes and none is about a texture or
+  paint material (items have `ShopConditionNotEnough`) — suggestive, but an argument from silence.
+  Treat surviving a relog as the only proof.
+- Toggle persisted in config (`paintStyleUnlockEnabled`). Implementation:
+  `PaintStyleUnlockFeature.cs`; UI row in `HeartopiaComplete.UguiBuildingContent.cs`.
+
 ### Chat Translate Unlock
 
 - Unlocks chat translation for messages the game refuses to translate: the game tags every

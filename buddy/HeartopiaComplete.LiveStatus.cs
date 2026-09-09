@@ -257,6 +257,11 @@ namespace HeartopiaMod
                 entries.Add(this.CreateLiveFeatureEntry("Duo Unlock", this.friendInteractUnlockStatus));
             }
 
+            if (this.paintStyleUnlockEnabled)
+            {
+                entries.Add(this.CreateLiveFeatureEntry("Paint Styles", this.paintStyleUnlockStatus));
+            }
+
             if (this.foragingAnimEnabled && this.autoFarmActive)
             {
                 entries.Add(this.CreateLiveFeatureEntry("Foraging Anim", this.foragingAnimStatus));

@@ -764,6 +764,7 @@ namespace HeartopiaMod
             this.ProcessShowOffBypassOnUpdate();
             this.ProcessQuietPopupsOnUpdate();
             this.ProcessEmoteUnlockOnUpdate();
+            this.ProcessPaintStyleUnlockOnUpdate();
             this.ProcessForagingAnimOnUpdate();
             this.ProcessCraftAnimationSkipOnUpdate();
             this.ProcessTutorialBlockOnUpdate();
