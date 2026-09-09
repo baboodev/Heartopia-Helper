@@ -610,6 +610,18 @@ async function loadLogo() {
   img.src = src;
 }
 
+// ---- coming into view ------------------------------------------------------
+//
+// The window starts off-screen and the launcher only puts it up when this fires, so that what
+// appears is the finished page. Two frames, not one: the first carries the layout this render just
+// queued, the second is the one actually painted.
+let revealed = false;
+function reveal() {
+  if (revealed) return;
+  revealed = true;
+  requestAnimationFrame(() => requestAnimationFrame(() => call("reveal")));
+}
+
 function render() {
   // The notice goes where the version already is. A newer build is not a warning and does not
   // belong in the status line, and it is not something to interrupt anyone over.
@@ -681,6 +693,8 @@ function render() {
   $("play").disabled = busy;
   $("dl-bepinex").disabled = busy;
   $("dl-unitylibs").disabled = busy || !state.gameOk;
+
+  reveal();
 }
 
 // ---- starting on its own ---------------------------------------------------
@@ -924,8 +938,10 @@ $("server").onchange = async () => {
     .catch(e => { appendLog("• " + e.message); say(e.message, "warning"); loadProfiles(); });
 };
 
-refresh();
+// The logo is asked for first so its answer comes back first: replies are written in the order the
+// requests arrive, and a logo that lands after the first render would appear after the window does.
 loadLogo();
+refresh();
 </script>
 </body>
 </html>

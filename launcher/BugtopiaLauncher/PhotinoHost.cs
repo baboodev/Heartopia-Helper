@@ -3,6 +3,8 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Threading;
+using System.Threading.Tasks;
 using Bugtopia.Launch;
 using Photino.NET;
 
@@ -24,6 +26,31 @@ namespace Bugtopia.Launcher
         private PhotinoWindow window;
         private Api api;
 
+        /// <summary>
+        /// Where the window waits until the page has something to show.
+        ///
+        /// Photino shows the window from inside its own constructor and only creates WebView2
+        /// afterwards - measured at 80 ms for the first and 360 ms for the page reporting in, and
+        /// far longer on a cold start - so for that gap there is an empty window on screen painted
+        /// with the class brush, which is black. No hook runs early enough to stop it, so it is
+        /// created off any monitor instead and brought back by <see cref="Reveal"/>.
+        ///
+        /// Off-screen rather than hidden on purpose: a window this far out is not drawn, but it
+        /// still has a taskbar button, and that button is the only sign the launcher is starting.
+        /// -32000 is the corner Windows itself parks minimised windows in, so no arrangement of
+        /// monitors reaches it.
+        /// </summary>
+        private const int ParkedPosition = -32000;
+
+        /// <summary>
+        /// How long the window waits for the page before showing itself regardless. A safety net,
+        /// not a schedule: a page that never reports in must not leave a launcher with no window.
+        /// Reaching it shows the empty window this exists to avoid, which is only where it started.
+        /// </summary>
+        private static readonly TimeSpan RevealTimeout = TimeSpan.FromSeconds(5);
+
+        private int revealed;
+
         internal static int Run()
         {
             NativeShell.Install();
@@ -39,7 +66,9 @@ namespace Bugtopia.Launcher
                 .SetUseOsDefaultSize(false)
                 .SetSize(Api.WindowWidth, Api.WindowHeight(api.Expert))
                 .SetMinSize(560, 480)
-                .Center()
+                .SetUseOsDefaultLocation(false)
+                .SetLeft(ParkedPosition)
+                .SetTop(ParkedPosition)
                 .SetResizable(true)
                 .SetContextMenuEnabled(false)
                 .SetDevToolsEnabled(false);
@@ -57,6 +86,8 @@ namespace Bugtopia.Launcher
             window = shell
                 .RegisterWebMessageReceivedHandler((sender, message) => api.Dispatch(message))
                 .LoadRawString(LoadUi());
+
+            _ = Task.Delay(RevealTimeout).ContinueWith(_ => Reveal());
 
             window.WaitForClose();
             return 0;
@@ -99,6 +130,29 @@ namespace Bugtopia.Launcher
             }
             catch (Exception)
             {
+            }
+        }
+
+        /// <summary>
+        /// Brings the parked window onto the screen, once. The page asks for this after its first
+        /// render, so what appears is the finished launcher rather than an empty frame of it.
+        /// </summary>
+        public void Reveal()
+        {
+            if (Interlocked.Exchange(ref revealed, 1) != 0)
+                return;
+
+            PhotinoWindow w = window;
+            if (w == null)
+                return;
+
+            try
+            {
+                w.Invoke(() => w.Center());
+            }
+            catch (Exception)
+            {
+                // Closing already, or never opened. Either way there is nothing to show.
             }
         }
 
@@ -156,6 +210,9 @@ namespace Bugtopia.Launcher
 
         /// <summary>Resizes the window, for the switch between the simple and expert views.</summary>
         void Resize(int width, int height);
+
+        /// <summary>Puts the window on screen, once the page has drawn itself.</summary>
+        void Reveal();
 
         /// <summary>Closes the launcher, once the game is running and injected.</summary>
         void Close();

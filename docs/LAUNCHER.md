@@ -245,6 +245,15 @@ native side at window creation, and a page carrying the logo as a data URI — 5
 access-violates inside `Photino.Native.dll` on **every** start. Anything large reaches the page over
 the message bridge after load instead.
 
+**Photino shows its window before WebView2 exists.** Measured: the window is up at ~80 ms and the
+page reports in at ~360 ms, much longer on a cold start, and for that gap Windows paints the class
+brush — black in dark mode. No hook runs early enough to prevent it: `WindowCreated` fires *after*
+the constructor has already shown the window. So the window is created at -32000,-32000 through
+Photino's own startup parameters and centred by `PhotinoHost.Reveal()` once the page says it has
+rendered. Off-screen rather than hidden, because a visible unowned window still gets a taskbar
+button, and that button is the only sign the launcher is starting at all. A five-second timeout
+reveals it regardless, so a page that never reports in cannot leave a launcher with no window.
+
 **`UnityLogListening` must be off in `BepInEx.cfg`.** Left at its default, the chainloader installs a
 Unity log handler before any plugin loads, which pulls in Il2CppInterop's delegate support and
 applies the ClassInjector hooks the mod's own HookTrim exists to suppress. `Payload.Prepare` writes

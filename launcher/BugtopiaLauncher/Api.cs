@@ -148,6 +148,13 @@ namespace Bugtopia.Launcher
                     Reply(id, w => WriteValue(w, null));
                     break;
 
+                // The page has drawn. Until this arrives the window is parked off-screen, so that
+                // nobody watches WebView2 start up in an empty black rectangle.
+                case "reveal":
+                    dialogs.Reveal();
+                    Reply(id, w => WriteValue(w, null));
+                    break;
+
                 case "prepare":
                     RunJob(id, "Prepare", Prepare);
                     break;
