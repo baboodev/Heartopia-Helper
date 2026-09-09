@@ -382,7 +382,6 @@ a:hover { text-decoration: underline; }
               <line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>
           </button>
-          <button class="btn secondary compact" id="profile-switch">Switch</button>
         </div>
       </div>
       <div class="field">
@@ -395,7 +394,6 @@ a:hover { text-decoration: underline; }
             <option value="12">Asia</option>
             <option value="14">TW / HK / MO</option>
           </select>
-          <button class="btn secondary compact" id="server-set">Apply</button>
         </div>
       </div>
     </div>
@@ -826,7 +824,7 @@ async function loadProfiles() {
   for (const name of info.profiles) {
     const o = document.createElement("option");
     o.value = name;
-    o.textContent = name + (name === info.active ? "  (active)" : "");
+    o.textContent = name;
     if (name === info.active) o.selected = true;
     select.appendChild(o);
   }
@@ -834,7 +832,7 @@ async function loadProfiles() {
   $("profile-hint").textContent = info.available
     ? (info.active ? "" : "No active profile yet.")
     : "The game has not created its save folder yet.";
-  for (const b of ["profile", "profile-switch", "server-set", "profile-create"]) $(b).disabled = !info.available;
+  for (const b of ["profile", "server", "profile-create"]) $(b).disabled = !info.available;
 
   if (info.active) {
     const value = await call("serverGet", { profile: info.active });
@@ -912,16 +910,18 @@ $("profile-create-ok").onclick = async () => {
   loadProfiles();
 };
 
-$("profile-switch").onclick = async () => {
+// Both dropdowns take effect the moment they change, so a failure cannot be left showing on
+// screen as if it had worked: loadProfiles puts them back to what is actually on disk.
+$("profile").onchange = async () => {
   const name = $("profile").value;
   if (!name) return;
   await call("profileSwitch", { name }).catch(e => { appendLog("• " + e.message); say(e.message, "warning"); });
   loadProfiles();
 };
 
-$("server-set").onclick = async () => {
+$("server").onchange = async () => {
   await call("serverSet", { profile: $("profile").value || "", value: parseInt($("server").value, 10) })
-    .catch(e => { appendLog("• " + e.message); say(e.message, "warning"); });
+    .catch(e => { appendLog("• " + e.message); say(e.message, "warning"); loadProfiles(); });
 };
 
 refresh();
