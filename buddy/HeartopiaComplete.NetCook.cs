@@ -657,14 +657,18 @@ namespace HeartopiaMod
 
                 if (target.Phase == 0)
                 {
-                    if (this.IsNetCookCookQuantityCommitFull())
+                    if (this.IsNetCookCookQuantityBudgetSpent())
                     {
-                        if (!this.netCookDrainAfterIngredientsRunOut)
+                        // Confirmed dishes are what end the run; a prepare still in flight only stops
+                        // us handing out more. If the server rejects it the slot comes back and this
+                        // stove gets its turn on a later pass.
+                        if (this.IsNetCookCookQuantityCommitFull() && !this.netCookDrainAfterIngredientsRunOut)
                         {
                             this.BeginNetCookDrain(this.FormatNetCookQuantityDrainReason());
                         }
 
-                        if (this.TryGetNetCookTargetCookingStatus(target, out int limitCookingStatus, out _, out _, out _)
+                        if (this.IsNetCookCookQuantityCommitFull()
+                            && this.TryGetNetCookTargetCookingStatus(target, out int limitCookingStatus, out _, out _, out _)
                             && limitCookingStatus == 0
                             && this.IsNetCookBurnerEntityAlive(target.CookerNetId))
                         {
@@ -732,6 +736,7 @@ namespace HeartopiaMod
                         target.LastCookCommandAt = now;
                         target.TrustedCollected = false; // new dish in progress — clear the stale collect flag
                         target.PrepareConfirmed = false; // committed counts on server confirmation, not send
+                        target.PrepareInFlight = true;   // ...but the portion is spoken for from now on
                         target.NextActionAt = now + NetCookPhaseAdvanceDelaySeconds;
                         readyTargets++;
                     }
@@ -815,6 +820,7 @@ namespace HeartopiaMod
                             if (!target.PrepareConfirmed && target.Phase >= 1 && now - target.LastCookCommandAt < 20f)
                             {
                                 target.PrepareConfirmed = true;
+                                target.PrepareInFlight = false; // confirmed — it counts as committed now
                                 this.RecordNetCookPrepareCommitted();
                             }
 
@@ -1192,6 +1198,35 @@ namespace HeartopiaMod
                 && this.netCookCommittedDishCount >= this.netCookCookQuantity;
         }
 
+        // Prepares we have sent and the server has not answered yet. They are not committed — the ACK
+        // is what commits — but they are already spoken for, and pretending otherwise is what let a
+        // batch overrun the limit: with one dish requested, four prepares went out before the first
+        // confirmation arrived, because every status poll in between still read Idle.
+        private int CountNetCookInFlightPrepares()
+        {
+            int inFlight = 0;
+            for (int i = 0; i < this.netCookTargets.Count; i++)
+            {
+                NetCookTargetContext target = this.netCookTargets[i];
+                if (target != null && target.PrepareInFlight && !target.PrepareConfirmed)
+                {
+                    inFlight++;
+                }
+            }
+
+            return inFlight;
+        }
+
+        // The gate for issuing NEW prepares: every requested portion is either confirmed or in flight.
+        // Deliberately separate from IsNetCookCookQuantityCommitFull, which still drives the drain: a
+        // rejected prepare releases its slot and the loop may prepare again, so the run must not start
+        // draining until the dishes are really confirmed.
+        private bool IsNetCookCookQuantityBudgetSpent()
+        {
+            return this.HasNetCookCookQuantityLimit()
+                && this.netCookCommittedDishCount + this.CountNetCookInFlightPrepares() >= this.netCookCookQuantity;
+        }
+
         private bool IsNetCookTargetOccupiedWithDish(NetCookTargetContext target)
         {
             if (target == null)
@@ -1504,6 +1539,8 @@ namespace HeartopiaMod
         private void ResetNetCookTargetForNextDish(NetCookTargetContext target, float now)
         {
             target.Phase = 0;
+            target.PrepareInFlight = false;
+            target.PrepareConfirmed = false;
             target.ContinuePulses = 0;
             target.LastStatus = -1;
             target.LastStatusActionAt = -999f;
@@ -1635,6 +1672,8 @@ namespace HeartopiaMod
                 if (this.TryInvokeNetCookInteract())
                 {
                     target.Phase = 3;
+                    target.ReliefSentAt = now; // the drain relieves too — without this the outcome line
+                                               // reported "relief NEVER sent" on dishes it had just saved
                     target.LastStatusActionAt = now;
                     target.SentCount++;
                     this.netCookSentCount++;
@@ -2307,6 +2346,7 @@ namespace HeartopiaMod
 
                 target.Phase = 0;
                 target.LastStatus = -1;
+                target.PrepareInFlight = false; // the server said no — give the portion back to the budget
                 target.NextActionAt = now + 1.2f;
                 this.NetCookDiagLog("prepare REJECTED (OnPrepareFail) — fast retry stove=" + target.CookerNetId
                     + " lo=" + target.LevelObjectNetId, force: true);
@@ -10510,6 +10550,10 @@ namespace HeartopiaMod
             // (WakeNetCookTargetsForUrgentStatus). It is the only signal that reaches a stove the mod
             // never started a dish on, and it lets the action sort put a burning stove ahead of the
             // idle ones instead of behind them.
+            // True between "our prepare was sent" and "the server answered" (confirmed via status
+            // Preparing/Cooking, or rejected via OnPrepareFail). Such a dish is not committed yet but
+            // it still occupies one of the requested portions, otherwise a batch outruns the limit.
+            public bool PrepareInFlight;
             public int UrgentStatus;
             public float UrgentStatusAt = -999f;
             // Attendance trail for the dish-outcome log line: was the danger window ever seen, and was
