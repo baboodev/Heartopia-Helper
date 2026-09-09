@@ -162,7 +162,10 @@ pwsh launcher/build-launchers.ps1
 ```
 
 Builds the bootstrap, the shim and the mod's BepInEx flavour, then publishes both launchers into
-`release/`. Useful switches:
+`release/`. The mod is built the way CI ships it — `-c ReleaseShip -p:Loader=BepInEx
+-p:ContinuousIntegrationBuild=true` — and that last switch is also what turns the csproj's
+`DeployModToGame` target off, so packaging a launcher never replaces the mod installed in the game
+folder. Useful switches:
 
 ```powershell
 # package a published release instead of a local mod build

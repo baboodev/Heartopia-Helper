@@ -11,7 +11,8 @@
       offline  carries the mod and the bootstrap; downloads nothing, ever
       online   carries no mod and fetches the newest release from GitHub
 
-    Both land in release\ as one file each. See docs/LAUNCHER.md.
+    Both land in release\ as one file each, and nothing is installed into the game folder: the mod
+    is built the way CI ships it, with its deploy step switched off. See docs/LAUNCHER.md.
 
 .PARAMETER OutputDirectory
     Where the finished exes go. Defaults to release\ beside the repository.
@@ -69,10 +70,18 @@ if ($SkipMod) {
     Write-Warning "Skipping the mod. The offline build will have no plugin inside it."
 }
 elseif (-not $PluginDll) {
+    # The configuration CI ships, so what a local build packages is the same binary a release
+    # carries. ContinuousIntegrationBuild=true is not about CI here: it is the switch that turns
+    # off the csproj's DeployModToGame target. Packaging a launcher has no business replacing the
+    # mod already installed in the game folder.
     Invoke-Step "Mod, BepInEx flavour (bugtopia.dll)" {
-        dotnet build "$repoRoot\buddy\buddy.csproj" -c Release -p:Loader=BepInEx --nologo
+        dotnet build "$repoRoot\buddy\buddy.csproj" `
+            -c ReleaseShip `
+            -p:Loader=BepInEx `
+            -p:ContinuousIntegrationBuild=true `
+            --nologo
     }
-    $PluginDll = Join-Path $repoRoot "buddy\bin\BepInEx\Release\bugtopia.dll"
+    $PluginDll = Join-Path $repoRoot "buddy\bin\BepInEx\ReleaseShip\bugtopia.dll"
 }
 else {
     if (-not (Test-Path $PluginDll)) {

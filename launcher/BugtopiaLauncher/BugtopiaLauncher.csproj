@@ -74,7 +74,7 @@
     <WebView2LoaderPath>$(NuGetPackageRoot)photino.native\4.0.22\runtimes\win-x64\native\WebView2Loader.dll</WebView2LoaderPath>
     <InjectDllPath>$(MSBuildThisFileDirectory)..\BugtopiaInject\bin\bugtopia_inject.dll</InjectDllPath>
     <InteropShimPath>$(MSBuildThisFileDirectory)..\BugtopiaInterop\bin\Release\net6.0\BugtopiaInterop.dll</InteropShimPath>
-    <PluginDllPath Condition="'$(PluginDllPath)' == ''">$(MSBuildThisFileDirectory)..\..\buddy\bin\BepInEx\Release\bugtopia.dll</PluginDllPath>
+    <PluginDllPath Condition="'$(PluginDllPath)' == ''">$(MSBuildThisFileDirectory)..\..\buddy\bin\BepInEx\ReleaseShip\bugtopia.dll</PluginDllPath>
   </PropertyGroup>
 
   <!-- The launcher takes its version from the same script the mod does, so it can never claim a
@@ -136,7 +136,7 @@
              Condition="!Exists('$(InjectDllPath)')" />
     <Warning Text="Payload missing: $(InteropShimPath) - build launcher/BugtopiaInterop -c Release"
              Condition="!Exists('$(InteropShimPath)')" />
-    <Warning Text="Payload missing: $(PluginDllPath) - build the mod with -p:Loader=BepInEx, or set PluginDllPath"
+    <Warning Text="Payload missing: $(PluginDllPath) - build the mod with -c ReleaseShip -p:Loader=BepInEx, or set PluginDllPath"
              Condition="'$(BugtopiaOnline)' != 'true' and !Exists('$(PluginDllPath)')" />
   </Target>
 

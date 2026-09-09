@@ -57,8 +57,8 @@ $payload = @(
     @{ Path = Join-Path $repoRoot "launcher\BugtopiaInterop\bin\Release\net6.0\BugtopiaInterop.dll"
        How  = "dotnet build launcher\BugtopiaInterop -c Release"
        Both = $true }
-    @{ Path = if ($PluginDll) { $PluginDll } else { Join-Path $repoRoot "buddy\bin\BepInEx\Release\bugtopia.dll" }
-       How  = "dotnet build buddy -c Release -p:Loader=BepInEx"
+    @{ Path = if ($PluginDll) { $PluginDll } else { Join-Path $repoRoot "buddy\bin\BepInEx\ReleaseShip\bugtopia.dll" }
+       How  = "dotnet build buddy -c ReleaseShip -p:Loader=BepInEx -p:ContinuousIntegrationBuild=true"
        Both = $false }   # offline only: the online build fetches this from GitHub
 )
 
