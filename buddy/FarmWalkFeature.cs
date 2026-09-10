@@ -722,6 +722,11 @@ namespace HeartopiaMod
         internal bool farmWalkToAreaEnabled;
         internal bool farmWalkUseVehicleEnabled;
 
+        // "Fix vehicle movement": while Auto Farm runs, the ridden vehicle's TableCar row gets
+        // the steering the walker can actually drive with; the table values come back when Auto
+        // Farm stops. See FarmWalkVehicleFeature.ApplyFarmWalkVehicleMovementFix.
+        internal bool farmWalkVehicleFixEnabled;
+
         // Straight-line distance past which the vehicle is worth summoning. Slider bounds, not
         // behaviour limits: below the floor the summon costs more time than it saves, and the
         // ceiling is past the widest gap between farm areas on this map (~390 m observed).

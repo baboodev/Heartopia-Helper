@@ -98,22 +98,18 @@ namespace HeartopiaMod
             public string TeleportDelayShown;
             public Slider TeleportDelaySlider;
             public Toggle StealthToggle;          // Stealth Foraging (always visible)
-            public GameObject StealthHintLabel;
             public Toggle WalkToggle;             // Walk to Nodes (always visible)
             public Toggle ForagingAnimToggle;     // Play animations when watched (walk mode only)
-            public GameObject WalkHintLabel;
             public Toggle WalkToAreaToggle;       // Walk to Zone Point (shown while Walk to Nodes is on)
-            public GameObject WalkToAreaHintLabel;
             public Toggle WalkVehicleToggle;      // Use Vehicle (shown while Walk to Nodes is on)
-            public GameObject WalkVehicleHintLabel;
             public GameObject WalkVehicleDistanceLabel;   // slider row, shown only while Use Vehicle is on
             public Slider WalkVehicleDistanceSlider;
             public string WalkVehicleDistanceShown;
             public GameObject WalkVehicleDismountLabel;   // second slider row, same gate
             public Slider WalkVehicleDismountSlider;
             public string WalkVehicleDismountShown;
+            public Toggle WalkVehicleFixToggle;           // Fix Vehicle Movement, same gate as the sliders
             public Toggle TrackCompareToggle;     // Compare Game Track (diagnostic)
-            public GameObject TrackCompareHintLabel;
             public Toggle StealthBlockToggle;     // Stealth Block (StealthBlockFeature.cs)
             public GameObject StealthBlockStatusLabel;
             public string StealthBlockStatusShown;
@@ -546,14 +542,15 @@ namespace HeartopiaMod
                 this.farmWalkVehicleDismountDistance, true,
                 new System.Action<float>(this.OnUguiForagingWalkVehicleDismountChanged));
 
+            // Steering the walker can drive with (FarmWalkVehicleFeature.ApplyFarmWalkVehicleMovementFix).
+            handle.WalkVehicleFixToggle = this.CreateUguiCheckbox(settings.transform, "WalkVehicleFixToggle",
+                this.L("Fix Vehicle Movement"), this.farmWalkVehicleFixEnabled,
+                new System.Action<bool>(this.OnUguiForagingWalkVehicleFixToggled));
+
             // Route diagnostics (FarmWalkTrackCompareFeature.cs).
             handle.TrackCompareToggle = this.CreateUguiCheckbox(settings.transform, "TrackCompareToggle",
                 this.L("Compare Game Track"), this.farmWalkTrackCompareEnabled,
                 new System.Action<bool>(this.OnUguiForagingTrackCompareToggled));
-            handle.TrackCompareHintLabel = this.CreateUguiLabel(settings.transform, "TrackCompareHint",
-                this.L("Draws the mod's route in green and makes the game route to the same node; overrides your own track"), 11f,
-                new Color(stealthMuted.r, stealthMuted.g, stealthMuted.b, 0.9f), false);
-            this.TrySetUguiLabelWrapped(handle.TrackCompareHintLabel);
 
 
             // Stealth Block trio (StealthBlockFeature.cs / MapRevealBlockedFeature.cs). The status
@@ -698,6 +695,7 @@ namespace HeartopiaMod
             SetUguiGoActive(handle.WalkVehicleDistanceSlider != null ? handle.WalkVehicleDistanceSlider.gameObject : null, vehicleRow);
             SetUguiGoActive(handle.WalkVehicleDismountLabel, vehicleRow);
             SetUguiGoActive(handle.WalkVehicleDismountSlider != null ? handle.WalkVehicleDismountSlider.gameObject : null, vehicleRow);
+            SetUguiGoActive(handle.WalkVehicleFixToggle != null ? handle.WalkVehicleFixToggle.gameObject : null, vehicleRow);
 
             if (walkRows)
             {
@@ -747,6 +745,12 @@ namespace HeartopiaMod
                     if (handle.WalkVehicleDismountSlider != null)
                     {
                         PlaceUguiTopLeft(handle.WalkVehicleDismountSlider.gameObject, 224f, rowY + 1f, panelW - 252f, 20f);
+                    }
+
+                    rowY += 30f;
+                    if (handle.WalkVehicleFixToggle != null)
+                    {
+                        PlaceUguiTopLeft(handle.WalkVehicleFixToggle.gameObject, 46f, rowY, 250f, 24f);
                     }
                 }
             }
@@ -881,6 +885,7 @@ namespace HeartopiaMod
                     this.LF("Vehicle From: {0}m", (int)this.farmWalkVehicleMinDistance));
                 this.SyncUguiSelfLabelText(handle.WalkVehicleDismountLabel, ref handle.WalkVehicleDismountShown,
                     this.LF("Get Out At: {0}m", (int)this.farmWalkVehicleDismountDistance));
+                this.SyncUguiToggleFromField(handle.WalkVehicleFixToggle, this.farmWalkVehicleFixEnabled);
                 this.SyncUguiToggleFromField(handle.TrackCompareToggle, this.farmWalkTrackCompareEnabled);
                 this.SyncUguiToggleFromField(handle.StealthBlockToggle, this.stealthBlockEnabled);
                 this.SyncUguiToggleFromField(handle.NotifyFriendsToggle, this.stealthBlockNotifyFriends);
@@ -1116,6 +1121,27 @@ namespace HeartopiaMod
         }
 
         // Turning the vehicle on/off changes whether the distance row exists, hence the relayout.
+        private void OnUguiForagingWalkVehicleFixToggled(bool value)
+        {
+            if (value == this.farmWalkVehicleFixEnabled)
+            {
+                return;
+            }
+
+            this.farmWalkVehicleFixEnabled = value;
+            try { this.SaveKeybinds(false); } catch { }
+
+            // Takes effect on the seat we are in right now; the mount transition covers the rest.
+            if (value)
+            {
+                this.ApplyFarmWalkVehicleMovementFix("option switched on");
+            }
+            else
+            {
+                this.RestoreFarmWalkVehicleMovementFix("option switched off");
+            }
+        }
+
         private void OnUguiForagingWalkVehicleToggled(bool value)
         {
             if (value == this.farmWalkUseVehicleEnabled)

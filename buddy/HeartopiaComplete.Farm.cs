@@ -3464,6 +3464,10 @@ namespace HeartopiaMod
                 }
 
                 ModLogger.Msg("[AUTO FARM] Enabled");
+
+                // Already in the seat when the farm starts: the mount transition has passed, so
+                // the fix is applied here rather than waiting for the next one.
+                this.ApplyFarmWalkVehicleMovementFix("auto farm started");
             }
             else
             {
@@ -3477,6 +3481,7 @@ namespace HeartopiaMod
                 this.autoFarmAutoStopAt = -1f;
                 this.ResetContaminationDwellState();
                 this.ResetCorruptionCleanseState();
+                this.RestoreFarmWalkVehicleMovementFix("auto farm stopped");
                 this.AutoFarmLog("Stopped. reason=manual-toggle");
                 ModLogger.Msg("[AUTO FARM] Disabled");
             }

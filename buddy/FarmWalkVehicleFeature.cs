@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace HeartopiaMod
@@ -101,6 +102,210 @@ namespace HeartopiaMod
         private bool farmWalkVehicleSeatSeen;
         private bool farmWalkVehicleSeatSeenValid;
 
+        // ⭐ "FIX VEHICLE MOVEMENT": GIVE THE RIDDEN CAR STEERING THE WALKER CAN DRIVE WITH.
+        //
+        // The game turns a vehicle with Mathf.SmoothDampAngle(currYaw, target, ref yawSpeed,
+        // TableCar.turnTime, ...) every frame (VehicleLocomotionNormal.OnTickMovement), and the
+        // walker steers at the current corner at full throttle. On the fast class — 8 m/s with a
+        // 0.5 s smoothing time, the laziest in the table — the heading lags the command by about
+        // v·τ ≈ 4 m of lateral drift on a corner, which is exactly the corridor tolerance: the log
+        // showed "re-pathed (off corridor) … IDENTICAL" seconds after every summon, the route fine
+        // and the car simply carried wide.
+        //
+        // TurnTime is read from the SHARED TableData.TableCars[id] row (VehicleComponent.TurnTime
+        // => _vehicleConfig.turnTime; _vehicleConfig = TableData.GetCar(staticId), no copy). So one
+        // write changes the model for the session, survives re-summons and vehicle switches, and
+        // nothing in the game ever puts the table value back — which is why every touched row is
+        // remembered here and restored when Auto Farm stops or the option is switched off.
+        //
+        // The numbers were chosen by hand with the VehicleTune probe on the fast class:
+        //   turnTime 0.1 (table 0.3–0.5), runAcceleration 40 (table 5–12), runDeceleration −40
+        //   (table −30…−40).
+        // runForwardMaxSpeed is deliberately NOT touched: speed is what the movement upload
+        // carries every 50 ms and what the anti-cheat's player-state tags are about. Steering
+        // response is client-side integration of the same speed.
+        private const float FarmWalkVehicleFixTurnTime = 0.1f;
+        private const float FarmWalkVehicleFixAcceleration = 40f;
+        private const float FarmWalkVehicleFixDeceleration = -40f;
+
+        private static readonly string[] FarmWalkVehicleFixFields =
+        {
+            "turnTime", "runAcceleration", "runDeceleration",
+        };
+
+        private static readonly float[] FarmWalkVehicleFixValues =
+        {
+            FarmWalkVehicleFixTurnTime, FarmWalkVehicleFixAcceleration, FarmWalkVehicleFixDeceleration,
+        };
+
+        // Table values per TableCar.id, captured before the first write. The only record of them:
+        // once the row is written the game itself reports our numbers as "the config".
+        private readonly Dictionary<int, float[]> farmWalkVehicleFixOriginals = new Dictionary<int, float[]>();
+
+        internal void ApplyFarmWalkVehicleMovementFix(string why)
+        {
+            if (!this.farmWalkVehicleFixEnabled || !this.autoFarmActive)
+            {
+                return;
+            }
+
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                ModLogger.Msg("[FarmVehicle] movement fix: AuraMono is not ready, not applied (" + why + ").");
+                return;
+            }
+
+            IntPtr comp = this.TryGetSelfEntityVehicleComponentMono();
+            if (comp == IntPtr.Zero)
+            {
+                return; // not riding; the next mount transition brings us back here
+            }
+
+            if (!this.TryGetMonoObjectMember(comp, "_vehicleConfig", out IntPtr row) || row == IntPtr.Zero
+                || !this.TryGetMonoIntMember(row, "id", out int id))
+            {
+                ModLogger.Msg("[FarmVehicle] movement fix: the ridden vehicle's TableCar row did not resolve (" + why + ").");
+                return;
+            }
+
+            float[] current = new float[FarmWalkVehicleFixFields.Length];
+            for (int i = 0; i < FarmWalkVehicleFixFields.Length; i++)
+            {
+                if (!this.TryGetMonoSingleMember(row, FarmWalkVehicleFixFields[i], out current[i]))
+                {
+                    ModLogger.Msg("[FarmVehicle] movement fix: could not read " + FarmWalkVehicleFixFields[i]
+                        + " on row " + id + " (" + why + ").");
+                    return;
+                }
+            }
+
+            bool alreadyFixed = true;
+            for (int i = 0; i < current.Length; i++)
+            {
+                if (!Mathf.Approximately(current[i], FarmWalkVehicleFixValues[i]))
+                {
+                    alreadyFixed = false;
+                    break;
+                }
+            }
+
+            if (alreadyFixed)
+            {
+                return; // a re-mount of a model already fixed this run: nothing to write, nothing to log
+            }
+
+            if (!this.farmWalkVehicleFixOriginals.ContainsKey(id))
+            {
+                this.farmWalkVehicleFixOriginals[id] = (float[])current.Clone();
+            }
+
+            string report = string.Empty;
+            for (int i = 0; i < FarmWalkVehicleFixFields.Length; i++)
+            {
+                if (!this.TrySetMonoSingleField(row, FarmWalkVehicleFixFields[i], FarmWalkVehicleFixValues[i]))
+                {
+                    ModLogger.Msg("[FarmVehicle] movement fix: field " + FarmWalkVehicleFixFields[i]
+                        + " not found on row " + id + " — stopping here, "
+                        + (i > 0 ? "earlier fields written" : "nothing written") + ".");
+                    return;
+                }
+
+                report += (i > 0 ? ", " : string.Empty) + FarmWalkVehicleFixFields[i] + " "
+                    + current[i].ToString("0.##") + " → " + FarmWalkVehicleFixValues[i].ToString("0.##");
+            }
+
+            ModLogger.Msg("[FarmVehicle] movement fix applied to vehicle " + id + ": " + report + " (" + why + ").");
+        }
+
+        // Every row this run touched goes back to its table values. Reached through
+        // TableData.GetCar(id) rather than the seat, so a model ridden earlier and parked since is
+        // restored too.
+        internal unsafe void RestoreFarmWalkVehicleMovementFix(string why)
+        {
+            if (this.farmWalkVehicleFixOriginals.Count == 0)
+            {
+                return;
+            }
+
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread())
+            {
+                ModLogger.Msg("[FarmVehicle] movement fix: AuraMono is not ready, " + this.farmWalkVehicleFixOriginals.Count
+                    + " row(s) NOT restored (" + why + ").");
+                return;
+            }
+
+            IntPtr tableData = this.FindAuraMonoTableDataClass();
+            IntPtr getCar = tableData != IntPtr.Zero ? this.FindAuraMonoMethodOnHierarchy(tableData, "GetCar", 2) : IntPtr.Zero;
+            if (getCar == IntPtr.Zero || auraMonoRuntimeInvoke == null)
+            {
+                ModLogger.Msg("[FarmVehicle] movement fix: TableData.GetCar did not resolve, " + this.farmWalkVehicleFixOriginals.Count
+                    + " row(s) NOT restored (" + why + ").");
+                return;
+            }
+
+            List<int> restored = new List<int>();
+            foreach (KeyValuePair<int, float[]> entry in this.farmWalkVehicleFixOriginals)
+            {
+                int id = entry.Key;
+                bool needException = false;
+                IntPtr* args = stackalloc IntPtr[2];
+                args[0] = (IntPtr)(&id);
+                args[1] = (IntPtr)(&needException);
+                IntPtr exc = IntPtr.Zero;
+                IntPtr row = auraMonoRuntimeInvoke(getCar, IntPtr.Zero, (IntPtr)args, ref exc);
+                if (exc != IntPtr.Zero || row == IntPtr.Zero)
+                {
+                    ModLogger.Msg("[FarmVehicle] movement fix: row " + id + " not found on restore, its values stay changed until the game restarts.");
+                    continue;
+                }
+
+                string report = string.Empty;
+                bool ok = true;
+                for (int i = 0; i < FarmWalkVehicleFixFields.Length; i++)
+                {
+                    ok &= this.TrySetMonoSingleField(row, FarmWalkVehicleFixFields[i], entry.Value[i]);
+                    report += (i > 0 ? ", " : string.Empty) + FarmWalkVehicleFixFields[i] + " " + entry.Value[i].ToString("0.##");
+                }
+
+                if (ok)
+                {
+                    restored.Add(id);
+                    ModLogger.Msg("[FarmVehicle] movement fix removed from vehicle " + id + ": " + report + " (" + why + ").");
+                }
+                else
+                {
+                    ModLogger.Msg("[FarmVehicle] movement fix: row " + id + " only partly restored (" + report + ").");
+                }
+            }
+
+            foreach (int id in restored)
+            {
+                this.farmWalkVehicleFixOriginals.Remove(id);
+            }
+        }
+
+        // One float field on a Mono object, by name. Same shape as SetActionPanelInt: the field
+        // handle comes from the object's own class, the value is passed by address.
+        private unsafe bool TrySetMonoSingleField(IntPtr obj, string fieldName, float value)
+        {
+            if (obj == IntPtr.Zero || auraMonoObjectGetClass == null || auraMonoClassGetFieldFromName == null
+                || auraMonoFieldSetValue == null)
+            {
+                return false;
+            }
+
+            IntPtr klass = auraMonoObjectGetClass(obj);
+            IntPtr field = klass != IntPtr.Zero ? auraMonoClassGetFieldFromName(klass, fieldName) : IntPtr.Zero;
+            if (field == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            float v = value;
+            auraMonoFieldSetValue(obj, field, (IntPtr)(&v));
+            return true;
+        }
+
         internal void ObserveFarmWalkVehicleSeat()
         {
             bool riding = this.IsFarmWalkRidingVehicle();
@@ -122,6 +327,7 @@ namespace HeartopiaMod
             if (riding)
             {
                 this.farmWalkVehicleLastSummonAt = Time.unscaledTime;
+                this.ApplyFarmWalkVehicleMovementFix("mounted");
                 if (!this.farmWalkVehicleOurs)
                 {
                     ModLogger.Msg("[FarmVehicle] the player took a seat we did not summon — the walk "

@@ -195,6 +195,7 @@ namespace HeartopiaMod
             data.farmWalkTrackCompareEnabled = this.farmWalkTrackCompareEnabled;
             data.farmWalkToAreaEnabled = this.farmWalkToAreaEnabled;
             data.farmWalkUseVehicleEnabled = this.farmWalkUseVehicleEnabled;
+            data.farmWalkVehicleFixEnabled = this.farmWalkVehicleFixEnabled;
             data.farmWalkVehicleMinDistance = this.farmWalkVehicleMinDistance;
             data.farmWalkVehicleDismountDistance = this.farmWalkVehicleDismountDistance;
             data.resourceAutoRepairPauseSeconds = this.resourceAutoRepairPauseSeconds;
@@ -562,6 +563,7 @@ namespace HeartopiaMod
             this.farmWalkTrackCompareEnabled = data.farmWalkTrackCompareEnabled;
             this.farmWalkToAreaEnabled = data.farmWalkToAreaEnabled;
             this.farmWalkUseVehicleEnabled = data.farmWalkUseVehicleEnabled;
+            this.farmWalkVehicleFixEnabled = data.farmWalkVehicleFixEnabled;
             // A pre-existing Config.xml has no entry for this — a raw 0 would put the slider under
             // its own floor, so an unset value falls back to the default rather than being clamped
             // to 10 m and silently changing what "long haul" means.

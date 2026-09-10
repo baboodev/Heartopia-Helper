@@ -64,3 +64,4 @@ tools/**/obj/
 
 # Launcher release artefacts, produced by ci/publish-launcher.ps1
 release/
+tools/VehicleTuneProbe

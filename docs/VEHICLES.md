@@ -179,6 +179,24 @@ like every other `Gm*` command — see the memory about the GM-mode dead end.
 | Scanning live vehicles in the world, with the owner's name | `SpawnVehicleFeature.TryScanLiveVehicles` |
 | Spoofing a vehicle's position | `VehicleTeleportFeature.cs` |
 | Vehicle context for noclip | `NoclipFeature.EnsureNoclipVehicleAuraMono` |
+| Sharper steering while Auto Farm drives ("Fix Vehicle Movement") | `FarmWalkVehicleFeature.ApplyFarmWalkVehicleMovementFix` / `RestoreFarmWalkVehicleMovementFix` |
+
+### How a vehicle turns, and the one field that decides it
+
+`VehicleLocomotionNormal.OnTickMovement` integrates the heading with
+`Mathf.SmoothDampAngle(currYaw, target, ref yawSpeed, TableCar.turnTime, float.MaxValue, dt)` every
+frame; the target is the camera yaw plus `atan2(moveAxis.x, moveAxis.y)`, and the turn is only applied
+above 10 % of `runForwardMaxSpeed`. The axis **magnitude** scales the target speed, so a shorter stick
+is a throttle. `turnTime` is read each frame straight from the **shared** `TableData.TableCars[id]`
+row (`VehicleComponent.TurnTime => _vehicleConfig.turnTime`, `_vehicleConfig = TableData.GetCar(id)`,
+no copy): one write changes that model for the whole session, survives re-summons and switches, and
+nothing in the game restores it. The game's own tuning path is `VehicleManager.TurnTime` (a public
+field snapshotted from the row on every `SetSelfEntityVehicle`) plus `ResetConfig()`, which writes the
+snapshot back into the ridden vehicle's row. Table range: `turnTime` 0.3–0.5, `runForwardMaxSpeed`
+4–8; the fast class (8 m/s, 0.5 s) drifts ~4 m wide on a corner, which is what the walker's 4 m
+corridor tolerance kept catching. `minTurnSpeed`, `AngleSpeedMultiple`, `tyreScale` and
+`externalpartScale` are read from the table and consumed nowhere; `carVibrations` only feeds the
+rider animation's `Strength`.
 
 The owner's name comes from `DataCenter.TryGetComponentData<LevelEntityComponentData>().ownerId` —
 `VehicleComponent` itself has no owner field — and then through the same name-resolution chain the map

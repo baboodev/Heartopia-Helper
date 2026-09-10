@@ -175,6 +175,7 @@ namespace HeartopiaMod
             // "Use Vehicle" + its distance slider — summon the default vehicle for a long zone
             // haul. Land only; underwater summons are rejected by the server.
             public bool farmWalkUseVehicleEnabled;
+            public bool farmWalkVehicleFixEnabled;
             public float farmWalkVehicleMinDistance;
             // Distance from the destination at which the driver gets out.
             public float farmWalkVehicleDismountDistance;
