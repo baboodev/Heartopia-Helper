@@ -242,6 +242,7 @@ namespace HeartopiaMod
             data.skipShowOffAnimations = this.skipShowOffAnimations;
             data.quietCongratsPopups = this.quietCongratsPopups;
             data.quietBpPayRewardPopup = this.quietBpPayRewardPopup;
+            data.quietPetPhotoResultPopup = this.quietPetPhotoResultPopup;
             data.emoteUnlockEnabled = this.emoteUnlockEnabled;
             data.paintStyleUnlockEnabled = this.paintStyleUnlockEnabled;
             data.furnitureDyePickerEnabled = this.furnitureDyePickerEnabled;
@@ -630,6 +631,7 @@ namespace HeartopiaMod
             this.skipShowOffAnimations = data.skipShowOffAnimations;
             this.quietCongratsPopups = data.quietCongratsPopups;
             this.quietBpPayRewardPopup = data.quietBpPayRewardPopup;
+            this.quietPetPhotoResultPopup = data.quietPetPhotoResultPopup;
             this.emoteUnlockEnabled = data.emoteUnlockEnabled;
             this.paintStyleUnlockEnabled = data.paintStyleUnlockEnabled;
             this.furnitureDyePickerEnabled = data.furnitureDyePickerEnabled;
@@ -1060,6 +1062,7 @@ namespace HeartopiaMod
                         else if (line.Contains("skipShowOffAnimations")) this.skipShowOffAnimations = GetJsonInt(line, "\"skipShowOffAnimations\":") != 0;
                         else if (line.Contains("quietCongratsPopups")) this.quietCongratsPopups = GetJsonInt(line, "\"quietCongratsPopups\":") != 0;
                         else if (line.Contains("quietBpPayRewardPopup")) this.quietBpPayRewardPopup = GetJsonInt(line, "\"quietBpPayRewardPopup\":") != 0;
+                        else if (line.Contains("quietPetPhotoResultPopup")) this.quietPetPhotoResultPopup = GetJsonInt(line, "\"quietPetPhotoResultPopup\":") != 0;
                         else if (line.Contains("skipCraftDyeAnimations")) this.skipCraftDyeAnimations = GetJsonInt(line, "\"skipCraftDyeAnimations\":") != 0;
                         else if (line.Contains("autoLearnRecipes")) this.autoLearnRecipes = GetJsonInt(line, "\"autoLearnRecipes\":") != 0;
                         else if (line.Contains("autoLikeOwnHome")) this.autoLikeOwnHome = GetJsonInt(line, "\"autoLikeOwnHome\":") != 0;

@@ -1,4 +1,4 @@
-namespace HeartopiaMod
+﻿namespace HeartopiaMod
 {
     // Quiet Congratulation Popups — swallows the family of full-screen "well done" panels the game
     // throws up after a collection milestone: the certification card ("Orchid Murex - Master
@@ -72,6 +72,20 @@ namespace HeartopiaMod
         private const string AlertBPPayRewardEventName = "XDTGameSystem.UI.AlertBPPayRewardEvent";
         private const int AlertBPPayRewardEventPayloadBytes = 0;
 
+        // The card a pet photo session ends on ("Tap to continue"), one photo at a time. SEPARATE
+        // TOGGLE again: the six above are cards nobody asked for, this one is the OUTPUT of something
+        // the player deliberately did, so hiding it is its own decision.
+        //
+        // PhotoModule._OpenPetPhotoResultPanel -> PetPhotoResultOpenRequestedEvent ->
+        // UIEventBridge.OnPetPhotoResultOpenRequested -> UIManager.OpenView<PetPhotoResultPanel>.
+        // UIEventBridge is the event's ONLY listener, and the panel itself sends nothing — the
+        // photos are saved by PhotoModule.TakePetPhoto, which runs in the same method AFTER the
+        // dispatch, so swallowing it costs no photo and no moment. Payload is all reference fields
+        // (List<Texture2D>, the moment list); nothing is read.
+        private const string PetPhotoResultOpenRequestedEventName =
+            "XDTGameSystem.UI.PetPhotoResultOpenRequestedEvent";
+        private const int PetPhotoResultOpenRequestedEventPayloadBytes = 0;
+
         internal static bool MasterLogQuietPopups = false;
 
         private bool quietCongratsPopups;
@@ -81,9 +95,13 @@ namespace HeartopiaMod
         private bool quietBpPayRewardPopup;
         private bool quietBpPayHookRegistered;
 
+        private bool quietPetPhotoResultPopup;
+        private bool quietPetPhotoHookRegistered;
+
         private void ProcessQuietPopupsOnUpdate()
         {
             this.ProcessQuietBpPayRewardOnUpdate();
+            this.ProcessQuietPetPhotoResultOnUpdate();
 
             bool on = this.quietCongratsPopups;
             if (!on && !this.quietPopupsHooksRegistered)
@@ -186,6 +204,46 @@ namespace HeartopiaMod
             }
 
             this.SetGameEventHookSuppressForward(AlertBPPayRewardEventName, on);
+        }
+
+        // Own latch, own slot — same reasoning as the Battle Pass toggle above.
+        private void ProcessQuietPetPhotoResultOnUpdate()
+        {
+            bool on = this.quietPetPhotoResultPopup;
+            if (!on && !this.quietPetPhotoHookRegistered)
+            {
+                return;
+            }
+
+            if (!this.quietPetPhotoHookRegistered)
+            {
+                this.quietPetPhotoHookRegistered = true;
+                if (!this.RegisterGameEventHook(
+                        PetPhotoResultOpenRequestedEventName,
+                        PetPhotoResultOpenRequestedEventPayloadBytes,
+                        this.OnPetPhotoResultOpenRequestedEventHook))
+                {
+                    ModLogger.Warning("[QuietPopups] PetPhotoResultOpenRequestedEvent hook refused"
+                        + " — the pet photo card will still show.");
+                }
+                else if (MasterLogQuietPopups)
+                {
+                    ModLogger.Msg("[QuietPopups] PetPhotoResultOpenRequestedEvent hook registered");
+                }
+            }
+
+            this.SetGameEventHookSuppressForward(PetPhotoResultOpenRequestedEventName, on);
+        }
+
+        private void OnPetPhotoResultOpenRequestedEventHook(GameEventSnapshot e)
+        {
+            if (!MasterLogQuietPopups)
+            {
+                return;
+            }
+
+            ModLogger.Msg("[QuietPopups] PetPhotoResultOpenRequestedEvent suppress="
+                + this.quietPetPhotoResultPopup);
         }
 
         private void OnAlertBPPayRewardEventHook(GameEventSnapshot e)
