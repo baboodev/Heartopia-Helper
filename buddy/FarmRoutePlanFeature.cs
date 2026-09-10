@@ -93,6 +93,13 @@ namespace HeartopiaMod
         // and the difference that accrues from the player simply moving.
         private const float FarmTourTransientSwitchMargin = 25f;
 
+        // The same hold, for the stops that are not transient. Smaller margin than a bubble's: a
+        // stone does not drift, so the only thing moving the numbers is the player, and a genuine
+        // improvement of more than this is worth the switch.
+        private const float FarmTourHeadSwitchMargin = 12f;
+        private Vector3 farmTourHeadLock;
+        private bool farmTourHasHeadLock;
+
         // The range at which "the scan does not see it" already means "it is not there" rather than
         // "it did not reach". Entities stream by proximity, so for a node this close streaming is
         // not in question.
@@ -723,8 +730,68 @@ namespace HeartopiaMod
                 }
             }
 
+            // ⭐ HOLD THE HEAD ONCE CHOSEN — THE FLIP-FLOP CURE WAS FITTED TO BUBBLES ONLY.
+            //
+            // Everything above recomputes the head from the player's CURRENT position: the shortlist
+            // re-sorts as they walk, the route ranking re-measures from where they now stand, and a
+            // top-up inserting a stop can change index 0 outright. So the head moved while the
+            // player was still walking to the last one, and each move threw away the route just
+            // built. Measured on a stone run, three targets in six seconds with no collect between:
+            //     23:06:23  collect done at (66.3, 139.0)
+            //     23:06:24  target (15.7, 102.4)   62,9m
+            //     23:06:26  target (-10.6, 107.9)  80,4m   <- 2s later, walked toward it
+            //     23:06:30  target (48.2, 96.9)    28,0m   <- and the nearest one, chosen last
+            //
+            // This is the disease the transient lock already documents ("while the player swims
+            // toward bubble B the distances to A and B both change, and the tour head flips back and
+            // forth") — the cure was simply never extended past IsTransientFarmTourStop, and a stone
+            // is not transient.
+            //
+            // Same rule, then: keep the chosen stop while it is still in the list, and switch only
+            // for a margin rather than for any improvement at all. On the run above that keeps 62,9m
+            // against the 80,4m candidate and still takes the 28,0m one — the pathological flip goes,
+            // the profitable switch stays.
+            //
+            // Nothing needs to release this. Every way a stop leaves the plan — collected, skipped,
+            // parked, gone cold, out of range, a zone move clearing the list — takes it out of the
+            // search below, and the head is then chosen afresh.
+            int lockedHead = -1;
+            if (this.farmTourHasHeadLock)
+            {
+                for (int i = 0; i < this.farmTourStops.Count; i++)
+                {
+                    if (IsSameFarmTourStop(this.farmTourHeadLock, this.farmTourStops[i].Position))
+                    {
+                        lockedHead = i;
+                        break;
+                    }
+                }
+            }
+
+            if (lockedHead >= 0 && lockedHead != pick)
+            {
+                // Judged by the straight line, not by the route: it is the metric the shortlist is
+                // already sorted on, it exists for every stop, and it costs nothing. The routes have
+                // had their say in choosing `pick`; this only asks whether the change is big enough
+                // to be worth abandoning a walk in progress.
+                float lockedRange = FarmTourDistance(origin, this.farmTourStops[lockedHead].Position);
+                float pickRange = FarmTourDistance(origin, this.farmTourStops[pick].Position);
+                if (pickRange + FarmTourHeadSwitchMargin < lockedRange)
+                {
+                    ModLogger.Msg("[FarmTour] switching target: " + pickRange.ToString("F0")
+                        + "m beats the one we were walking to at " + lockedRange.ToString("F0")
+                        + "m by more than the " + FarmTourHeadSwitchMargin.ToString("F0") + "m margin.");
+                }
+                else
+                {
+                    pick = lockedHead;
+                }
+            }
+
             position = this.farmTourStops[pick].Position;
             label = this.farmTourStops[pick].Label;
+            this.farmTourHeadLock = position;
+            this.farmTourHasHeadLock = true;
             return true;
         }
 
@@ -1144,6 +1211,7 @@ namespace HeartopiaMod
             this.farmTourBuilt = false;
             this.farmTourPlannedCount = 0;
             this.farmTourHasTransientLock = false;
+            this.farmTourHasHeadLock = false;
         }
     }
 }
