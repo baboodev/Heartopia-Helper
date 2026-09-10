@@ -428,10 +428,13 @@ namespace HeartopiaMod
             }
 
             int added = 0;
+            int knownAlready = 0;
+            int overCap = 0;
             for (int c = 0; c < this.farmTourCandidates.Count; c++)
             {
                 if (this.farmTourStops.Count >= FarmTourMaxStops)
                 {
+                    overCap = this.farmTourCandidates.Count - c;
                     break;
                 }
 
@@ -448,6 +451,7 @@ namespace HeartopiaMod
 
                 if (known)
                 {
+                    knownAlready++;
                     continue;
                 }
 
@@ -498,9 +502,44 @@ namespace HeartopiaMod
                 // full 2-opt runs once, when the plan is built. That is exactly what was asked for:
                 // sort it up front, then only top it up.
                 ModLogger.Msg("[FarmTour] +" + added + " new stop(s), " + this.farmTourStops.Count
-                    + " pending, " + this.MeasureFarmTour(origin).ToString("F0") + "m total.");
+                    + " pending, " + this.MeasureFarmTour(origin).ToString("F0") + "m total"
+                    + FarmTourCensus(this.farmTourCandidates.Count, knownAlready, overCap) + ".");
+            }
+            else if (Time.unscaledTime >= this.farmTourCensusAt)
+            {
+                // ⭐ A TOP-UP THAT ADDS NOTHING IS THE INTERESTING CASE, AND IT WAS SILENT.
+                //
+                // The plan is built once and only topped up after that, so how good the next pick
+                // can possibly be is bounded by how many stops the top-up manages to accumulate.
+                // Measured over one stone run (22:43-22:51): the tour never held more than FOUR
+                // stops and usually two or three, while the scan reported 31-92 collectables in
+                // view — and the picks that followed cost 334 m for four stones that an optimal
+                // order does in 185 m, twice visiting past a stone 45 m away to reach one 173 m off.
+                //
+                // Two explanations fit that equally well and want opposite fixes: the candidate
+                // list is genuinely short, or it is long and the top-up keeps landing on thin
+                // frames (the neighbouring track-sync line swings 1 -> 14 -> 1 with the number of
+                // collectables steady). Nothing in the log separated them, because a top-up only
+                // ever spoke when it added something.
+                this.farmTourCensusAt = Time.unscaledTime + FarmTourCensusInterval;
+                ModLogger.Msg("[FarmTour] top-up added nothing, " + this.farmTourStops.Count
+                    + " pending" + FarmTourCensus(this.farmTourCandidates.Count, knownAlready, overCap) + ".");
             }
         }
+
+        // What the top-up was offered, in one clause: the size of the sample it saw and where that
+        // sample went. "saw 1" is a thin scan; "saw 14, 14 already in the plan" is a full one with
+        // nothing new in it. The two look identical from the outside without this.
+        private static string FarmTourCensus(int seen, int known, int overCap)
+        {
+            return " (scan offered " + seen + ", " + known + " already in the plan"
+                + (overCap > 0 ? ", " + overCap + " past the " + FarmTourMaxStops + "-stop cap" : string.Empty)
+                + ")";
+        }
+
+        // Only the silent case is throttled; a top-up that adds stops speaks every time.
+        private const float FarmTourCensusInterval = 5f;
+        private float farmTourCensusAt;
 
         // The tour head. Builds the plan if there is not one yet.
         private bool TryGetNextFarmTourStop(Vector3 origin, out Vector3 position, out string label)
