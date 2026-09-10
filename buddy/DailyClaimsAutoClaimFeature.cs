@@ -152,6 +152,17 @@ namespace HeartopiaMod
             "XDTDataAndProtocol.Events.HobbyEvent/HobbyItemUpdateEvent";
         private const int DailyClaimsHobbyItemUpdateEventBytes = 4;   // HobbyId hobbyId
         private const float DailyClaimsAutoHobbyMinIntervalSeconds = 5f;
+
+        // The upgrade opens a congratulation modal that waits for a tap: HobbyUpgradedEvent ->
+        // UIEventBridge.OnHobbyUpgraded -> HobbyUpgradePanel.Open. UIEventBridge is its ONLY
+        // listener, so swallowing the dispatch removes the card and nothing else.
+        //
+        // Suppressed only around OUR OWN upgrade, not permanently: a level the player takes by hand
+        // should still be celebrated. The window covers the server round trip that follows the
+        // command — the event arrives with the level write, not with the send.
+        private const string DailyClaimsHobbyUpgradedEventName = "XDTGameSystem.UI.HobbyUpgradedEvent";
+        private const int DailyClaimsHobbyUpgradedEventBytes = 0;   // nothing is read
+        private const float DailyClaimsAutoHobbyPopupQuietSeconds = 8f;
         private const int DailyClaimsTaskUpdatedEventBytes = 8;   // uint taskNetId@0, int taskStaticId@4
         private const float DailyClaimsAutoWhalefallMinIntervalSeconds = 5f;
 
@@ -231,6 +242,8 @@ namespace HeartopiaMod
         private bool dailyClaimsAutoPendingWhalefall;
         private bool dailyClaimsAutoPendingHobby;
         private float dailyClaimsAutoHobbyNextAllowedAt;
+        private float dailyClaimsAutoHobbyPopupQuietUntil;
+        private bool dailyClaimsAutoHobbyPopupSuppressed;
         private float dailyClaimsAutoWhalefallNextAllowedAt;
         private bool dailyClaimsAutoPendingSeaCycleUpgrade;
         private float dailyClaimsAutoSeaCycleNextAllowedAt;
@@ -321,6 +334,13 @@ namespace HeartopiaMod
                     DailyClaimsHobbyItemUpdateEventName,
                     DailyClaimsHobbyItemUpdateEventBytes,
                     this.OnDailyClaimsAutoHobbyItemUpdateEvent);
+
+                // Registered but left forwarding: only the auto-upgrade turns suppression on, and
+                // only for its own window.
+                this.RegisterGameEventHook(
+                    DailyClaimsHobbyUpgradedEventName,
+                    DailyClaimsHobbyUpgradedEventBytes,
+                    this.OnDailyClaimsAutoHobbyUpgradedEvent);
                 bool loopTask = this.RegisterGameEventHook(
                     DailyClaimsLoopTaskUpdateEventName,
                     DailyClaimsLoopTaskUpdateEventBytes,
@@ -620,6 +640,11 @@ namespace HeartopiaMod
                 return false;
             }
 
+            // On BEFORE the send: the reply can land in the same frame.
+            this.DailyClaimsSetHobbyPopupSuppressed(true);
+            this.dailyClaimsAutoHobbyPopupQuietUntil =
+                Time.realtimeSinceStartup + DailyClaimsAutoHobbyPopupQuietSeconds;
+
             int upgradeId = hobbyId;
             exc = IntPtr.Zero;
             IntPtr* upgradeArgs = stackalloc IntPtr[1];
@@ -633,6 +658,34 @@ namespace HeartopiaMod
 
             status = "upgrade sent";
             return true;
+        }
+
+        private void DailyClaimsSetHobbyPopupSuppressed(bool suppress)
+        {
+            if (this.dailyClaimsAutoHobbyPopupSuppressed == suppress)
+            {
+                return;
+            }
+
+            this.dailyClaimsAutoHobbyPopupSuppressed = suppress;
+            this.SetGameEventHookSuppressForward(DailyClaimsHobbyUpgradedEventName, suppress);
+        }
+
+        // Lifts the quiet window. Called from the drain rather than on a timer so the flag cannot be
+        // left on by a pass that returned early — a stuck suppression would silently swallow the
+        // player's own upgrade cards for the rest of the session.
+        private void DailyClaimsReleaseHobbyPopupQuietWindow()
+        {
+            if (this.dailyClaimsAutoHobbyPopupSuppressed
+                && Time.realtimeSinceStartup >= this.dailyClaimsAutoHobbyPopupQuietUntil)
+            {
+                this.DailyClaimsSetHobbyPopupSuppressed(false);
+            }
+        }
+
+        // The hook exists so the slot can be suppressed; the dispatch itself needs nothing done.
+        private void OnDailyClaimsAutoHobbyUpgradedEvent(GameEventSnapshot e)
+        {
         }
 
         private void OnDailyClaimsAutoHobbyItemUpdateEvent(GameEventSnapshot e)
@@ -2200,6 +2253,8 @@ namespace HeartopiaMod
                 this.DailyClaimsAutoReport(false, "seacycle upgrade", upgradeDetail);
                 return true;
             }
+
+            this.DailyClaimsReleaseHobbyPopupQuietWindow();
 
             if (this.dailyClaimsAutoPendingHobby
                 && Time.realtimeSinceStartup >= this.dailyClaimsAutoHobbyNextAllowedAt)
