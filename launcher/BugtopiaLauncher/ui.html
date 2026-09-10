@@ -343,11 +343,12 @@ a:hover { text-decoration: underline; }
   </section>
 
   <section class="section-card">
-    <label class="input-label" for="source">BepInEx (unpacked archive)</label>
+    <label class="input-label" for="source">BepInEx source</label>
     <div class="input-group">
       <input type="text" id="source" placeholder="Folder holding BepInEx\ and dotnet\" readonly />
-      <button class="btn secondary" data-pick="source">Browse...</button>
-      <button class="btn secondary" id="dl-bepinex">Download</button>
+      <button class="btn secondary compact" id="source-zip">Zip...</button>
+      <button class="btn secondary compact" data-pick="source">Folder...</button>
+      <button class="btn secondary compact" id="dl-bepinex">Download</button>
     </div>
     <p class="input-hint" id="source-hint"></p>
   </section>
@@ -640,8 +641,10 @@ function render() {
 
 
   $("source-hint").innerHTML = state.downloads
-    ? "The Unity.IL2CPP win-x64 archive, unpacked. Needed only until Prepare."
-    : 'The Unity.IL2CPP win-x64 archive, unpacked — <a data-url="' + state.bepInExUrl + '">download it here</a>.';
+    ? "The Unity.IL2CPP win-x64 archive — the zip as downloaded, or a folder already unpacked " +
+      "from it. Needed only until Prepare."
+    : 'The Unity.IL2CPP win-x64 archive — the zip as downloaded, or a folder already unpacked ' +
+      'from it. <a data-url="' + state.bepInExUrl + '">Download it here</a>.';
 
   $("unity-hint").innerHTML = state.unityLibsUrl
     ? (state.downloads
@@ -681,7 +684,7 @@ function render() {
   else if (!state.gameOk && !state.game) say("Heartopia was not found automatically — press Detect, or point at it with Browse.");
   else if (!state.gameOk) say("That folder is not an IL2CPP Heartopia build — point at the game with Browse.", "warning");
   else if (!state.prepared && !state.source && !state.downloads)
-    say("Point at the unpacked BepInEx archive — Launch does everything after that.");
+    say("Point at the BepInEx zip — Launch does everything after that.");
   else if (!ready) say("Nothing else to press: Launch sets the rest up first, which takes several minutes.");
   else say("Ready.");
 
@@ -692,6 +695,7 @@ function render() {
   $("generate").disabled = busy || !state.prepared || !state.gameOk;
   $("play").disabled = busy;
   $("dl-bepinex").disabled = busy;
+  $("source-zip").disabled = busy;
   $("dl-unitylibs").disabled = busy || !state.gameOk;
 
   reveal();
@@ -887,10 +891,16 @@ $("expert").onchange = () => {
 };
 
 $("step-detect").onclick = () => $("detect").onclick();
-$("step-archive").onclick = async () => {
+
+// Both views take the zip the same way: it is unpacked into storage and the source path becomes
+// the folder that came out of it, which is what the expert field then shows. Picking a folder
+// stays available beside it - an install kept unpacked somewhere else is a supported setup.
+async function chooseArchive() {
   const chosen = await call("pickFile", { title: "BepInEx-Unity.IL2CPP-win-x64 archive" });
   if (chosen) run("useArchive", { path: chosen });
-};
+}
+$("step-archive").onclick = chooseArchive;
+$("source-zip").onclick = chooseArchive;
 
 $("detect").onclick = async () => {
   const found = await call("detectGame");
