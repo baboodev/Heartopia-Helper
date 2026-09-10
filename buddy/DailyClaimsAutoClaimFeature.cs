@@ -138,6 +138,20 @@ namespace HeartopiaMod
         private const string DailyClaimsLoopTaskUpdateEventName =
             "ScriptsRefactory.DataAndProtocol.Events.LoopTaskUpdateEvent";
         private const int DailyClaimsLoopTaskUpdateEventBytes = 8;   // int gameTaskId, uint completedTimes
+
+        // Ocean Cleanup is HobbyId.SeaCollection. Only this one hobby is upgraded automatically,
+        // because upgrading SPENDS the level's cost — the same rule that keeps every other spend
+        // behind an explicit press, relaxed here only for the hobby that was asked for.
+        //
+        // The trigger is the event dispatched AFTER the exp lands. HobbySystem.UpdateHobby fires
+        // HobbyUpdatedEvent first and only then calls hobby.Update(...), so the earlier event still
+        // sees the old exp; HobbyItemUpdateEvent is the one that follows the write. Note the nested
+        // type: only the "Outer/Inner" spelling resolves.
+        private const int DailyClaimsHobbyIdOceanCleanup = 170;
+        private const string DailyClaimsHobbyItemUpdateEventName =
+            "XDTDataAndProtocol.Events.HobbyEvent/HobbyItemUpdateEvent";
+        private const int DailyClaimsHobbyItemUpdateEventBytes = 4;   // HobbyId hobbyId
+        private const float DailyClaimsAutoHobbyMinIntervalSeconds = 5f;
         private const int DailyClaimsTaskUpdatedEventBytes = 8;   // uint taskNetId@0, int taskStaticId@4
         private const float DailyClaimsAutoWhalefallMinIntervalSeconds = 5f;
 
@@ -215,6 +229,8 @@ namespace HeartopiaMod
         private bool dailyClaimsAutoPendingBattlePass;
         private float dailyClaimsAutoBattlePassNextAllowedAt;
         private bool dailyClaimsAutoPendingWhalefall;
+        private bool dailyClaimsAutoPendingHobby;
+        private float dailyClaimsAutoHobbyNextAllowedAt;
         private float dailyClaimsAutoWhalefallNextAllowedAt;
         private bool dailyClaimsAutoPendingSeaCycleUpgrade;
         private float dailyClaimsAutoSeaCycleNextAllowedAt;
@@ -301,6 +317,10 @@ namespace HeartopiaMod
                     DailyClaimsSocialReportUpdateEventName,
                     DailyClaimsSocialReportUpdateEventBytes,
                     this.OnDailyClaimsAutoSocialReportUpdateEvent);
+                bool hobby = this.RegisterGameEventHook(
+                    DailyClaimsHobbyItemUpdateEventName,
+                    DailyClaimsHobbyItemUpdateEventBytes,
+                    this.OnDailyClaimsAutoHobbyItemUpdateEvent);
                 bool loopTask = this.RegisterGameEventHook(
                     DailyClaimsLoopTaskUpdateEventName,
                     DailyClaimsLoopTaskUpdateEventBytes,
@@ -308,12 +328,13 @@ namespace HeartopiaMod
 
                 this.dailyClaimsAutoHooksRegistered =
                     redPoint || activityTasks || mail || dream || sticker || battlePass
-                    || taskUpdated || seaCycle || socialReport || loopTask;
+                    || taskUpdated || seaCycle || socialReport || loopTask || hobby;
                 this.DailyClaimsLog("auto-claim hooks registered: redPoint=" + redPoint
                     + " activityTasks=" + activityTasks + " mail=" + mail + " dream=" + dream
                     + " sticker=" + sticker + " battlePass=" + battlePass
                     + " taskUpdated=" + taskUpdated + " seaCycle=" + seaCycle
-                    + " socialReport=" + socialReport + " loopTask=" + loopTask);
+                    + " socialReport=" + socialReport + " loopTask=" + loopTask
+                    + " hobby=" + hobby);
 
                 if (!this.dailyClaimsAutoHooksRegistered)
                 {
@@ -351,6 +372,9 @@ namespace HeartopiaMod
             // Same reasoning for the sticker tiers: the theme node states sync during login, so the
             // refresh event has usually already fired by the time the hook exists.
             this.dailyClaimsAutoPendingSticker = true;
+
+            // And for a hobby that was already sitting on enough exp when the session started.
+            this.dailyClaimsAutoPendingHobby = true;
 
             // And for the exploration level, which can already be over its threshold at login.
             this.dailyClaimsAutoPendingSeaCycleUpgrade = true;
@@ -507,6 +531,127 @@ namespace HeartopiaMod
             // mid-session sat lit until the next world change. Both passes are gated on what is
             // actually lit, so arming them costs a walk, not a command.
             this.dailyClaimsAutoPendingDream = true;
+        }
+
+        // HobbySystem.GetHobby(id) -> CanHobbyUpgrade(hobby) -> UpgradeHobby(id). The gate is the
+        // game's own, and it is what puts the "Upgradeable" badge on the card: unlocked, exp at or
+        // over the level-up threshold, not already max, and CheckUpgradeCostEnough. Note that the
+        // HobbyCanUpgrade red point (707) is NOT that badge — it stayed dark on a card the panel
+        // showed as upgradeable, so the dot cannot be used as the trigger or the gate.
+        //
+        // Upgrading SPENDS the level's cost. CanHobbyUpgrade already refuses when it is not covered,
+        // so this never overdraws, but it does consume.
+        private unsafe bool DailyClaimsAutoUpgradeHobby(int hobbyId, out string status)
+        {
+            status = "HobbySystem unavailable";
+            if (!this.EnsureAuraMonoApiReady() || !this.AttachAuraMonoThread()
+                || auraMonoRuntimeInvoke == null || auraMonoObjectGetClass == null)
+            {
+                return false;
+            }
+
+            if (!this.TryResolveAuraMonoModule(
+                    "XDTGameSystem.GameplaySystem.Hobby.HobbySystem", out IntPtr hobbySystem)
+                || hobbySystem == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            // Class from the OBJECT — a name lookup plus mono_runtime_invoke is the shape that kills
+            // the process ([[auramono-invoke-resolve-on-object-class]]).
+            IntPtr hobbyClass = auraMonoObjectGetClass(hobbySystem);
+            if (hobbyClass == IntPtr.Zero)
+            {
+                status = "HobbySystem class unavailable";
+                return false;
+            }
+
+            // All three resolved BEFORE the first invoke, so nothing has to be looked up while a
+            // mono object is being held.
+            IntPtr getHobby = this.FindAuraMonoMethodOnHierarchy(hobbyClass, "GetHobby", 1);
+            IntPtr canUpgrade = this.FindAuraMonoMethodOnHierarchy(hobbyClass, "CanHobbyUpgrade", 1);
+            IntPtr upgrade = this.FindAuraMonoMethodOnHierarchy(hobbyClass, "UpgradeHobby", 1);
+            if (getHobby == IntPtr.Zero || canUpgrade == IntPtr.Zero || upgrade == IntPtr.Zero)
+            {
+                status = "HobbySystem method(s) unavailable";
+                return false;
+            }
+
+            int idValue = hobbyId;
+            IntPtr exc = IntPtr.Zero;
+            IntPtr* idArgs = stackalloc IntPtr[1];
+            idArgs[0] = (IntPtr)(&idValue);
+            IntPtr hobby = auraMonoRuntimeInvoke(getHobby, hobbySystem, (IntPtr)idArgs, ref exc);
+            if (exc != IntPtr.Zero || hobby == IntPtr.Zero)
+            {
+                status = "GetHobby(" + hobbyId + ") returned nothing";
+                return false;
+            }
+
+            bool can;
+            uint hobbyPin = AuraMonoPinNew(hobby);
+            try
+            {
+                // Reference argument: the slot holds the object pointer itself, not its address.
+                IntPtr* hobbyArgs = stackalloc IntPtr[1];
+                hobbyArgs[0] = hobby;
+                exc = IntPtr.Zero;
+                IntPtr boxed = auraMonoRuntimeInvoke(canUpgrade, hobbySystem, (IntPtr)hobbyArgs, ref exc);
+                if (exc != IntPtr.Zero || boxed == IntPtr.Zero)
+                {
+                    status = "CanHobbyUpgrade threw exc=0x" + exc.ToInt64().ToString("X");
+                    return false;
+                }
+
+                if (!this.TryUnboxMonoBoolean(boxed, out can))
+                {
+                    status = "CanHobbyUpgrade returned a non-bool";
+                    return false;
+                }
+            }
+            finally
+            {
+                FreeAuraMonoPins(new List<uint> { hobbyPin });
+            }
+
+            if (!can)
+            {
+                status = "not upgradeable yet";
+                return false;
+            }
+
+            int upgradeId = hobbyId;
+            exc = IntPtr.Zero;
+            IntPtr* upgradeArgs = stackalloc IntPtr[1];
+            upgradeArgs[0] = (IntPtr)(&upgradeId);
+            auraMonoRuntimeInvoke(upgrade, hobbySystem, (IntPtr)upgradeArgs, ref exc);
+            if (exc != IntPtr.Zero)
+            {
+                status = "UpgradeHobby threw exc=0x" + exc.ToInt64().ToString("X");
+                return false;
+            }
+
+            status = "upgrade sent";
+            return true;
+        }
+
+        private void OnDailyClaimsAutoHobbyItemUpdateEvent(GameEventSnapshot e)
+        {
+            if (!this.dailyClaimsAutoClaimEnabled)
+            {
+                return;
+            }
+
+            // Filtered here rather than in the drain: this fires for every hobby that gains exp, and
+            // only one of them is ours to upgrade.
+            int hobbyId = e.ReadInt32(0);
+            if (hobbyId != DailyClaimsHobbyIdOceanCleanup)
+            {
+                return;
+            }
+
+            this.DailyClaimsLog("hobby item update hobbyId=" + hobbyId);
+            this.dailyClaimsAutoPendingHobby = true;
         }
 
         private void OnDailyClaimsAutoLoopTaskUpdateEvent(GameEventSnapshot e)
@@ -2053,6 +2198,27 @@ namespace HeartopiaMod
                 }
 
                 this.DailyClaimsAutoReport(false, "seacycle upgrade", upgradeDetail);
+                return true;
+            }
+
+            if (this.dailyClaimsAutoPendingHobby
+                && Time.realtimeSinceStartup >= this.dailyClaimsAutoHobbyNextAllowedAt)
+            {
+                this.dailyClaimsAutoPendingHobby = false;
+                this.dailyClaimsAutoHobbyNextAllowedAt =
+                    Time.realtimeSinceStartup + DailyClaimsAutoHobbyMinIntervalSeconds;
+                Breadcrumbs.Phase("dc.hobby");
+                bool upgraded = this.DailyClaimsAutoUpgradeHobby(
+                    DailyClaimsHobbyIdOceanCleanup, out string hobbyStatus);
+
+                // One level per pass on purpose: the level's own cost has just been spent, and the
+                // next level's gate can only be judged after the server writes the new exp back.
+                if (upgraded)
+                {
+                    this.dailyClaimsAutoPendingHobby = true;
+                }
+
+                this.DailyClaimsAutoReport(upgraded, "hobby " + DailyClaimsHobbyIdOceanCleanup, hobbyStatus);
                 return true;
             }
 
