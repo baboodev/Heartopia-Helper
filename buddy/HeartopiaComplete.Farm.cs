@@ -1377,6 +1377,11 @@ namespace HeartopiaMod
             this.contaminationRepairHoldSince = -1f;
             this.ResetContaminationRepairRetryState();
 
+            // Cleaning animation for witnesses (ForagingAnimationFeature.SeaClean.cs). Placed after
+            // the tool gate because the motion has to start with the cleaner already in hand, and
+            // BEFORE the sweep only for readability — it gates nothing below it.
+            this.TickForagingAnimSeaClean(this.lastNodePosition, this.contaminationToolReady);
+
             // Run the shared sweep (self-throttled). It runs even while the equip is still
             // pending: kills stay blocked by the pass's own tool gate, but actionable counts
             // keep flowing so a node with nothing killable (shared/public only) hops early.
@@ -1435,6 +1440,9 @@ namespace HeartopiaMod
         // radar and must not ping-pong the farm) and hop via the normal cycle finish.
         private void FinishContaminationCleanDwell(float now, string reason)
         {
+            // Before the hop, not after: FinishCollectingCycle can teleport, and a character that
+            // leaves in phase Cleaning keeps scrubbing at the next stop.
+            this.StopForagingAnimSeaClean(reason);
             float stampSeconds = this.contaminationKillsThisNode > 0 ? 15f : 60f;
             this.StampVisitedNode(this.lastNodePosition, now + stampSeconds);
             this.AutoFarmLog($"Contamination dwell done at {this.lastNodePosition} (kills={this.contaminationKillsThisNode}, reason={reason}, stamp={stampSeconds:F0}s)");

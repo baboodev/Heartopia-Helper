@@ -307,6 +307,7 @@
     <Compile Include="FurnitureDyeFeature.cs" />
     <Compile Include="ActionPanelFeature.cs" />
     <Compile Include="ForagingAnimationFeature.cs" />
+    <Compile Include="ForagingAnimationFeature.SeaClean.cs" />
     <Compile Include="FriendInteractUnlockFeature.cs" />
     <Compile Include="GameKeyBindings.cs" />
     <Compile Include="CameraModeHotkeyGuard.cs" />

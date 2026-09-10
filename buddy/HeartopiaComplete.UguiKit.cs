@@ -1929,6 +1929,38 @@ namespace HeartopiaMod
             return tog;
         }
 
+        // Give ONE checkbox row a taller caption so a long label wraps onto a second line instead
+        // of being trimmed with "…".
+        //
+        // Kit labels wrap and then ellipsize past the rect HEIGHT (UguiKitTmpBuildLabel), and
+        // CreateUguiCheckbox sizes its label for exactly one 14pt line. That is right for the short
+        // captions every other row uses and wrong for the few long ones, which wrap nowhere and get
+        // cut. Per-row rather than a blanket change: growing every checkbox label to its row height
+        // would re-centre captions on rows that are deliberately taller than their text.
+        //
+        // Pass the SAME height the row itself was placed with.
+        private static void SetUguiCheckboxLabelHeight(Toggle toggle, float height)
+        {
+            if (toggle == null)
+            {
+                return;
+            }
+
+            try
+            {
+                Transform label = toggle.transform.Find("Label");
+                RectTransform rt = (label != null) ? label.GetComponent<RectTransform>() : null;
+                if (rt != null)
+                {
+                    rt.sizeDelta = new Vector2(rt.sizeDelta.x, height);
+                }
+            }
+            catch (Exception ex)
+            {
+                ModLogger.Msg("[UguiKit] checkbox label resize failed: " + ex.Message);
+            }
+        }
+
         // On/off switch: pill background + sliding handle, visuals driven from onValueChanged
         // (closure-captured — no per-instance fields needed). Caller positions the returned GO.
         private Toggle CreateUguiSwitch(Transform parent, string name, string label, bool initial, System.Action<bool> onChanged)

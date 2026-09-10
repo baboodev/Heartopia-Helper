@@ -431,6 +431,11 @@ namespace HeartopiaMod
                 // Kill nearest-first, as many as the delay budget allows this pass: delay 0 sweeps
                 // everything in range at once; delay > 0 paces one kill per interval across passes.
                 this.seaCleanAutoCandidates.Sort(SeaCleanAutoCandidateByDistance);
+
+                // Nearest pollutant = what the cleaning animation claims to be working on. Free
+                // here (the component is already pinned by this pass) and impossible later without
+                // re-scanning the world; ignored entirely when the animation is off.
+                this.NoteForagingAnimSeaTarget(components[this.seaCleanAutoCandidates[0].Index]);
                 float delay = this.seaCleanCleanNoDelay ? 0f : SeaCleanPacedKillDelaySeconds;
                 uint lastKilledNetId = 0U;
 

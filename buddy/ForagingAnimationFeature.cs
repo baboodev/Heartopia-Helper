@@ -169,6 +169,7 @@ namespace HeartopiaMod
         {
             this.foragingAnimPending = 0;
             this.foragingAnimWitnessed = false;
+            this.StopForagingAnimSeaClean("run stopped");
 
             if (this.foragingAnimToolHeld)
             {
@@ -231,6 +232,14 @@ namespace HeartopiaMod
 
         private void ProcessForagingAnimOnUpdate()
         {
+            // Safety net for the sea-clean half: its own stop calls hang off the dwell, and a dwell
+            // can be abandoned (farm stopped, option turned off) without reaching one. A character
+            // left in phase Cleaning scrubs at nothing for every witness.
+            if (this.foragingAnimSeaActive && (!this.autoFarmActive || !this.foragingAnimEnabled))
+            {
+                this.StopForagingAnimSeaClean(this.autoFarmActive ? "option off" : "farm stopped");
+            }
+
             if (this.foragingAnimPending <= 0)
             {
                 return;
@@ -393,7 +402,16 @@ namespace HeartopiaMod
         // hovering at the edge does not toggle the behaviour every node.
         private bool IsForagingAnimWitnessed(Vector3 node)
         {
-            float radius = this.foragingAnimWitnessed ? ForagingAnimRadiusExit : ForagingAnimRadius;
+            return this.IsForagingAnimWitnessed(node, ref this.foragingAnimWitnessed);
+        }
+
+        // The hysteresis flag is a parameter because the sea-clean half
+        // (ForagingAnimationFeature.SeaClean.cs) polls this every second for as long as a dwell
+        // lasts, while the land half asks once per node. Sharing one flag would let one half's
+        // "already watched" widen the other half's entry radius.
+        private bool IsForagingAnimWitnessed(Vector3 node, ref bool hysteresis)
+        {
+            float radius = hysteresis ? ForagingAnimRadiusExit : ForagingAnimRadius;
             float radiusSqr = radius * radius;
 
             IntPtr playerClass = this.FindAuraMonoClassInAllLoadedImages(
@@ -411,7 +429,7 @@ namespace HeartopiaMod
                         out System.Collections.Generic.List<IntPtr> players, pins)
                     || players == null)
                 {
-                    return this.foragingAnimWitnessed = false;
+                    return hysteresis = false;
                 }
 
                 for (int i = 0; i < players.Count && !found; i++)
@@ -428,7 +446,7 @@ namespace HeartopiaMod
                 FreeAuraMonoPins(pins);
             }
 
-            this.foragingAnimWitnessed = found;
+            hysteresis = found;
             return found;
         }
 

@@ -321,6 +321,13 @@ namespace HeartopiaMod
             }
 
             this.foragingAnimEnabled = value;
+            if (!value)
+            {
+                // The sea half is a HELD pose, not a one-shot: turning the option off mid-dwell has
+                // to take it down, or the character keeps scrubbing until the dwell ends.
+                this.StopForagingAnimSeaClean("option off");
+            }
+
             try { this.SaveKeybinds(false); } catch { }
         }
 
@@ -671,8 +678,6 @@ namespace HeartopiaMod
             SetUguiGoActive(handle.WalkKeepFinalToggle != null ? handle.WalkKeepFinalToggle.gameObject : null, walkRows);
             SetUguiGoActive(handle.WalkVehicleToggle != null ? handle.WalkVehicleToggle.gameObject : null, walkRows);
 
-            SetUguiGoActive(handle.ForagingAnimToggle != null ? handle.ForagingAnimToggle.gameObject : null, walkRows);
-
             // The distance slider needs BOTH: walking on, and the vehicle actually in use.
             bool vehicleRow = walkRows && this.farmWalkUseVehicleEnabled;
             SetUguiGoActive(handle.WalkVehicleDistanceLabel, vehicleRow);
@@ -699,12 +704,6 @@ namespace HeartopiaMod
                 if (handle.WalkKeepFinalToggle != null)
                 {
                     PlaceUguiTopLeft(handle.WalkKeepFinalToggle.gameObject, 30f, rowY, 250f, 24f);
-                }
-
-                rowY += 34f;
-                if (handle.ForagingAnimToggle != null)
-                {
-                    PlaceUguiTopLeft(handle.ForagingAnimToggle.gameObject, 30f, rowY, 320f, 24f);
                 }
 
                 rowY += 34f;
@@ -742,6 +741,21 @@ namespace HeartopiaMod
                     }
                 }
             }
+
+            // Gathering animations cover BOTH halves of the feature now: the land swings (which do
+            // need Walk to Nodes) and the sea-clean pose (which does not, since underwater there is
+            // no walking to do). So the row sits outside the walk block and is always shown.
+            //
+            // Two lines tall: the caption does not fit one 14pt line at this panel width in any
+            // language, and a kit label with nowhere to wrap is trimmed with "…" instead.
+            rowY += 34f;
+            if (handle.ForagingAnimToggle != null)
+            {
+                PlaceUguiTopLeft(handle.ForagingAnimToggle.gameObject, 14f, rowY, panelW - 28f, 40f);
+                SetUguiCheckboxLabelHeight(handle.ForagingAnimToggle, 40f);
+            }
+
+            rowY += 16f; // this row is 16px taller than a normal one; keep the rows below spaced
 
             rowY += 34f;
             if (handle.TrackCompareToggle != null)
