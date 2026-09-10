@@ -1287,10 +1287,23 @@ namespace HeartopiaMod
                     return this.TryClaimDailyClaimsCertificationReward(id, out status);
 
                 case DailyClaimsRedPointTypePictorialSuitReward:
-                    what = "suit " + id;
-                    this.DailyClaimsAutoClaimSuitTiers(id);
+                {
+                    // The node id is a TablePediaSuitReward ROW, not a suit — the tier filter and the
+                    // clear both work in suitIds, so passing it straight through matched no tier and
+                    // sent nothing. Live: node 936 is row 936 of suit 2818, and no suit 936 exists.
+                    int suitId = this.DailyClaimsSuitIdForRewardRow(id);
+                    if (suitId <= 0)
+                    {
+                        what = "suit reward row " + id;
+                        status = "no TablePediaSuitReward row " + id;
+                        return false;
+                    }
+
+                    what = "suit " + suitId + " (row " + id + ")";
+                    this.DailyClaimsAutoClaimSuitTiers(suitId);
                     status = "suit tiers swept";
                     return true;
+                }
 
                 case DailyClaimsRedPointTypeActivityForOperation:
                     what = "activity " + id;

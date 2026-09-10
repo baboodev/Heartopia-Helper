@@ -1894,13 +1894,28 @@ namespace HeartopiaMod
         }
 
         // IPictorialService reads used by the suit sweep — both single-int-arg, boxed scalar return.
-        private unsafe bool DailyClaimsTryInvokePictorialServiceInt(
+        private bool DailyClaimsTryInvokePictorialServiceInt(
             IntPtr service,
             string methodName,
             int arg,
             out int value)
         {
+            return this.DailyClaimsTryInvokePictorialServiceInt(service, methodName, arg, out value, out _);
+        }
+
+        // `threw` separates "the service object is no good" from "no such method" and from a plain
+        // zero answer. The suit gate needs that distinction: a stale service throws on the FIRST
+        // field it touches, and that is indistinguishable from "you own none of this suit" unless
+        // the exception is reported.
+        private unsafe bool DailyClaimsTryInvokePictorialServiceInt(
+            IntPtr service,
+            string methodName,
+            int arg,
+            out int value,
+            out bool threw)
+        {
             value = 0;
+            threw = false;
             if (service == IntPtr.Zero || auraMonoRuntimeInvoke == null || auraMonoObjectGetClass == null)
             {
                 return false;
@@ -1917,7 +1932,13 @@ namespace HeartopiaMod
             args[0] = (IntPtr)(&argValue);
             IntPtr exc = IntPtr.Zero;
             IntPtr boxed = auraMonoRuntimeInvoke(method, service, (IntPtr)args, ref exc);
-            if (exc != IntPtr.Zero || boxed == IntPtr.Zero)
+            if (exc != IntPtr.Zero)
+            {
+                threw = true;
+                return false;
+            }
+
+            if (boxed == IntPtr.Zero)
             {
                 return false;
             }
@@ -1963,19 +1984,74 @@ namespace HeartopiaMod
                 return false;
             }
 
+            // The cache PINS the service, so a instance orphaned by a container rebuild stays
+            // valid memory with dead [EcsInject] fields, and GetPictorialSuitHasNum then throws on
+            // the first one it touches. Measured live: every suit answered "not owned" through the
+            // cached object and 9/12 through a freshly resolved one. Re-resolve once on a throw
+            // rather than reporting the whole wardrobe as unowned.
+            bool reResolved = false;
             int end = Math.Min(start + count, suitIds.Count);
             for (int i = start; i < end; i++)
             {
                 if (this.DailyClaimsTryInvokePictorialServiceInt(
-                    binding.AuraMono, "GetPictorialSuitHasNum", suitIds[i], out int hasNum)
-                    && hasNum > 0)
+                    binding.AuraMono, "GetPictorialSuitHasNum", suitIds[i], out int hasNum, out bool threw))
                 {
-                    ownedSuitIds.Add(suitIds[i]);
-                    ownedSuitCounts.Add(hasNum);
+                    if (hasNum > 0)
+                    {
+                        ownedSuitIds.Add(suitIds[i]);
+                        ownedSuitCounts.Add(hasNum);
+                    }
+
+                    continue;
                 }
+
+                if (!threw || reResolved)
+                {
+                    continue;
+                }
+
+                reResolved = true;
+                this.DailyClaimsInvalidatePictorialServiceCache();
+                if (!this.TryEnsureDailyClaimsPictorialService(out binding, out status)
+                    || binding.AuraMono == IntPtr.Zero)
+                {
+                    status = "suit gate: cached service was stale and re-resolve failed (" + status + ")";
+                    return false;
+                }
+
+                i--;   // redo this suit against the fresh instance
             }
 
             return true;
+        }
+
+        private void DailyClaimsInvalidatePictorialServiceCache()
+        {
+            this.dailyClaimsPictorialServiceCache.Clear();
+            this.dailyClaimsPictorialServiceSource = string.Empty;
+        }
+
+        // TablePediaSuitReward.id -> suitId. The suit red-point NODE is keyed by the reward ROW, not
+        // by the suit: RedPointManager.OnUpdateRedpoint fans the event's suitId out to one node per
+        // row, and PictorialSuitRewardNode looks its own Id up in that table to find its parent.
+        // Everything downstream works in suitIds, so a sweep that reads the node map has to map back.
+        private int DailyClaimsSuitIdForRewardRow(int rowId)
+        {
+            if (rowId <= 0)
+            {
+                return 0;
+            }
+
+            List<DailyClaimsSuitRewardTier> tiers = this.DailyClaimsSweepSuitTiers();
+            for (int i = 0; i < tiers.Count; i++)
+            {
+                if (tiers[i].RowId == rowId)
+                {
+                    return tiers[i].SuitId;
+                }
+            }
+
+            return 0;
         }
 
         private bool DailyClaimsIsAllSuitRewardClaimed(int suitId)
