@@ -1003,7 +1003,22 @@ namespace HeartopiaMod
             // Already in server collect range. Start a walk that completes on its first tick rather
             // than returning false — false sends the caller into FarmTeleportTo, which is how the
             // farm ended up teleporting onto a node it was already standing 1.3 m from.
-            bool alreadyInRange = Distance3D(selfPos, target) <= FarmWalkCollectDistance;
+            // ⭐ A STEP-IN IS NOT A JOURNEY — WITH KEEP FINAL WAYPOINT ON, CLOSE THE LAST METRES
+            // STRAIGHT, WITHOUT THE GRAPH.
+            //
+            // "Did not collect from 1,1m — stepping in to 0,8m" restarts the walk to the same node
+            // from a metre away, and that restart used to go through the full route builder: a start
+            // snap up to 60 m out, the retry's end-node exclusion picking a DIFFERENT final waypoint,
+            // an audit, a shortcut pass. With the final waypoint kept rather than passed, the rebuilt
+            // route then led back out to a waypoint the walker had just come from and in again —
+            // the route was "rebuilt" when all that was asked for was thirty centimetres more.
+            //
+            // Inside FarmWalkDirectStepInDistance of the node the walker has just walked the final
+            // leg to it, so the straight line is the leg it is already on. Corners = [node], no
+            // snap, no audit, no shortcut; the re-path triggers stay held by the same option.
+            float directRange = this.farmWalkKeepFinalNode ? FarmWalkDirectStepInDistance : FarmWalkCollectDistance;
+            float targetDistance = Distance3D(selfPos, target);
+            bool alreadyInRange = targetDistance <= directRange;
 
             if (alreadyInRange)
             {
@@ -1011,6 +1026,11 @@ namespace HeartopiaMod
                 this.farmWalkCorners.Add(target);
                 this.farmWalkCornerIndex = 0;
                 this.farmWalkLegStart = selfPos;
+                if (targetDistance > FarmWalkCollectDistance)
+                {
+                    ModLogger.Msg("[FarmWalk] " + label + ": stepping straight in from "
+                        + targetDistance.ToString("F2") + "m — no route built (Keep Final Waypoint).");
+                }
             }
             else if (!this.TryBuildFarmWalkRoute(selfPos, target))
             {
