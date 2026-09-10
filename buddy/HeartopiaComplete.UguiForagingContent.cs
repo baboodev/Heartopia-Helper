@@ -101,6 +101,8 @@ namespace HeartopiaMod
             public Toggle WalkToggle;             // Walk to Nodes (always visible)
             public Toggle ForagingAnimToggle;     // Play animations when watched (walk mode only)
             public Toggle WalkToAreaToggle;       // Walk to Zone Point (shown while Walk to Nodes is on)
+            public Toggle WalkHoldRouteToggle;    // Hold Route Near Corners (same gate)
+            public Toggle WalkKeepFinalToggle;    // Keep Final Waypoint (same gate)
             public Toggle WalkVehicleToggle;      // Use Vehicle (shown while Walk to Nodes is on)
             public GameObject WalkVehicleDistanceLabel;   // slider row, shown only while Use Vehicle is on
             public Slider WalkVehicleDistanceSlider;
@@ -505,6 +507,12 @@ namespace HeartopiaMod
             handle.WalkToAreaToggle = this.CreateUguiCheckbox(settings.transform, "WalkToAreaToggle",
                 this.L("Walk to Zone Point"), this.farmWalkToAreaEnabled,
                 new System.Action<bool>(this.OnUguiForagingWalkToAreaToggled));
+            handle.WalkHoldRouteToggle = this.CreateUguiCheckbox(settings.transform, "WalkHoldRouteToggle",
+                this.L("Hold Route Near Corners"), this.farmWalkRepathHoldNearCorner,
+                new System.Action<bool>(this.OnUguiForagingWalkHoldRouteToggled));
+            handle.WalkKeepFinalToggle = this.CreateUguiCheckbox(settings.transform, "WalkKeepFinalToggle",
+                this.L("Keep Final Waypoint"), this.farmWalkKeepFinalNode,
+                new System.Action<bool>(this.OnUguiForagingWalkKeepFinalToggled));
 
             handle.WalkVehicleToggle = this.CreateUguiCheckbox(settings.transform, "WalkVehicleToggle",
                 this.L("Use Vehicle"), this.farmWalkUseVehicleEnabled,
@@ -659,6 +667,8 @@ namespace HeartopiaMod
             // are hidden rather than shown greyed — the panel is already dense.
             bool walkRows = this.farmWalkToNodeEnabled;
             SetUguiGoActive(handle.WalkToAreaToggle != null ? handle.WalkToAreaToggle.gameObject : null, walkRows);
+            SetUguiGoActive(handle.WalkHoldRouteToggle != null ? handle.WalkHoldRouteToggle.gameObject : null, walkRows);
+            SetUguiGoActive(handle.WalkKeepFinalToggle != null ? handle.WalkKeepFinalToggle.gameObject : null, walkRows);
             SetUguiGoActive(handle.WalkVehicleToggle != null ? handle.WalkVehicleToggle.gameObject : null, walkRows);
 
             SetUguiGoActive(handle.ForagingAnimToggle != null ? handle.ForagingAnimToggle.gameObject : null, walkRows);
@@ -677,6 +687,18 @@ namespace HeartopiaMod
                 if (handle.WalkToAreaToggle != null)
                 {
                     PlaceUguiTopLeft(handle.WalkToAreaToggle.gameObject, 30f, rowY, 250f, 24f);
+                }
+
+                rowY += 34f;
+                if (handle.WalkHoldRouteToggle != null)
+                {
+                    PlaceUguiTopLeft(handle.WalkHoldRouteToggle.gameObject, 30f, rowY, 250f, 24f);
+                }
+
+                rowY += 34f;
+                if (handle.WalkKeepFinalToggle != null)
+                {
+                    PlaceUguiTopLeft(handle.WalkKeepFinalToggle.gameObject, 30f, rowY, 250f, 24f);
                 }
 
                 rowY += 34f;
@@ -842,6 +864,8 @@ namespace HeartopiaMod
                 this.SyncUguiToggleFromField(handle.WalkToggle, this.farmWalkToNodeEnabled);
                 this.SyncUguiToggleFromField(handle.ForagingAnimToggle, this.foragingAnimEnabled);
                 this.SyncUguiToggleFromField(handle.WalkToAreaToggle, this.farmWalkToAreaEnabled);
+                this.SyncUguiToggleFromField(handle.WalkHoldRouteToggle, this.farmWalkRepathHoldNearCorner);
+                this.SyncUguiToggleFromField(handle.WalkKeepFinalToggle, this.farmWalkKeepFinalNode);
                 this.SyncUguiToggleFromField(handle.WalkVehicleToggle, this.farmWalkUseVehicleEnabled);
                 this.SyncUguiSelfLabelText(handle.WalkVehicleDistanceLabel, ref handle.WalkVehicleDistanceShown,
                     this.LF("Vehicle From: {0}m", (int)this.farmWalkVehicleMinDistance));
@@ -1068,6 +1092,28 @@ namespace HeartopiaMod
 
             // Both zone-travel rows appear and disappear with this toggle.
 
+            try { this.SaveKeybinds(false); } catch { }
+        }
+
+        private void OnUguiForagingWalkKeepFinalToggled(bool value)
+        {
+            if (value == this.farmWalkKeepFinalNode)
+            {
+                return;
+            }
+
+            this.farmWalkKeepFinalNode = value;
+            try { this.SaveKeybinds(false); } catch { }
+        }
+
+        private void OnUguiForagingWalkHoldRouteToggled(bool value)
+        {
+            if (value == this.farmWalkRepathHoldNearCorner)
+            {
+                return;
+            }
+
+            this.farmWalkRepathHoldNearCorner = value;
             try { this.SaveKeybinds(false); } catch { }
         }
 

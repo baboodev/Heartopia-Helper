@@ -194,6 +194,8 @@ namespace HeartopiaMod
             data.farmWalkToNodeEnabled = this.farmWalkToNodeEnabled;
             data.farmWalkTrackCompareEnabled = this.farmWalkTrackCompareEnabled;
             data.farmWalkToAreaEnabled = this.farmWalkToAreaEnabled;
+            data.farmWalkRepathHoldNearCorner = this.farmWalkRepathHoldNearCorner;
+            data.farmWalkKeepFinalNode = this.farmWalkKeepFinalNode;
             data.farmWalkUseVehicleEnabled = this.farmWalkUseVehicleEnabled;
             data.farmWalkVehicleFixEnabled = this.farmWalkVehicleFixEnabled;
             data.farmWalkVehicleMinDistance = this.farmWalkVehicleMinDistance;
@@ -562,6 +564,8 @@ namespace HeartopiaMod
             this.farmWalkToNodeEnabled = data.farmWalkToNodeEnabled;
             this.farmWalkTrackCompareEnabled = data.farmWalkTrackCompareEnabled;
             this.farmWalkToAreaEnabled = data.farmWalkToAreaEnabled;
+            this.farmWalkRepathHoldNearCorner = data.farmWalkRepathHoldNearCorner;
+            this.farmWalkKeepFinalNode = data.farmWalkKeepFinalNode;
             this.farmWalkUseVehicleEnabled = data.farmWalkUseVehicleEnabled;
             this.farmWalkVehicleFixEnabled = data.farmWalkVehicleFixEnabled;
             // A pre-existing Config.xml has no entry for this — a raw 0 would put the slider under

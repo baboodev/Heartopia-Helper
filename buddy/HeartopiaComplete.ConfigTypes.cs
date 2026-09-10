@@ -172,6 +172,8 @@ namespace HeartopiaMod
             // "Walk to Zone Point" — travel to the next farm area on foot instead of the area:*
             // teleport. Independent of the vehicle switch below.
             public bool farmWalkToAreaEnabled;
+            public bool farmWalkRepathHoldNearCorner = true;
+            public bool farmWalkKeepFinalNode = true;
             // "Use Vehicle" + its distance slider — summon the default vehicle for a long zone
             // haul. Land only; underwater summons are rejected by the server.
             public bool farmWalkUseVehicleEnabled;
