@@ -487,10 +487,6 @@ namespace HeartopiaMod
                 this.L("Stealth Foraging"), this.stealthForagingEnabled,
                 new System.Action<bool>(this.OnUguiForagingStealthToggled));
             Color stealthMuted = this.UguiKitMutedColor();
-            handle.StealthHintLabel = this.CreateUguiLabel(settings.transform, "StealthHint",
-                this.L("Dives under nodes; noclip + no OOB rescue"), 11f,
-                new Color(stealthMuted.r, stealthMuted.g, stealthMuted.b, 0.9f), false);
-            this.TrySetUguiLabelWrapped(handle.StealthHintLabel);
 
             // Walk to Nodes (FarmWalkFeature.cs) — mutually exclusive with Stealth Foraging above,
             // which the handlers enforce in both directions. The speed row below only appears while
@@ -502,10 +498,6 @@ namespace HeartopiaMod
             handle.WalkToggle = this.CreateUguiCheckbox(settings.transform, "WalkToggle",
                 this.L("Walk to Nodes"), this.farmWalkToNodeEnabled,
                 new System.Action<bool>(this.OnUguiForagingWalkToggled));
-            handle.WalkHintLabel = this.CreateUguiLabel(settings.transform, "WalkHint",
-                this.L("Walks the route instead of teleporting; forces 1x speed"), 11f,
-                new Color(stealthMuted.r, stealthMuted.g, stealthMuted.b, 0.9f), false);
-            this.TrySetUguiLabelWrapped(handle.WalkHintLabel);
 
             // Zone travel, two independent switches under Walk to Nodes. Kept separate on request:
             // walking between areas is useful on its own, and the vehicle is a second decision with
@@ -513,18 +505,10 @@ namespace HeartopiaMod
             handle.WalkToAreaToggle = this.CreateUguiCheckbox(settings.transform, "WalkToAreaToggle",
                 this.L("Walk to Zone Point"), this.farmWalkToAreaEnabled,
                 new System.Action<bool>(this.OnUguiForagingWalkToAreaToggled));
-            handle.WalkToAreaHintLabel = this.CreateUguiLabel(settings.transform, "WalkToAreaHint",
-                this.L("Travels to the next farm zone instead of teleporting there"), 11f,
-                new Color(stealthMuted.r, stealthMuted.g, stealthMuted.b, 0.9f), false);
-            this.TrySetUguiLabelWrapped(handle.WalkToAreaHintLabel);
 
             handle.WalkVehicleToggle = this.CreateUguiCheckbox(settings.transform, "WalkVehicleToggle",
                 this.L("Use Vehicle"), this.farmWalkUseVehicleEnabled,
                 new System.Action<bool>(this.OnUguiForagingWalkVehicleToggled));
-            handle.WalkVehicleHintLabel = this.CreateUguiLabel(settings.transform, "WalkVehicleHint",
-                this.L("Summons the default vehicle for long hauls; never underwater"), 11f,
-                new Color(stealthMuted.r, stealthMuted.g, stealthMuted.b, 0.9f), false);
-            this.TrySetUguiLabelWrapped(handle.WalkVehicleHintLabel);
 
             handle.WalkVehicleDistanceShown = this.LF("Vehicle From: {0}m", (int)this.farmWalkVehicleMinDistance);
             handle.WalkVehicleDistanceLabel = this.CreateUguiBodyLabel(settings.transform,
@@ -664,28 +648,18 @@ namespace HeartopiaMod
             {
                 PlaceUguiTopLeft(handle.StealthToggle.gameObject, 14f, rowY, 250f, 24f);
             }
-            if (handle.StealthHintLabel != null)
-            {
-                PlaceUguiTopLeft(handle.StealthHintLabel, 270f, rowY, panelW - 282f, 28f);
-            }
 
             rowY += 34f;
             if (handle.WalkToggle != null)
             {
                 PlaceUguiTopLeft(handle.WalkToggle.gameObject, 14f, rowY, 250f, 24f);
             }
-            if (handle.WalkHintLabel != null)
-            {
-                PlaceUguiTopLeft(handle.WalkHintLabel, 270f, rowY, panelW - 282f, 28f);
-            }
 
             // Both zone-travel rows hang off Walk to Nodes: with it off they mean nothing, so they
             // are hidden rather than shown greyed — the panel is already dense.
             bool walkRows = this.farmWalkToNodeEnabled;
             SetUguiGoActive(handle.WalkToAreaToggle != null ? handle.WalkToAreaToggle.gameObject : null, walkRows);
-            SetUguiGoActive(handle.WalkToAreaHintLabel, walkRows);
             SetUguiGoActive(handle.WalkVehicleToggle != null ? handle.WalkVehicleToggle.gameObject : null, walkRows);
-            SetUguiGoActive(handle.WalkVehicleHintLabel, walkRows);
 
             SetUguiGoActive(handle.ForagingAnimToggle != null ? handle.ForagingAnimToggle.gameObject : null, walkRows);
 
@@ -704,10 +678,6 @@ namespace HeartopiaMod
                 {
                     PlaceUguiTopLeft(handle.WalkToAreaToggle.gameObject, 30f, rowY, 250f, 24f);
                 }
-                if (handle.WalkToAreaHintLabel != null)
-                {
-                    PlaceUguiTopLeft(handle.WalkToAreaHintLabel, 286f, rowY, panelW - 298f, 28f);
-                }
 
                 rowY += 34f;
                 if (handle.ForagingAnimToggle != null)
@@ -719,10 +689,6 @@ namespace HeartopiaMod
                 if (handle.WalkVehicleToggle != null)
                 {
                     PlaceUguiTopLeft(handle.WalkVehicleToggle.gameObject, 30f, rowY, 250f, 24f);
-                }
-                if (handle.WalkVehicleHintLabel != null)
-                {
-                    PlaceUguiTopLeft(handle.WalkVehicleHintLabel, 286f, rowY, panelW - 298f, 28f);
                 }
 
                 if (vehicleRow)
@@ -759,10 +725,6 @@ namespace HeartopiaMod
             if (handle.TrackCompareToggle != null)
             {
                 PlaceUguiTopLeft(handle.TrackCompareToggle.gameObject, 14f, rowY, 250f, 24f);
-            }
-            if (handle.TrackCompareHintLabel != null)
-            {
-                PlaceUguiTopLeft(handle.TrackCompareHintLabel, 270f, rowY, panelW - 282f, 28f);
             }
 
             rowY += 34f;
