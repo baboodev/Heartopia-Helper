@@ -1929,12 +1929,42 @@ namespace HeartopiaMod
 
                 bool reached = HorizontalDistance(selfPos, candidate) <= FarmWalkCornerReachDistance;
                 bool passed = HorizontalDistance(selfPos, next) < HorizontalDistance(candidate, next);
+
+                // ⭐ OPTIONAL: THE FINAL WAYPOINT IS WALKED TO, NOT PASSED. "passed" is what drops
+                // the last graph corner when the player is already nearer the resource than that
+                // corner is — measured 17:28:55, a corner 6 m beyond the node skipped at ~5 m out.
+                // Right for a detour; with this switch the walker takes the corner anyway, at the
+                // price of that detour. Only the corner whose `next` is the resource itself.
+                if (this.farmWalkKeepFinalNode && passed && !reached
+                    && this.farmWalkCornerIndex == this.farmWalkCorners.Count - 2)
+                {
+                    passed = false;
+                    if (this.farmWalkFinalNodeHoldLoggedIndex != this.farmWalkCornerIndex)
+                    {
+                        this.farmWalkFinalNodeHoldLoggedIndex = this.farmWalkCornerIndex;
+                        ModLogger.Msg("[FarmWalk] " + this.farmWalkLabel + ": keeping final waypoint "
+                            + this.farmWalkCornerIndex + " at "
+                            + HorizontalDistance(selfPos, candidate).ToString("F1")
+                            + "m — it would have been passed, walking to it instead.");
+                    }
+                }
+
                 if (!reached && !passed)
                 {
                     break;
                 }
 
-                this.farmWalkLegStart = candidate;
+                // ⚠️ A PASSED CORNER IS NOT WHERE THE PLAYER IS. A corner cleared by "reached" is
+                // underfoot, so it can start the next leg. A corner cleared by "passed" was never
+                // visited — typically a graph detour the player is already nearer the far end of — and
+                // starting the leg there measures the corridor against a segment the player is not
+                // on. Measured 17:28:55 with the instrumented re-path line: a 6.1 m detour corner
+                // south of the node was passed at ~5 m out, the leg became detour -> node, the
+                // player approaching from the other side was "6,1m off" it in the same tick, and
+                // the route was rebuilt (3 -> 1 corners) two seconds into a 12 m walk. The rebuild
+                // happened to be 10 m better, which is how a false trigger hides: it looks like work.
+                // The segment actually being walked starts from the player, so that is the leg start.
+                this.farmWalkLegStart = reached ? candidate : selfPos;
                 this.farmWalkCornerIndex++;
                 this.farmWalkEverAdvanced = true;
 
