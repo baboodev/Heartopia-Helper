@@ -10064,6 +10064,10 @@ namespace HeartopiaMod
             }
 
             int batches = Math.Max(1, cookQuantity);
+            // Per-item pin census for the recipe this move is for (empty unless Pick Ingredients
+            // is on). Consulted by the category branch below.
+            Dictionary<int, int> pinnedPerDish = new Dictionary<int, int>();
+            this.CollectNetCookPinnedStaticIdCounts(this.netCookRecipeId, pinnedPerDish);
             bool anyMoveDeficit = false;
             // Units neither the bag nor the warehouse can cover with real ingredients — the Universal
             // Ingredient budget for this move.
@@ -10106,7 +10110,16 @@ namespace HeartopiaMod
                 // Pool ALL matching stacks and allocate once, so the low-star-first ordering holds
                 // ACROSS the category's different item ids (per-staticId allocation would only sort
                 // stars within each item and pull whole item groups in dictionary order).
+                //
+                // Pinned kinds go FIRST, and only up to what the pins ask for. A category slot
+                // pinned to an item accepts any matching item as far as this allocator is
+                // concerned, so the cheap-first default would happily bring something else and
+                // leave the preference unsatisfiable at fill time. Capping the head at
+                // pinnedSlots * batches keeps it a preference and not a reason to drain the
+                // warehouse of one ingredient.
+                List<KeyValuePair<uint, int>> preferredPool = new List<KeyValuePair<uint, int>>();
                 List<KeyValuePair<uint, int>> categoryPool = new List<KeyValuePair<uint, int>>();
+                int preferredUnits = 0;
                 foreach (KeyValuePair<int, List<KeyValuePair<uint, int>>> kvp in stacksByStaticId)
                 {
                     if (specificItemIds.Contains(kvp.Key) || !this.NetCookItemMatchesCategory(kvp.Key, demand.Key))
@@ -10114,7 +10127,26 @@ namespace HeartopiaMod
                         continue;
                     }
 
-                    categoryPool.AddRange(kvp.Value);
+                    if (pinnedPerDish.TryGetValue(kvp.Key, out int pinnedSlots) && pinnedSlots > 0)
+                    {
+                        preferredPool.AddRange(kvp.Value);
+                        preferredUnits += batches * pinnedSlots;
+                    }
+                    else
+                    {
+                        categoryPool.AddRange(kvp.Value);
+                    }
+                }
+
+                if (preferredPool.Count > 0 && preferredUnits > 0)
+                {
+                    int preferredRemaining = Math.Min(remaining, preferredUnits);
+                    int beforePreferred = preferredRemaining;
+                    AllocateNetCookMoveFromStacks(preferredPool, remainingByNetId, moveMap, starByNetId, ref preferredRemaining);
+                    remaining -= beforePreferred - preferredRemaining;
+
+                    // Whatever the pinned kinds could not cover falls back to the general pool.
+                    categoryPool.AddRange(preferredPool);
                 }
 
                 AllocateNetCookMoveFromStacks(categoryPool, remainingByNetId, moveMap, starByNetId, ref remaining);

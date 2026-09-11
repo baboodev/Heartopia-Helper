@@ -1293,6 +1293,13 @@ namespace HeartopiaMod
                     label += " x" + c.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 }
 
+                // Bag stock reads "xN", warehouse stock "+N" — two counts on a 80px tile leave no
+                // room for a word, and the pair is the same everywhere the mod shows both stores.
+                if (c.WarehouseCount > 0)
+                {
+                    label += " +" + c.WarehouseCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
+
                 if (search.Length > 0 && label.IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0)
                 {
                     continue;

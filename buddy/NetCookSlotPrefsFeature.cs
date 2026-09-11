@@ -282,7 +282,8 @@ namespace HeartopiaMod
         {
             public int StaticId;
             public uint NetId;
-            public int Count;
+            public int Count;            // units in the BAG — the only ones fillable right now
+            public int WarehouseCount;   // units sitting in the warehouse, 0 unless Move Ingredients
             public int StarRate;
             public string Name;
         }
@@ -390,8 +391,10 @@ namespace HeartopiaMod
         // holds — so anything that reads a slot has to say which recipe it means first. Plenty of
         // other code re-points it (the cookable sweep, the cook loop, the game's own CookPanel),
         // and without this the picker would be reading another dish's slots.
-        private unsafe bool TryInitNetCookRecipeDetailForSlots(IntPtr cookingSystemObj, IntPtr cookingSystemClass, int recipeId)
+        private unsafe bool TryInitNetCookRecipeDetailForSlots(
+            IntPtr cookingSystemObj, IntPtr cookingSystemClass, int recipeId, out IntPtr detail)
         {
+            detail = IntPtr.Zero;
             if (cookingSystemObj == IntPtr.Zero || cookingSystemClass == IntPtr.Zero
                 || auraMonoRuntimeInvoke == null || recipeId <= 0)
             {
@@ -409,7 +412,50 @@ namespace HeartopiaMod
             IntPtr* args = stackalloc IntPtr[1];
             args[0] = (IntPtr)(&id);
             IntPtr detailObj = auraMonoRuntimeInvoke(initDetailMethod, cookingSystemObj, (IntPtr)args, ref exc);
-            return exc == IntPtr.Zero && detailObj != IntPtr.Zero;
+            if (exc != IntPtr.Zero || detailObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            detail = detailObj;
+            return true;
+        }
+
+        // What this one slot accepts: a concrete item id, or a FoodMaterialType category (the
+        // recipe encodes the category as an ingredient id below 100, which leaves materialId 0).
+        // Read off the freshly initialised detail so it costs no second AutoFill pass.
+        private unsafe bool TryReadNetCookSlotCriteria(IntPtr detailObj, int slotIndex, out int materialId, out int materialType)
+        {
+            materialId = 0;
+            materialType = 0;
+            if (detailObj == IntPtr.Zero || slotIndex < 0)
+            {
+                return false;
+            }
+
+            if (!this.TryGetMonoObjectMember(detailObj, "materialSlots", out IntPtr slotsObj) || slotsObj == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            List<IntPtr> slotItems = new List<IntPtr>(16);
+            List<uint> slotPins = new List<uint>(16);
+            try
+            {
+                if (!this.TryEnumerateAuraMonoCollectionItems(slotsObj, slotItems, slotPins)
+                    || slotIndex >= slotItems.Count || slotItems[slotIndex] == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                this.TryGetMonoInt32Member(slotItems[slotIndex], "materialId", out materialId);
+                this.TryGetMonoInt32Member(slotItems[slotIndex], "materialType", out materialType);
+                return true;
+            }
+            finally
+            {
+                FreeAuraMonoPins(slotPins);
+            }
         }
 
         // Display name for an ingredient id. TryGetItemName (the radar's) goes through
@@ -471,11 +517,13 @@ namespace HeartopiaMod
                 }
 
                 IntPtr cookingSystemClass = auraMonoObjectGetClass(cookingSystemObj);
-                if (!this.TryInitNetCookRecipeDetailForSlots(cookingSystemObj, cookingSystemClass, recipeId))
+                if (!this.TryInitNetCookRecipeDetailForSlots(cookingSystemObj, cookingSystemClass, recipeId, out IntPtr detailObj))
                 {
                     status = "Recipe detail unavailable.";
                     return false;
                 }
+
+                this.TryReadNetCookSlotCriteria(detailObj, slotIndex, out int slotMaterialId, out int slotMaterialType);
 
                 IntPtr getSlotMaterialsMethod = this.FindAuraMonoMethodOnHierarchy(cookingSystemClass, "GetSlotMaterials", 1);
                 if (getSlotMaterialsMethod == IntPtr.Zero)
@@ -547,6 +595,15 @@ namespace HeartopiaMod
                     candidates.Add(c);
                 }
 
+                // GetSlotMaterials only ever sees the BAG (BackPackSystem.GetItems). With Move
+                // Ingredients on, the warehouse is stock the cook will actually draw from, so the
+                // picker has to offer it too — otherwise the only pinnable items are the ones that
+                // happen to be in the bag at the moment the panel is open.
+                if (this.netCookMoveIngredients)
+                {
+                    this.AppendNetCookWarehouseSlotCandidates(candidates, slotMaterialId, slotMaterialType);
+                }
+
                 return candidates.Count > 0;
             }
             catch (Exception ex)
@@ -560,6 +617,120 @@ namespace HeartopiaMod
                 {
                     FreeAuraMonoPins(itemPins);
                 }
+            }
+        }
+
+        // Warehouse stock that fits this slot, merged into the bag candidates. Uses the same scan
+        // the ingredient move uses, with the same category predicate, so what the picker offers and
+        // what the move can actually deliver cannot drift apart.
+        //
+        // The Universal Ingredient is deliberately NOT collected here. GetSlotMaterials lists it
+        // from the bag because the game does, but it is a paid item with its own toggle and its own
+        // "top-up only, last" allocation — quietly making it pinnable out of the warehouse would
+        // route around all of that.
+        private void AppendNetCookWarehouseSlotCandidates(List<NetCookSlotCandidate> candidates, int slotMaterialId, int slotMaterialType)
+        {
+            try
+            {
+                HashSet<int> wantIds = null;
+                List<int> wantCategories = null;
+                if (slotMaterialId > 0)
+                {
+                    wantIds = new HashSet<int> { slotMaterialId };
+                }
+                else
+                {
+                    wantCategories = new List<int> { slotMaterialType };
+                }
+
+                Dictionary<int, List<KeyValuePair<uint, int>>> stacksByStaticId = new Dictionary<int, List<KeyValuePair<uint, int>>>();
+                Dictionary<uint, int> starByNetId = new Dictionary<uint, int>();
+                if (!this.TryCollectNetCookWarehouseStacks(stacksByStaticId, starByNetId, wantIds, wantCategories, out _))
+                {
+                    return;
+                }
+
+                foreach (KeyValuePair<int, List<KeyValuePair<uint, int>>> kvp in stacksByStaticId)
+                {
+                    int staticId = kvp.Key;
+                    if (staticId <= 0 || staticId == NetCookUniversalIngredientStaticId || kvp.Value == null)
+                    {
+                        continue;
+                    }
+
+                    int total = 0;
+                    for (int i = 0; i < kvp.Value.Count; i++)
+                    {
+                        total += Math.Max(0, kvp.Value[i].Value);
+                    }
+
+                    if (total <= 0)
+                    {
+                        continue;
+                    }
+
+                    NetCookSlotCandidate existing = null;
+                    for (int i = 0; i < candidates.Count; i++)
+                    {
+                        if (candidates[i].StaticId == staticId)
+                        {
+                            existing = candidates[i];
+                            break;
+                        }
+                    }
+
+                    if (existing != null)
+                    {
+                        existing.WarehouseCount += total;
+                        continue;
+                    }
+
+                    NetCookSlotCandidate c = new NetCookSlotCandidate
+                    {
+                        StaticId = staticId,
+                        WarehouseCount = total,
+                    };
+                    if (!this.TryResolveNetCookItemName(staticId, out c.Name))
+                    {
+                        c.Name = "#" + staticId.ToString(CultureInfo.InvariantCulture);
+                    }
+
+                    candidates.Add(c);
+                }
+            }
+            catch (Exception ex)
+            {
+                this.NetCookLog("warehouse slot candidates failed: " + ex.Message);
+            }
+        }
+
+        // Slots pinned to each item for this recipe. The warehouse move consults it so a pinned
+        // ingredient is pulled ahead of the cheap-first default — without it a pin on a warehouse
+        // item is a pin on something the move may never bring, and the preference silently does
+        // nothing at cook time.
+        internal void CollectNetCookPinnedStaticIdCounts(int recipeId, Dictionary<int, int> counts)
+        {
+            if (counts == null)
+            {
+                return;
+            }
+
+            counts.Clear();
+            if (!this.netCookSlotManualMode
+                || !this.netCookSlotPrefs.TryGetValue(recipeId, out Dictionary<int, int> slots))
+            {
+                return;
+            }
+
+            foreach (KeyValuePair<int, int> slot in slots)
+            {
+                if (slot.Value <= 0)
+                {
+                    continue;
+                }
+
+                counts.TryGetValue(slot.Value, out int seen);
+                counts[slot.Value] = seen + 1;
             }
         }
 
