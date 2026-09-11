@@ -4493,6 +4493,9 @@ namespace HeartopiaMod
         // Recipe ids the GAME lists as recently cooked, newest first, already filtered to the
         // captured cooker's type by CookingSystem.GetRecentRecipes.
         private readonly List<int> netCookRecentRecipeIds = new List<int>(16);
+        // recipeId -> position in the list above, so the dropdown sort does not run IndexOf
+        // per comparison on a list it rebuilds every frame.
+        private readonly Dictionary<int, int> netCookRecentRecipeRank = new Dictionary<int, int>(16);
         // Off keeps the shipped behaviour: the game's AutoFill decides what goes in each slot.
         private bool netCookSlotManualMode = false;
         // Hide recipes the current stock cannot cover.

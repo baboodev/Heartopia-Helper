@@ -167,15 +167,22 @@ namespace HeartopiaMod
         // including the warehouse when Move Ingredients is on, because that is the stock the cook
         // would actually draw from.
         //
-        // Throttled and cached because it is not free: the first call for a recipe resolves its
-        // requirement list through AuraMono. The list is then reused (netCookRecipeRequirementsCache
-        // holds the per-recipe requirements), so a refresh over a few dozen recipes is arithmetic.
-        // Recomputing per frame would still be wasteful, hence the interval.
+        // Throttled, cached AND budgeted, because it is not free: the first measurement of a recipe
+        // resolves its requirement list, and that resolve runs CookingSystem.InitCookingRecipeDetail
+        // — which rebuilds the shared recipe detail and re-runs the game's AutoFill over the bag.
+        // Measuring forty recipes in one frame is forty AutoFill passes; the panel repaints EVERY
+        // frame, so that has to be spread out. The sweep therefore walks the entry list a few
+        // recipes per frame and only claims to be ready once it has been all the way round.
+        // Afterwards the requirement lists are cached (netCookRecipeRequirementsCache) and a sweep
+        // is plain arithmetic, but the interval keeps even that off the per-frame path.
         private readonly Dictionary<int, bool> netCookCookableCache = new Dictionary<int, bool>();
         private float nextNetCookCookableRefreshAt = 0f;
         private bool netCookCookableCacheMoveIngredients = false;
+        private int netCookCookableSweepCursor = 0;
+        private bool netCookCookableSweepComplete = false;
 
         private const float NetCookCookableRefreshSeconds = 3f;
+        private const int NetCookCookableMeasureBudget = 4;
 
         internal bool IsNetCookRecipeCookable(int recipeId)
         {
@@ -189,9 +196,16 @@ namespace HeartopiaMod
                 return cookable;
             }
 
-            // Unknown entry: answer optimistically and let the next refresh correct it. Hiding a
-            // recipe because it has not been measured yet would make the list flicker on open.
+            // Unknown entry: answer optimistically and let the sweep correct it. Hiding a recipe
+            // because it has not been measured yet would make the list flicker on open.
             return true;
+        }
+
+        // The filter must not hide anything until a full sweep has been round once, or the grid
+        // would drop rows one budget at a time while the first sweep is still walking.
+        internal bool IsNetCookCookableFilterReady()
+        {
+            return this.netCookCookableSweepComplete;
         }
 
         internal void RefreshNetCookCookableCache(List<KeyValuePair<int, string>> entries, bool force = false)
@@ -201,29 +215,50 @@ namespace HeartopiaMod
                 return;
             }
 
-            float now = Time.unscaledTime;
             // Move Ingredients changes the answer (warehouse stock counts or it does not), so a
             // toggle flip invalidates rather than waits out the interval.
-            bool sourceChanged = this.netCookCookableCacheMoveIngredients != this.netCookMoveIngredients;
-            if (!force && !sourceChanged && now < this.nextNetCookCookableRefreshAt)
+            if (this.netCookCookableCacheMoveIngredients != this.netCookMoveIngredients)
+            {
+                this.netCookCookableCacheMoveIngredients = this.netCookMoveIngredients;
+                this.netCookCookableCache.Clear();
+                this.netCookCookableSweepCursor = 0;
+                this.netCookCookableSweepComplete = false;
+                this.nextNetCookCookableRefreshAt = 0f;
+            }
+
+            float now = Time.unscaledTime;
+            bool sweepInFlight = this.netCookCookableSweepCursor > 0;
+            if (!force && !sweepInFlight && now < this.nextNetCookCookableRefreshAt)
             {
                 return;
             }
 
-            this.nextNetCookCookableRefreshAt = now + NetCookCookableRefreshSeconds;
-            this.netCookCookableCacheMoveIngredients = this.netCookMoveIngredients;
-            this.netCookCookableCache.Clear();
-
-            for (int i = 0; i < entries.Count; i++)
+            if (this.netCookCookableSweepCursor >= entries.Count)
             {
-                int recipeId = entries[i].Key;
-                if (recipeId <= 0 || this.netCookCookableCache.ContainsKey(recipeId))
+                this.netCookCookableSweepCursor = 0;
+            }
+
+            // Verdicts are overwritten in place rather than cleared up front: a row keeps its last
+            // answer until a fresh one replaces it, so a re-sweep never makes the grid flicker.
+            int budget = NetCookCookableMeasureBudget;
+            while (this.netCookCookableSweepCursor < entries.Count && budget > 0)
+            {
+                int recipeId = entries[this.netCookCookableSweepCursor++].Key;
+                if (recipeId <= 0)
                 {
                     continue;
                 }
 
-                bool ok = this.TryComputeNetCookMaxQuantity(recipeId, this.netCookMoveIngredients, out int max) && max > 0;
-                this.netCookCookableCache[recipeId] = ok;
+                budget--;
+                this.netCookCookableCache[recipeId] =
+                    this.TryComputeNetCookMaxQuantity(recipeId, this.netCookMoveIngredients, out int max) && max > 0;
+            }
+
+            if (this.netCookCookableSweepCursor >= entries.Count)
+            {
+                this.netCookCookableSweepCursor = 0;
+                this.netCookCookableSweepComplete = true;
+                this.nextNetCookCookableRefreshAt = now + NetCookCookableRefreshSeconds;
             }
         }
 
@@ -342,9 +377,36 @@ namespace HeartopiaMod
             }
         }
 
+        // Point the shared recipe detail at this recipe. CookingSystem keeps ONE _recipeDetail, and
+        // both GetSlotMaterials and ClearSlot/FillMaterialInSlot index into whatever it currently
+        // holds — so anything that reads a slot has to say which recipe it means first. Plenty of
+        // other code re-points it (the cookable sweep, the cook loop, the game's own CookPanel),
+        // and without this the picker would be reading another dish's slots.
+        private unsafe bool TryInitNetCookRecipeDetailForSlots(IntPtr cookingSystemObj, IntPtr cookingSystemClass, int recipeId)
+        {
+            if (cookingSystemObj == IntPtr.Zero || cookingSystemClass == IntPtr.Zero
+                || auraMonoRuntimeInvoke == null || recipeId <= 0)
+            {
+                return false;
+            }
+
+            IntPtr initDetailMethod = this.FindAuraMonoMethodOnHierarchy(cookingSystemClass, "InitCookingRecipeDetail", 1);
+            if (initDetailMethod == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            int id = recipeId;
+            IntPtr exc = IntPtr.Zero;
+            IntPtr* args = stackalloc IntPtr[1];
+            args[0] = (IntPtr)(&id);
+            IntPtr detailObj = auraMonoRuntimeInvoke(initDetailMethod, cookingSystemObj, (IntPtr)args, ref exc);
+            return exc == IntPtr.Zero && detailObj != IntPtr.Zero;
+        }
+
         // What the player actually owns that fits this slot. The game does the filtering: category
         // matching, removing stacks already consumed by other slots, and price ordering.
-        internal unsafe bool TryListNetCookSlotCandidates(int slotIndex, List<NetCookSlotCandidate> candidates, out string status)
+        internal unsafe bool TryListNetCookSlotCandidates(int recipeId, int slotIndex, List<NetCookSlotCandidate> candidates, out string status)
         {
             status = string.Empty;
             candidates.Clear();
@@ -360,6 +422,12 @@ namespace HeartopiaMod
                 }
 
                 IntPtr cookingSystemClass = auraMonoObjectGetClass(cookingSystemObj);
+                if (!this.TryInitNetCookRecipeDetailForSlots(cookingSystemObj, cookingSystemClass, recipeId))
+                {
+                    status = "Recipe detail unavailable.";
+                    return false;
+                }
+
                 IntPtr getSlotMaterialsMethod = this.FindAuraMonoMethodOnHierarchy(cookingSystemClass, "GetSlotMaterials", 1);
                 if (getSlotMaterialsMethod == IntPtr.Zero)
                 {
@@ -481,36 +549,20 @@ namespace HeartopiaMod
                 return true;
             }
 
-            if (filled && !this.TryClearNetCookSlot(cookingSystemObj, cookingSystemClass, slotIndex))
-            {
-                return false;
-            }
-
+            // NO ClearSlot first. FillMaterialInSlot overwrites the slot outright, and the fill
+            // below only touches it once it has actually found a stack of the wanted kind — so a
+            // preference that cannot be met leaves the slot exactly as AutoFill left it, which is
+            // the whole fallback contract.
+            //
+            // Clearing first would break that contract the moment the game stops being buggy:
+            // CookingSystem.ClearSlot guards with `materialSlots.Length >= slotIndex`, which is
+            // true for every VALID index, so today it logs an error and returns without clearing
+            // anything. Rely on that and the day XD fixes the comparison, a preferred item that
+            // ran out would leave an emptied slot behind — burning a Universal Ingredient in place
+            // of the real one AutoFill had already put there, or failing the whole prepare with
+            // "Missing ingredients".
             return this.TryFillNetCookSlotWithStaticId(
                 cookingSystemObj, cookingSystemClass, slotIndex, wantStaticId, out _);
-        }
-
-        private unsafe bool TryClearNetCookSlot(IntPtr cookingSystemObj, IntPtr cookingSystemClass, int slotIndex)
-        {
-            try
-            {
-                IntPtr clearMethod = this.FindAuraMonoMethodOnHierarchy(cookingSystemClass, "ClearSlot", 1);
-                if (clearMethod == IntPtr.Zero || auraMonoRuntimeInvoke == null)
-                {
-                    return false;
-                }
-
-                int slot = slotIndex;
-                IntPtr exc = IntPtr.Zero;
-                IntPtr* args = stackalloc IntPtr[1];
-                args[0] = (IntPtr)(&slot);
-                auraMonoRuntimeInvoke(clearMethod, cookingSystemObj, (IntPtr)args, ref exc);
-                return exc == IntPtr.Zero;
-            }
-            catch
-            {
-                return false;
-            }
         }
 
         // Generalisation of TryFillNetCookSlotWithUniversalIngredient: same walk, any staticId.

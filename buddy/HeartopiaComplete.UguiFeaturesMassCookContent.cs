@@ -1134,10 +1134,38 @@ namespace HeartopiaMod
         private readonly HashSet<int> netCookIconDiag = new HashSet<int>();
 
         // Candidates for the slot the picker is parked on, shaped like the recipe entries so the
-        // grid does not need a second code path. Rebuilt per sync rather than cached: the bag
-        // changes while the panel is open, and a stale list would offer items that are gone.
+        // grid does not need a second code path. Re-read on a short interval rather than per sync:
+        // the bag changes while the panel is open so a long-lived cache would offer items that are
+        // gone, but the read is an AuraMono invoke that also re-inits the shared recipe detail, and
+        // this panel repaints EVERY frame. The label list below is rebuilt per call regardless —
+        // that part is free and keeps the search box responsive.
         private readonly List<KeyValuePair<int, string>> netCookSlotCandidateEntries = new List<KeyValuePair<int, string>>(32);
         private readonly List<NetCookSlotCandidate> netCookSlotCandidateBuffer = new List<NetCookSlotCandidate>(32);
+        private const float NetCookSlotCandidateRefreshSeconds = 0.5f;
+        private float nextNetCookSlotCandidateRefreshAt = 0f;
+        private int netCookSlotCandidateBufferSlot = -1;
+        private int netCookSlotCandidateBufferRecipe = 0;
+
+        private void EnsureUguiMassCookSlotCandidates()
+        {
+            // A different slot or dish is a different question — answer it now, never on the next
+            // interval, or the grid would show the previous slot's items for half a second.
+            bool targetChanged = this.netCookSlotCandidateBufferSlot != this.netCookSlotPickerIndex
+                || this.netCookSlotCandidateBufferRecipe != this.netCookRecipeId;
+            if (!targetChanged && Time.unscaledTime < this.nextNetCookSlotCandidateRefreshAt)
+            {
+                return;
+            }
+
+            this.netCookSlotCandidateBufferSlot = this.netCookSlotPickerIndex;
+            this.netCookSlotCandidateBufferRecipe = this.netCookRecipeId;
+            this.nextNetCookSlotCandidateRefreshAt = Time.unscaledTime + NetCookSlotCandidateRefreshSeconds;
+            if (!this.TryListNetCookSlotCandidates(this.netCookRecipeId, this.netCookSlotPickerIndex,
+                    this.netCookSlotCandidateBuffer, out _))
+            {
+                this.netCookSlotCandidateBuffer.Clear();
+            }
+        }
 
         private List<KeyValuePair<int, string>> GetUguiMassCookSlotCandidateEntries()
         {
@@ -1147,7 +1175,8 @@ namespace HeartopiaMod
                 return this.netCookSlotCandidateEntries;
             }
 
-            if (!this.TryListNetCookSlotCandidates(this.netCookSlotPickerIndex, this.netCookSlotCandidateBuffer, out _))
+            this.EnsureUguiMassCookSlotCandidates();
+            if (this.netCookSlotCandidateBuffer.Count <= 0)
             {
                 return this.netCookSlotCandidateEntries;
             }
@@ -1177,6 +1206,40 @@ namespace HeartopiaMod
             return this.netCookSlotCandidateEntries;
         }
 
+        // "Only What I Can Cook" lives HERE and not in GetVisibleNetCookRecipeEntries, because that
+        // list is also the oracle the capture path and the Stove Type switch consult to decide which
+        // recipe stays selected. Filtering it there would let a stock shortage silently overwrite
+        // the recipe the user picked for a menu. Hiding rows is a view concern, so the view owns it.
+        private readonly List<KeyValuePair<int, string>> netCookCookableVisibleEntries = new List<KeyValuePair<int, string>>(256);
+
+        private List<KeyValuePair<int, string>> GetUguiMassCookRecipeGridEntries()
+        {
+            List<KeyValuePair<int, string>> visible = this.GetVisibleNetCookRecipeEntries();
+            if (!this.netCookCookableOnly)
+            {
+                return visible;
+            }
+
+            // Measuring is budgeted per frame; until the first sweep has been all the way round,
+            // show the list unfiltered rather than dropping rows a few at a time.
+            this.RefreshNetCookCookableCache(visible);
+            if (!this.IsNetCookCookableFilterReady())
+            {
+                return visible;
+            }
+
+            this.netCookCookableVisibleEntries.Clear();
+            for (int i = 0; i < visible.Count; i++)
+            {
+                if (this.IsNetCookRecipeCookable(visible[i].Key))
+                {
+                    this.netCookCookableVisibleEntries.Add(visible[i]);
+                }
+            }
+
+            return this.netCookCookableVisibleEntries;
+        }
+
         private void SyncUguiFeaturesMassCookRecipeRows(UguiShellFeaturesMassCookHandle handle)
         {
             // Two data sources through one grid: recipes normally, and a slot's candidate items
@@ -1184,7 +1247,7 @@ namespace HeartopiaMod
             // only the list and what a click means change.
             List<KeyValuePair<int, string>> visible = this.netCookSlotPickerIndex >= 0
                 ? this.GetUguiMassCookSlotCandidateEntries()
-                : this.GetVisibleNetCookRecipeEntries();
+                : this.GetUguiMassCookRecipeGridEntries();
             int count = visible.Count;
             float innerW = handle.ContentWidth - 16f - 8f - 22f; // panel rowW-8 minus kit viewport insets
 

@@ -560,7 +560,7 @@ namespace HeartopiaMod
         {
             this.netCookRecipeEntries.Clear();
             this.netCookVisibleRecipeEntries.Clear();
-            this.netCookRecentRecipeIds.Clear();
+            this.ClearNetCookRecentRecipeIds();
             this.netCookRecipeCookerTypes.Clear();
             this.netCookRecipeRequirementsCache.Clear();
             this.netCookRecipeCacheCookerStaticId = 0;
@@ -5447,9 +5447,21 @@ namespace HeartopiaMod
         //
         // Failure here is never fatal: the dropdown simply shows no RECENT group. A missing method
         // on a future build must not take the recipe list down with it.
-        private unsafe bool TryRefreshNetCookRecentRecipeIdsAuraMono()
+        private void ClearNetCookRecentRecipeIds()
         {
             this.netCookRecentRecipeIds.Clear();
+            this.netCookRecentRecipeRank.Clear();
+        }
+
+        // -1 for a dish that is not in the recent list; otherwise its position in it.
+        private int GetNetCookRecentRecipeRank(int recipeId)
+        {
+            return this.netCookRecentRecipeRank.TryGetValue(recipeId, out int rank) ? rank : -1;
+        }
+
+        private unsafe bool TryRefreshNetCookRecentRecipeIdsAuraMono()
+        {
+            this.ClearNetCookRecentRecipeIds();
 
             try
             {
@@ -5529,13 +5541,18 @@ namespace HeartopiaMod
                     FreeAuraMonoPins(recentPins);
                 }
 
+                for (int i = 0; i < this.netCookRecentRecipeIds.Count; i++)
+                {
+                    this.netCookRecentRecipeRank[this.netCookRecentRecipeIds[i]] = i;
+                }
+
                 this.NetCookLog("Recent recipes: " + this.netCookRecentRecipeIds.Count
                     + " for cookerStaticId=" + this.netCookCookerStaticId + ".");
                 return this.netCookRecentRecipeIds.Count > 0;
             }
             catch (Exception ex)
             {
-                this.netCookRecentRecipeIds.Clear();
+                this.ClearNetCookRecentRecipeIds();
                 this.NetCookLog("CookingSystem AuraMono GetRecentRecipes exception: " + ex.Message);
                 return false;
             }
@@ -5743,27 +5760,22 @@ namespace HeartopiaMod
                 this.netCookVisibleRecipeEntries.Add(recipeEntry);
             }
 
-            // Cookable filter runs AFTER the cooker-type and search filters, so it only ever
-            // measures recipes that could otherwise be shown.
-            if (this.netCookCookableOnly)
-            {
-                this.RefreshNetCookCookableCache(this.netCookVisibleRecipeEntries);
-                for (int i = this.netCookVisibleRecipeEntries.Count - 1; i >= 0; i--)
-                {
-                    if (!this.IsNetCookRecipeCookable(this.netCookVisibleRecipeEntries[i].Key))
-                    {
-                        this.netCookVisibleRecipeEntries.RemoveAt(i);
-                    }
-                }
-            }
+            // NO cookable filter here. This list is not just what the dropdown paints: the capture
+            // path and the Stove Type switch both search it to decide which recipe stays selected
+            // (NetCook.cs ~3701, NetCookStoveType.cs ~1149). Dropping entries out of it would let a
+            // stock shortage silently overwrite the recipe the user picked for that menu. The
+            // "Only What I Can Cook" filter is applied by the UI, over this list.
 
             this.netCookVisibleRecipeEntries.Sort((a, b) =>
             {
                 // Recently cooked dishes float to the top, in the order the GAME lists them
                 // (newest first) rather than alphabetically — that ordering is the whole point of
                 // the group. Everything else keeps the original name sort below it.
-                int rankA = this.netCookRecentRecipeIds.IndexOf(a.Key);
-                int rankB = this.netCookRecentRecipeIds.IndexOf(b.Key);
+                //
+                // Rank comes from a dictionary, not IndexOf: this comparator runs O(n log n) times
+                // per rebuild and the rebuild happens EVERY frame the dropdown is open.
+                int rankA = this.GetNetCookRecentRecipeRank(a.Key);
+                int rankB = this.GetNetCookRecentRecipeRank(b.Key);
                 if (rankA != rankB)
                 {
                     if (rankA < 0)
