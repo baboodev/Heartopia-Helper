@@ -212,6 +212,11 @@ namespace HeartopiaMod
                 entries.Add(this.CreateLiveFeatureEntry("Auto Collect Bubbles", "Active"));
             }
 
+            if (this.auraFarmEnabled)
+            {
+                entries.Add(this.CreateLiveFeatureEntry("Aura Farm: Dog Poop", this.GetPetPoopLiveSummary()));
+            }
+
             if (this.bunnyHopEnabled)
             {
                 entries.Add(this.CreateLiveFeatureEntry("Bunny Hop", "Active"));

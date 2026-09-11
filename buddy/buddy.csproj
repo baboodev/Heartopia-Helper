@@ -495,6 +495,7 @@
     <Compile Include="BubbleFeature.cs" />
     <Compile Include="BubbleSpawnRewriteFeature.cs" />
     <Compile Include="AutoBubbleCollectFeature.cs" />
+    <Compile Include="PetPoopFeature.cs" />
     <Compile Include="MelonLoaderPlugin.cs" />
     <Compile Include="MelonSceneHookCleanup.cs" />
     <Compile Include="ClassInjectorHookTrimFeature.cs" />

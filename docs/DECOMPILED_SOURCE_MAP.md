@@ -183,6 +183,7 @@ the native body.
 | `Gameplay/Component/Equip/` | AxeChecker, HandholdCylinderChecker, tools |
 | `Gameplay/Component/Player/` | LocalPlayerComponent, LocalPlayerLookInteractTarget |
 | `Gameplay/Component/Bubble/` | BubbleComponent, BubbleMoveComponent |
+| `Gameplay/Component/Pickable/`, `Gameplay/Component/Dynamic/` | PickableComponent (view), DynamicComponent — pet poop scan (`PetPoopFeature.cs`); `Gameplay/Interaction/Command/PickupShitCommand` is the manual path |
 | `Gameplay/Interaction/` | PlayerInteraction, BackpackBirdCamouflage, BirdCamouflageComponent |
 | `GameplaySystem/` | **GameplayApi** (photo mode, fishing API) |
 | `Game/GameMode/` | **Character**, GamePhotoMode |
@@ -207,7 +208,7 @@ the native body.
 
 **ProtocolService subfolders** (useful for search):
 
-`Resource`, `Task`, `BackPack`, `Pet`, `WildAnimal`, `Meow`, `Bubble`, `ActivityEvent`, `Cooking`, `JigsawPuzzle`, `Insect`, `GamePlay/Bird`, `Login`, `Store`, `Player`, …
+`Resource`, `Task`, `BackPack`, `Pet`, `WildAnimal`, `Meow`, `Bubble`, `Throwable` (pet poop pickup: `ThrowableProtocolManager.Pickup`), `ActivityEvent`, `Cooking`, `JigsawPuzzle`, `Insect`, `GamePlay/Bird`, `Login`, `Store`, `Player`, …
 
 ### 2.4 XDTGameSystem
 

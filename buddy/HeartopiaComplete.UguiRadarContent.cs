@@ -556,6 +556,7 @@ namespace HeartopiaMod
             if (this.showInsectRadar) selected.Add("Insects");
             if (this.showFishShadowRadar) selected.Add("Fish Shadows");
             if (this.showMeteorRadar) selected.Add("Meteors");
+            if (this.showPetPoopRadar) selected.Add("Dog Poop");
             if (this.showOtherPlayersRadar) selected.Add("Players");
             return this.GetRadarSelectionSummary(selected);
         }
@@ -778,6 +779,20 @@ namespace HeartopiaMod
                                 {
                                     this.RemoveTrackedMarkersByNameContains("p_rock_meteorite");
                                     this.RemoveTrackedMarkersByNameContains("meteorite");
+                                }
+                            }
+                        },
+                        // PetPoopFeature.cs - markers come from a view-component scan, not the GO scan.
+                        new UguiRadarOptionBinding
+                        {
+                            Label = "Dog Poop",
+                            Get = () => this.showPetPoopRadar,
+                            Set = v =>
+                            {
+                                this.showPetPoopRadar = v;
+                                if (!this.showPetPoopRadar)
+                                {
+                                    this.ClearPetPoopTrackedMarkers();
                                 }
                             }
                         },
@@ -1147,6 +1162,7 @@ namespace HeartopiaMod
             this.showInsectRadar = true;
             this.showFishShadowRadar = true;
             this.showMeteorRadar = true;
+            this.showPetPoopRadar = true;
             this.showOtherPlayersRadar = true;
             this.CheckRadarAutoToggle();
             if (this.isRadarActive)
@@ -1194,6 +1210,7 @@ namespace HeartopiaMod
             this.showInsectRadar = false;
             this.showFishShadowRadar = false;
             this.showMeteorRadar = false;
+            this.showPetPoopRadar = false;
             this.showOtherPlayersRadar = false;
             this.CheckRadarAutoToggle();
             this.Cleanup();

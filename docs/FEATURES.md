@@ -880,6 +880,8 @@ Server-command style farming **without teleporting** to each node:
   - **Bushes** — `SendPickBushCommand`
   - **Trees** — `SendAttackTreeCommand`
   - **Stones** — `SendHitStoneCommand`
+  - **Dog poop** — while the aura runs, `PetPoopFeature.cs` picks up droppings within 2 m
+    (`ThrowableProtocolManager.Pickup`); details under Pet Care → Dog poop pickup.
 - Throttled scan (80 ms tick, 20 ms per-owner cooldown); merged target cap (32).
 - Toggle independent of teleport foraging; both can conflict — UI warns when radar/foraging preconditions fail.
 - **Foraging + Aura Farm node-hop wait:** when START FORAGING teleports to a radar node with Aura Farm on,
@@ -1315,6 +1317,40 @@ See [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md#pet-feed-detail).
 - **Auto Dog Train:** handles dog training QTE flow.
 - Independent toggles + hotkeys.
 
+**Dog poop pickup (`PetPoopFeature.cs`) — part of Aura Farm, no switch of its own**
+
+- Active whenever **Aura Farm** is running (Resource Gathering → Aura Farm): the aura already means
+  "collect everything in reach", so droppings ride along. Pickup radius is fixed at **2 m**: the
+  server only honours `Pickup` right next to the dropping (user-measured; a wider radius just burns
+  the send budget).
+- What a dropping is: Entity **7100 "Dog Poop"** (EntityType 44 `pickable`, ids 7100-7199,
+  prefab `p_dogpoop_dogpoop001`). A networked ECS entity with `PickableComponent`
+  (`XDT.Scene.Shared.Modules.Throwable`) that `ThrowableSyncSystem` turns into a DataCenter entity
+  (`DynamicComponentData{staticId}` + `PickableComponentData{enablePick}`) rendered through BRG —
+  so there is **no GameObject to find by name**; the feature scans the VIEW components instead:
+  `Entities.GetComponents<XDTLevelAndEntity.Gameplay.Component.Pickable.PickableComponent>` every
+  1 s (a handful of objects) and qualifies each NEW netId once through
+  `DynamicComponent.StaticId` (thrown dog toys, Throwable 7000, also carry `PickableComponentData`
+  and must not be picked up).
+- Pickup = the manual path minus the cast: `PickupShitCommand` (InteractId 22) →
+  `player.Cast(SwitchFurnitureArg type=20)` → `ThrowableProtocolManager.Pickup(netId)` →
+  `PickupNetworkCommand`. The feature invokes the static `Pickup(uint)` directly (AuraMono,
+  value-type arg by pointer), nearest dropping inside 2 m first, one send per 0.5 s, up to
+  8 sends per netId 3 s apart (no minimum age: the first sends are ignored by the server for
+  8-15 s, the dense retries land right after); a dropping that vanishes after a send counts as collected
+  (verified live 2026-09-11: 18/18 collected on the first send in one session).
+- `UITipEvent` 93683 (`PickupResult.BagNotEnough`) right after one of our sends pauses the
+  feature for 60 s; tip 266 = a dropping expired (`PetPoopDisappearNetworkEvent`).
+- Measured 2026-09-11: one send at 5.0 m went through, but in practice the server only honours
+  `Pickup` within ~2 m (hence the fixed radius); a fresh dropping is **ignored for the first
+  8-15 s** (sends at +0/+4/+8 s did nothing, +15 s collected) — covered by the 3 s retries; droppings appeared **every 5-15 min** with two pets on a walk, sometimes two
+  within a minute when both dogs go (the server checks every `DogConst.DefaultCheckCooldown` =
+  300 s, but not every check produces one). Unknown: whether another player's dog's poop is
+  pickable (`AllowedNetId`) — six refused sends and the netId is left alone, with a `[PetPoop]` log line.
+- No targeted event exists for "a pickable appeared" (`DataCreated<T>` is a nested generic,
+  `EntityCreateEvent` fires for everything) — hence the throttled scan.
+- Same scan feeds the **Radar → Misc → Dog Poop** category (below).
+
 **My Pets (per-pet Play / Wash)**
 
 - `Show My Pets` lists owned cats/dogs (PetFeed scan, `IsMine` only) with live energy (vitality) / food (fullness) / growth (chemistry) from `PetSystem.GetPetComponentData`; per-row message shows detailed session progress.
@@ -1333,6 +1369,11 @@ See [BACKPACK_AND_ITEMS.md](./BACKPACK_AND_ITEMS.md#pet-feed-detail).
 
 - Scans world for configured resource prefabs / markers.
 - Categories: mushrooms (incl. truffle), berries, stones, ores, trees (apple, mandarin, rare), fish shadows, meteors, misc event resources.
+- **Misc → Dog Poop** — pet droppings (Entity 7100). Not a prefab scan: markers come from the
+  `PickableComponent` view scan in `PetPoopFeature.cs` (see Pet Care → Dog poop pickup),
+  keyed by netId, named `PetPoopMarker_<netId>` so the radar's per-scan child sweep keeps them.
+  ESP label "Dog Poop" (code DP, brown), icon `ui_item_normal_p_dogpoop_dogpoop001`; on the game
+  map it is a pinned NormalItem (Furniture-route) marker with the same icon, big map included.
 - **Daily** group — **Oak-Oak** and **Flawless Fluorite**, the two daily-roaming advanced
   collectables (their own group: single objects that move every game day at 06:00, not a resource
   family). The server picks the spot and the client has no data that predicts it, so they are found

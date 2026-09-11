@@ -760,6 +760,7 @@ namespace HeartopiaMod
             this.ProcessBubbleFeatureOnUpdate();
             this.ProcessBubbleSpawnAtPlayerOnUpdate();
             this.ProcessAutoBubbleCollectOnUpdate();
+            this.ProcessPetPoopOnUpdate();
             Breadcrumbs.Phase("ou.animskip");
             this.ProcessShowOffBypassOnUpdate();
             this.ProcessQuietPopupsOnUpdate();
@@ -2991,6 +2992,7 @@ namespace HeartopiaMod
             this.markerMetadataById.Clear();
             this.trackedObjectMarkers.Clear();
             this.trackedBubbleMarkers.Clear();
+            this.trackedPetPoopMarkers.Clear();
             this.ClearHideAndSeekMorphMarkers();
             this.bubbleRadarTrackedPositions.Clear();
             this.bubbleRadarSnapshotPositions.Clear();

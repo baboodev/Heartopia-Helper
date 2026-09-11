@@ -107,6 +107,10 @@ namespace HeartopiaMod
                 // them here keeps the 3 m position match from handing them a neighbouring stone's
                 // icon and caching it per label. They ride the Furniture route instead, see
                 // IsBigMapFurnitureLabel.
+                // Pet poop (PetPoopFeature.cs): Entity 7100 is a pickable, not a material - no
+                // collectable-atlas sprite, so it rides the Furniture route (IsBigMapFurnitureLabel)
+                // and draws its NormalItem icon ui_item_normal_p_dogpoop_dogpoop001.
+                case "Dog Poop": return PetPoopItemId;
                 case "Capybara Slab": return 302685;
                 case "Oak-Oak Slab": return 302694;
                 default: return 0;
@@ -643,7 +647,8 @@ namespace HeartopiaMod
         {
             return string.Equals(label, "Meteor", StringComparison.Ordinal)
                 || string.Equals(label, "Capybara Slab", StringComparison.Ordinal)
-                || string.Equals(label, "Oak-Oak Slab", StringComparison.Ordinal);
+                || string.Equals(label, "Oak-Oak Slab", StringComparison.Ordinal)
+                || string.Equals(label, "Dog Poop", StringComparison.Ordinal);
         }
 
         // Called when the ESP/Game segmented control changes.

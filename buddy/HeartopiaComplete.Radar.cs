@@ -566,6 +566,10 @@ namespace HeartopiaMod
                     return "p_decoration_tribe_kapibalaslate_1";
                 case "Oak-Oak Slab":
                     return "p_decoration_tribe_oakslab_1";
+                // Pickable.normalPrefabId of Entity 7100 (cn_tables Pickable table) - the bag-item icon
+                // ui_item_normal_p_dogpoop_dogpoop001 exists in the icon index.
+                case "Dog Poop":
+                    return "p_dogpoop_dogpoop001";
                 case "Stone":
                     return "p_material_stone1";
                 case "Ore":
@@ -625,6 +629,8 @@ namespace HeartopiaMod
                     return this.CreateRadarIconFallbackTexture(key, new Color(0.26f, 0.72f, 1f), new Color(0.08f, 0.3f, 0.55f), false, false, false);
                 case "Meteor":
                     return this.CreateRadarIconFallbackTexture(key, new Color(1f, 0.55f, 0.15f), new Color(0.98f, 0.83f, 0.36f), false, true, false);
+                case "Dog Poop":
+                    return this.CreateRadarIconFallbackTexture(key, new Color(0.55f, 0.36f, 0.18f), new Color(0.3f, 0.18f, 0.08f), false, false, false);
                 // NOTE: no "Contaminated" fallback on purpose — a fallback texture gets cached permanently
                 // in metadata.ResourceVisualEspIconTexture on the first frame and short-circuits the async
                 // game-icon (seashell) load. Returning null → the badge shows during load, then the real icon.
@@ -1769,7 +1775,7 @@ namespace HeartopiaMod
                 || this.showTreeRadar || this.showRareTreeRadar || this.showAppleTreeRadar || this.showOrangeTreeRadar
                 || this.showOakOakRadar || this.showFluoriteRadar
                 || this.showBubbleRadar || this.showBirdRadar || this.showInsectRadar || this.showFishShadowRadar || this.showMeteorRadar
-                || this.showOtherPlayersRadar;
+                || this.showOtherPlayersRadar || this.showPetPoopRadar;
         }
 
         private bool IsAnyMushroomRadarEnabled()
@@ -1871,7 +1877,8 @@ namespace HeartopiaMod
                             continue;
                         }
 
-                        bool flag4 = gameObject.name.StartsWith("TrackedMarker_") || this.TryParseBubbleTrackedMarkerId(gameObject.name, out _);
+                        bool flag4 = gameObject.name.StartsWith("TrackedMarker_") || this.TryParseBubbleTrackedMarkerId(gameObject.name, out _)
+                            || IsPetPoopTrackedMarkerName(gameObject.name);
                         bool flag5 = !flag4;
                         if (flag5)
                         {
@@ -1937,6 +1944,16 @@ namespace HeartopiaMod
             else if (this.trackedBubbleMarkers.Count > 0 || this.bubbleRadarTrackedPositions.Count > 0)
             {
                 this.ClearBubbleTrackedMarkers();
+            }
+
+            // Pet poop (PetPoopFeature.cs): view-component scan, markers keyed by netId.
+            if (this.showPetPoopRadar)
+            {
+                this.SyncPetPoopRadarMarkers(position, material, material2);
+            }
+            else if (this.trackedPetPoopMarkers.Count > 0)
+            {
+                this.ClearPetPoopTrackedMarkers();
             }
 
             // Little Whale figurine finder (daily photo hide-and-seek, LittleWhaleFinderFeature.cs):
@@ -2991,6 +3008,14 @@ namespace HeartopiaMod
                 }
             }
                             }
+            // Pet poop (PetPoopFeature.cs) - not part of the forage chain above.
+            if (meshName == "petpoop")
+            {
+                text2 = "Dog Poop";
+                icon = "?";
+                endColor = new Color(0.72f, 0.52f, 0.3f); // brown
+                bgColor = new Color(0.3f, 0.18f, 0.08f, 0.88f);
+            }
             if (text2 == "Mushroom" && text.Contains("dynamicbush") && !this.loggedUnknownForageMeshNames.Contains(meshName))
             {
                 this.loggedUnknownForageMeshNames.Add(meshName);

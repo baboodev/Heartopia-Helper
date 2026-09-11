@@ -477,6 +477,8 @@ namespace HeartopiaMod
                 // CreateMarker and then silently dropped by both surfaces.
                 case "Oak-Oak":
                 case "Flawless Fluorite":
+                // Pet poop (PetPoopFeature.cs) - radar category "Dog Poop".
+                case "Dog Poop":
                     return true;
             }
 
@@ -544,6 +546,7 @@ namespace HeartopiaMod
                 case "Meteor": return "MT";
                 case "Fish Shadow": return "FS";
                 case "Oak-Oak": return "OO";
+                case "Dog Poop": return "DP";
                 case "Flawless Fluorite": return "FL";
                 default: return "RS";
             }
@@ -586,6 +589,7 @@ namespace HeartopiaMod
                 case "Meteor": return new Color(1f, 0.62f, 0.32f);
                 case "Fish Shadow": return new Color(0.42f, 0.78f, 1f);
                 case "Oak-Oak": return new Color(0.92f, 0.76f, 0.35f);
+                case "Dog Poop": return new Color(0.72f, 0.52f, 0.3f);
                 case "Flawless Fluorite": return new Color(0.74f, 0.56f, 1f);
                 default: return new Color(0.82f, 0.9f, 1f);
             }

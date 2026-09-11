@@ -437,6 +437,7 @@ namespace HeartopiaMod
             }
 
             this.auraFarmEnabled = enabled;
+            this.OnPetPoopAuraFarmToggled(enabled); // PetPoopFeature.cs rides the aura switch
             this.auraEnabledAt = Time.unscaledTime;
             this.auraLastScanAt = 0f;
             this.auraNextMonoFallbackScanAt = 0f;
