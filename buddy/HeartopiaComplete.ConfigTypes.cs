@@ -356,6 +356,9 @@ namespace HeartopiaMod
             public bool netCookMiniGameOnly;
             public bool netCookMoveIngredients;
             public bool netCookRememberStoves;
+            public bool netCookSlotManualMode;
+            public bool netCookCookableOnly;
+            public string netCookSlotPrefs;
             public bool netCookCaptureOwnOnly;
             public bool netCookCaptureRadiusOnly;
             public bool netCookUseAllIngredients;
