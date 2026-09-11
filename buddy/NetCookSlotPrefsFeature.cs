@@ -506,7 +506,10 @@ namespace HeartopiaMod
             status = string.Empty;
             candidates.Clear();
 
-            List<uint> itemPins = null;
+            int slotMaterialId = 0;
+            int slotMaterialType = 0;
+            bool criteriaKnown = false;
+
             try
             {
                 if (!this.TryResolveAuraMonoModule("XDTGameSystem.GameplaySystem.Cooking.CookingSystem", out IntPtr cookingSystemObj)
@@ -523,13 +526,51 @@ namespace HeartopiaMod
                     return false;
                 }
 
-                this.TryReadNetCookSlotCriteria(detailObj, slotIndex, out int slotMaterialId, out int slotMaterialType);
+                criteriaKnown = this.TryReadNetCookSlotCriteria(detailObj, slotIndex, out slotMaterialId, out slotMaterialType);
 
+                // Best effort, and deliberately not fatal. An empty bag list is indistinguishable
+                // from a failed read here (the collection walk answers false for both), and "the
+                // bag has nothing that fits" is precisely the case where the warehouse is the only
+                // place the ingredient can come from — returning early on it was what made the
+                // picker come up blank with Move Ingredients on.
+                this.AppendNetCookBagSlotCandidates(cookingSystemObj, cookingSystemClass, slotIndex, candidates);
+            }
+            catch (Exception ex)
+            {
+                status = ex.GetType().Name + ": " + ex.Message;
+                return false;
+            }
+
+            // GetSlotMaterials only ever sees the BAG (BackPackSystem.GetItems). With Move
+            // Ingredients on, the warehouse is stock the cook will actually draw from, so the
+            // picker has to offer it too.
+            if (this.netCookMoveIngredients && criteriaKnown)
+            {
+                this.AppendNetCookWarehouseSlotCandidates(candidates, slotMaterialId, slotMaterialType);
+            }
+
+            if (candidates.Count <= 0)
+            {
+                status = criteriaKnown ? "No candidates for this slot." : "Recipe slots unreadable.";
+                return false;
+            }
+
+            return true;
+        }
+
+        // The bag half: CookingSystem.GetSlotMaterials already does the category matching, drops
+        // stacks other slots have consumed, and orders by price. Silent on failure — the caller
+        // treats an empty bag as a fact, not an error.
+        private unsafe void AppendNetCookBagSlotCandidates(
+            IntPtr cookingSystemObj, IntPtr cookingSystemClass, int slotIndex, List<NetCookSlotCandidate> candidates)
+        {
+            List<uint> itemPins = null;
+            try
+            {
                 IntPtr getSlotMaterialsMethod = this.FindAuraMonoMethodOnHierarchy(cookingSystemClass, "GetSlotMaterials", 1);
                 if (getSlotMaterialsMethod == IntPtr.Zero)
                 {
-                    status = "GetSlotMaterials unavailable.";
-                    return false;
+                    return;
                 }
 
                 int slot = slotIndex;
@@ -539,16 +580,14 @@ namespace HeartopiaMod
                 IntPtr itemListObj = auraMonoRuntimeInvoke(getSlotMaterialsMethod, cookingSystemObj, (IntPtr)args, ref exc);
                 if (exc != IntPtr.Zero || itemListObj == IntPtr.Zero)
                 {
-                    status = "No candidates for this slot.";
-                    return false;
+                    return;
                 }
 
                 List<IntPtr> items = new List<IntPtr>(32);
                 itemPins = new List<uint>(32);
                 if (!this.TryEnumerateAuraMonoCollectionItems(itemListObj, items, itemPins))
                 {
-                    status = "Candidate list unreadable.";
-                    return false;
+                    return;
                 }
 
                 // One row per item KIND: the preference is stored by staticId, so listing three
@@ -594,22 +633,10 @@ namespace HeartopiaMod
 
                     candidates.Add(c);
                 }
-
-                // GetSlotMaterials only ever sees the BAG (BackPackSystem.GetItems). With Move
-                // Ingredients on, the warehouse is stock the cook will actually draw from, so the
-                // picker has to offer it too — otherwise the only pinnable items are the ones that
-                // happen to be in the bag at the moment the panel is open.
-                if (this.netCookMoveIngredients)
-                {
-                    this.AppendNetCookWarehouseSlotCandidates(candidates, slotMaterialId, slotMaterialType);
-                }
-
-                return candidates.Count > 0;
             }
             catch (Exception ex)
             {
-                status = ex.GetType().Name + ": " + ex.Message;
-                return false;
+                this.NetCookLog("bag slot candidates failed: " + ex.Message);
             }
             finally
             {

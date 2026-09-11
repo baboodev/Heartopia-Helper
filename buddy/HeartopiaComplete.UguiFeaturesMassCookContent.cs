@@ -1255,13 +1255,23 @@ namespace HeartopiaMod
                 return;
             }
 
+            bool targetMoved = targetChanged;
             this.netCookSlotCandidateBufferSlot = this.netCookSlotPickerIndex;
             this.netCookSlotCandidateBufferRecipe = this.netCookRecipeId;
             this.nextNetCookSlotCandidateRefreshAt = Time.unscaledTime + NetCookSlotCandidateRefreshSeconds;
             if (!this.TryListNetCookSlotCandidates(this.netCookRecipeId, this.netCookSlotPickerIndex,
-                    this.netCookSlotCandidateBuffer, out _))
+                    this.netCookSlotCandidateBuffer, out string candidateStatus))
             {
                 this.netCookSlotCandidateBuffer.Clear();
+                // An empty picker is the one failure the player sees and cannot explain, and the
+                // reason was being dropped on the floor with `out _`. Log it once per slot rather
+                // than per refresh — this runs twice a second for as long as the picker is open.
+                if (targetMoved)
+                {
+                    this.NetCookLog("slot " + this.netCookSlotPickerIndex + " candidates empty for recipe "
+                        + this.netCookRecipeId + " (moveIngredients=" + this.netCookMoveIngredients
+                        + "): " + candidateStatus);
+                }
             }
         }
 
