@@ -125,8 +125,10 @@ namespace HeartopiaMod
             new Dictionary<int, List<FurnitureDyePart>>();
         private readonly Dictionary<int, int> furnitureDyeEntityTypeCache = new Dictionary<int, int>();
 
-        private IntPtr furnitureDyeConfigObj;   // DyeColorConfig; re-resolved per world
-        private uint furnitureDyeConfigPin;
+        // DyeColorConfig, re-resolved per world. Held through AuraMonoObjectCache, never as a raw
+        // MonoObject* field: the cache owns the pin and drops the object by itself when the scene
+        // epoch turns over, so nothing here can survive into a world where it is no longer live.
+        private AuraMonoObjectCache furnitureDyeConfigCache;
         private int furnitureDyeConfigEpoch = -1;
 
         private FurnitureDyeTarget furnitureDyeTarget;
@@ -354,9 +356,9 @@ namespace HeartopiaMod
             List<FurnitureDyePart> found = null;
             try
             {
-                if (this.TryEnsureFurnitureDyeConfig(out string status))
+                if (this.TryEnsureFurnitureDyeConfig(out IntPtr configObj, out string status))
                 {
-                    found = this.ReadFurnitureDyeParts(staticId);
+                    found = this.ReadFurnitureDyeParts(configObj, staticId);
                 }
                 else
                 {
@@ -374,15 +376,20 @@ namespace HeartopiaMod
             return found;
         }
 
-        private bool TryEnsureFurnitureDyeConfig(out string status)
+        // Hands the caller the config pointer instead of parking it in a field: the pointer is only
+        // good for as long as the cache's pin holds it, which is this call.
+        private bool TryEnsureFurnitureDyeConfig(out IntPtr configObj, out string status)
         {
             status = null;
-            if (this.furnitureDyeConfigObj != IntPtr.Zero && this.furnitureDyeConfigEpoch == this.WorldReadyEpoch)
+            if (this.furnitureDyeConfigEpoch == this.WorldReadyEpoch
+                && this.furnitureDyeConfigCache.TryGet(out configObj) && configObj != IntPtr.Zero)
             {
                 return true;
             }
 
-            this.FreeFurnitureDyeConfigPin();
+            configObj = IntPtr.Zero;
+            this.furnitureDyeConfigCache.Clear();
+            this.furnitureDyeConfigEpoch = -1;
 
             if (!this.TryResolveCorruptionConfigManager(out IntPtr configManagerObj, out uint managerPin,
                     out status) || configManagerObj == IntPtr.Zero)
@@ -404,15 +411,15 @@ namespace HeartopiaMod
                     return false;
                 }
 
-                uint pin = AuraMonoPinNew(cfg);
-                if (pin == 0U)
+                // Set pins; it leaves the cache empty when pinning fails rather than keeping an
+                // unpinned pointer, so TryGet is how we learn the pin did not take.
+                this.furnitureDyeConfigCache.Set(cfg);
+                if (!this.furnitureDyeConfigCache.TryGet(out configObj) || configObj == IntPtr.Zero)
                 {
                     status = "could not pin DyeColorConfig";
                     return false;
                 }
 
-                this.furnitureDyeConfigObj = cfg;
-                this.furnitureDyeConfigPin = pin;
                 this.furnitureDyeConfigEpoch = this.WorldReadyEpoch;
                 return true;
             }
@@ -422,19 +429,9 @@ namespace HeartopiaMod
             }
         }
 
-        private void FreeFurnitureDyeConfigPin()
+        private List<FurnitureDyePart> ReadFurnitureDyeParts(IntPtr configObj, int staticId)
         {
-            if (this.furnitureDyeConfigPin != 0U)
-            {
-                try { AuraMonoPinFree(this.furnitureDyeConfigPin); } catch { }
-            }
-            this.furnitureDyeConfigPin = 0U;
-            this.furnitureDyeConfigObj = IntPtr.Zero;
-        }
-
-        private List<FurnitureDyePart> ReadFurnitureDyeParts(int staticId)
-        {
-            if (!this.TryGetMonoObjectMember(this.furnitureDyeConfigObj, "itemDyeColorConfigs",
+            if (!this.TryGetMonoObjectMember(configObj, "itemDyeColorConfigs",
                     out IntPtr list) || list == IntPtr.Zero)
             {
                 FeatureLog.Fail(FurnitureDyeTag, "DyeColorConfig.itemDyeColorConfigs is null");
