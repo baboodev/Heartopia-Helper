@@ -549,6 +549,11 @@ namespace HeartopiaMod
                 this.AppendNetCookWarehouseSlotCandidates(candidates, slotMaterialId, slotMaterialType);
             }
 
+            // The Universal Ingredient substitutes ANY slot, so it belongs in every slot's list
+            // whether or not the stores happen to hold one right now — a row with no count is how
+            // the picker says "this is an option, you have none".
+            this.EnsureNetCookUniversalSlotCandidate(candidates);
+
             if (candidates.Count <= 0)
             {
                 status = criteriaKnown ? "No candidates for this slot." : "Recipe slots unreadable.";
@@ -556,6 +561,32 @@ namespace HeartopiaMod
             }
 
             return true;
+        }
+
+        // 46999 is listed for every slot by the game itself (GetSlotMaterials, gated on
+        // CheckMagicIngredientUnlocked), but only when a stack is in the BAG. This adds the row
+        // unconditionally so it can be pinned ahead of owning one — the counts on it stay honest,
+        // and a pin that cannot be met at cook time falls back like any other.
+        private void EnsureNetCookUniversalSlotCandidate(List<NetCookSlotCandidate> candidates)
+        {
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (candidates[i].StaticId == NetCookUniversalIngredientStaticId)
+                {
+                    return;
+                }
+            }
+
+            NetCookSlotCandidate c = new NetCookSlotCandidate
+            {
+                StaticId = NetCookUniversalIngredientStaticId,
+            };
+            if (!this.TryResolveNetCookItemName(NetCookUniversalIngredientStaticId, out c.Name))
+            {
+                c.Name = "#" + NetCookUniversalIngredientStaticId.ToString(CultureInfo.InvariantCulture);
+            }
+
+            candidates.Add(c);
         }
 
         // The bag half: CookingSystem.GetSlotMaterials already does the category matching, drops
@@ -651,19 +682,19 @@ namespace HeartopiaMod
         // the ingredient move uses, with the same category predicate, so what the picker offers and
         // what the move can actually deliver cannot drift apart.
         //
-        // The Universal Ingredient is deliberately NOT collected here. GetSlotMaterials lists it
-        // from the bag because the game does, but it is a paid item with its own toggle and its own
-        // "top-up only, last" allocation — quietly making it pinnable out of the warehouse would
-        // route around all of that.
+        // The Universal Ingredient rides along in the same scan. It matches no category
+        // (foodMaterial [99] is outside FoodMaterialType) and is nobody's specific requirement, so
+        // it has to be asked for by id or the scan would never return it — and its warehouse stock
+        // is as pinnable as anything else now that it is always offered.
         private void AppendNetCookWarehouseSlotCandidates(List<NetCookSlotCandidate> candidates, int slotMaterialId, int slotMaterialType)
         {
             try
             {
-                HashSet<int> wantIds = null;
+                HashSet<int> wantIds = new HashSet<int> { NetCookUniversalIngredientStaticId };
                 List<int> wantCategories = null;
                 if (slotMaterialId > 0)
                 {
-                    wantIds = new HashSet<int> { slotMaterialId };
+                    wantIds.Add(slotMaterialId);
                 }
                 else
                 {
@@ -680,7 +711,7 @@ namespace HeartopiaMod
                 foreach (KeyValuePair<int, List<KeyValuePair<uint, int>>> kvp in stacksByStaticId)
                 {
                     int staticId = kvp.Key;
-                    if (staticId <= 0 || staticId == NetCookUniversalIngredientStaticId || kvp.Value == null)
+                    if (staticId <= 0 || kvp.Value == null)
                     {
                         continue;
                     }

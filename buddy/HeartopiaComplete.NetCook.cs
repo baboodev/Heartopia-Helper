@@ -10035,8 +10035,15 @@ namespace HeartopiaMod
             // Universal Ingredient, which is allocated LAST, only for the units real ingredients could
             // not cover. specificItemIds stays untouched: it is also the category-exclusion set, and
             // 46999 must never be counted toward a "any <category>" demand (its foodMaterial is [99]).
+            // A slot pinned to the Universal Ingredient is an explicit instruction, so it pulls the
+            // item out of the warehouse on its own — the top-up toggle governs automatic
+            // substitution, not what the player asked for by hand.
+            Dictionary<int, int> pinnedPerDish = new Dictionary<int, int>();
+            this.CollectNetCookPinnedStaticIdCounts(this.netCookRecipeId, pinnedPerDish);
+            pinnedPerDish.TryGetValue(NetCookUniversalIngredientStaticId, out int pinnedUniversalPerDish);
+
             HashSet<int> collectStaticIds = specificItemIds;
-            if (this.netCookUseUniversalIngredient)
+            if (this.netCookUseUniversalIngredient || pinnedUniversalPerDish > 0)
             {
                 collectStaticIds = new HashSet<int>(specificItemIds);
                 collectStaticIds.Add(NetCookUniversalIngredientStaticId);
@@ -10064,10 +10071,6 @@ namespace HeartopiaMod
             }
 
             int batches = Math.Max(1, cookQuantity);
-            // Per-item pin census for the recipe this move is for (empty unless Pick Ingredients
-            // is on). Consulted by the category branch below.
-            Dictionary<int, int> pinnedPerDish = new Dictionary<int, int>();
-            this.CollectNetCookPinnedStaticIdCounts(this.netCookRecipeId, pinnedPerDish);
             bool anyMoveDeficit = false;
             // Units neither the bag nor the warehouse can cover with real ingredients — the Universal
             // Ingredient budget for this move.
@@ -10153,13 +10156,20 @@ namespace HeartopiaMod
                 unmetUnits += remaining;
             }
 
-            // Universal Ingredient top-up, LAST on purpose: whatever real ingredients could reach the
-            // bag has already been allocated above, so this only moves what is still missing, and only
+            // Universal Ingredient, LAST on purpose: whatever real ingredients could reach the bag
+            // has already been allocated above, so this only moves what is still missing, and only
             // beyond the universal units the bag already holds.
-            if (this.netCookUseUniversalIngredient && unmetUnits > 0)
+            //
+            // Two demands share this one allocation. The top-up's (unmet units, only while its
+            // toggle is on) and the pinned slots' (always — a pin is a request, and unlike the
+            // top-up it is not covered by the loops above: 46999 matches no category and is nobody's
+            // specific requirement, so nothing else would ever move it).
+            int universalUnits = (this.netCookUseUniversalIngredient ? unmetUnits : 0)
+                + batches * pinnedUniversalPerDish;
+            if (universalUnits > 0)
             {
                 bagTotalsByStaticId.TryGetValue(NetCookUniversalIngredientStaticId, out int universalInBag);
-                int universalRemaining = Math.Max(0, unmetUnits - universalInBag);
+                int universalRemaining = Math.Max(0, universalUnits - universalInBag);
                 if (universalRemaining > 0
                     && stacksByStaticId.TryGetValue(NetCookUniversalIngredientStaticId, out List<KeyValuePair<uint, int>> universalStacks))
                 {
