@@ -272,6 +272,10 @@ namespace HeartopiaMod
             public int MaterialType;     // category slots only (FoodMaterialType)
             public bool CanChange;
             public int PreferredStaticId;
+            // What the game's AutoFill has actually put in the slot right now. The read below runs
+            // InitCookingRecipeDetail, so this is fresh — it is what the tile shows for a slot the
+            // player has not pinned, which beats showing an empty box.
+            public int FilledStaticId;
         }
 
         internal sealed class NetCookSlotCandidate
@@ -358,6 +362,10 @@ namespace HeartopiaMod
                     // than one specific item, and those carry materialId == 0.
                     info.IsCategory = info.MaterialId <= 0;
                     info.PreferredStaticId = this.GetNetCookSlotPreference(recipeId, i);
+                    if (this.TryGetMonoBoolMember(slotObj, "filled", out bool slotFilled) && slotFilled)
+                    {
+                        this.TryGetMonoInt32Member(slotObj, "filledMaterialStaticId", out info.FilledStaticId);
+                    }
                     slots.Add(info);
                 }
 
@@ -402,6 +410,47 @@ namespace HeartopiaMod
             args[0] = (IntPtr)(&id);
             IntPtr detailObj = auraMonoRuntimeInvoke(initDetailMethod, cookingSystemObj, (IntPtr)args, ref exc);
             return exc == IntPtr.Zero && detailObj != IntPtr.Zero;
+        }
+
+        // Display name for an ingredient id. TryGetItemName (the radar's) goes through
+        // mapResGetEntityMethod, which is only resolved once the map/radar subsystem has run — in a
+        // session that never opened it every candidate fell back to printing its staticId, which is
+        // what the grid was showing instead of names. TryGetResolvedFoodNameFromStaticId is the
+        // bag's own resolver (BackpackItem.GetBackPackName, then TableData.GetEntity) and needs no
+        // such priming. Cached because the grid asks per row per repaint.
+        private readonly Dictionary<int, string> netCookItemNameCache = new Dictionary<int, string>();
+
+        internal bool TryResolveNetCookItemName(int staticId, out string name)
+        {
+            name = string.Empty;
+            if (staticId <= 0)
+            {
+                return false;
+            }
+
+            if (this.netCookItemNameCache.TryGetValue(staticId, out string cached))
+            {
+                name = cached ?? string.Empty;
+                return name.Length > 0;
+            }
+
+            string resolved = string.Empty;
+            if (this.TryGetResolvedFoodNameFromStaticId(staticId, out string bagName)
+                && !this.IsPoorBagItemDisplayName(bagName, staticId))
+            {
+                resolved = bagName.Trim();
+            }
+            else if (this.TryGetItemName(staticId, out string mapName)
+                && !this.IsPoorBagItemDisplayName(mapName, staticId))
+            {
+                resolved = mapName.Trim();
+            }
+
+            // A negative answer is cached too — otherwise an id the tables cannot name would re-run
+            // both resolvers for every row of every repaint.
+            this.netCookItemNameCache[staticId] = resolved;
+            name = resolved;
+            return resolved.Length > 0;
         }
 
         // What the player actually owns that fits this slot. The game does the filtering: category
@@ -490,9 +539,9 @@ namespace HeartopiaMod
                     };
                     this.TryGetDirectBackpackItemNetId(itemObj, out c.NetId);
                     this.TryGetDirectBackpackItemStarRate(itemObj, out c.StarRate);
-                    if (!this.TryGetItemName(staticId, out c.Name) || string.IsNullOrWhiteSpace(c.Name))
+                    if (!this.TryResolveNetCookItemName(staticId, out c.Name))
                     {
-                        c.Name = staticId.ToString(CultureInfo.InvariantCulture);
+                        c.Name = "#" + staticId.ToString(CultureInfo.InvariantCulture);
                     }
 
                     candidates.Add(c);

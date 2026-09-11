@@ -188,10 +188,16 @@ namespace HeartopiaMod
             public Toggle StatusDiagToggle;
             public Toggle ManualIngredientsToggle;
             public Toggle CookableOnlyToggle;
-            public readonly List<Image> SlotButtonIcons = new List<Image>();
-            public readonly List<int> SlotButtonIconTexIds = new List<int>();
-            public readonly List<GameObject> SlotButtons = new List<GameObject>();
+            public readonly List<GameObject> SlotTiles = new List<GameObject>();
+            public readonly List<Image> SlotTileFills = new List<Image>();
+            public readonly List<Image> SlotTileIcons = new List<Image>();
+            public readonly List<int> SlotTileIconTexIds = new List<int>();
+            public readonly List<GameObject> SlotTileLabels = new List<GameObject>();
+            public readonly List<string> SlotTileLabelShown = new List<string>();
+            public readonly List<int> SlotTileActiveShown = new List<int>();  // -1 unknown, 0/1 diffed
             public GameObject SlotBackButton;
+            public int SlotBackCellShown = -1;   // which cell the Back tile sits in
+            public int SlotAreaRowsShown = -1;   // drives the one re-place the grid needs
 
             public GameObject AssistCard;         // mini-game branch
             public GameObject AssistDescLabel;
@@ -282,18 +288,56 @@ namespace HeartopiaMod
         // that pool exists because a bag holds hundreds of stacks, while a cooker type offers a few
         // dozen dishes. The existing row pool already grows on demand and is never destroyed, which
         // is all this needs.
-        private const int UguiMassCookRecipeColumns = 4;
-        private const float UguiMassCookRecipeCellW = 78f;
+        private const int UguiMassCookRecipeColumns = 5;
         private const float UguiMassCookRecipeCellH = 92f;
         private const float UguiMassCookRecipeCellGap = 4f;
 
-        // Slot row sits between the search box and the grid, so entering and leaving the
-        // picker never moves the grid itself.
-        private const float UguiMassCookSlotRowY = 40f;
-        private const float UguiMassCookSlotButtonW = 34f;
-        private const float UguiMassCookSlotButtonH = 26f;
-        private const float UguiMassCookRecipeGridTop = 72f;
+        // Cell width is DERIVED from the list's inner width rather than fixed, so the column count
+        // is the only thing to change when the grid is made denser — a hardcoded width silently
+        // leaves a ragged margin (or overflows) the moment either number moves.
+        private static float UguiMassCookRecipeCellWidth(float innerW)
+        {
+            float w = (innerW - (UguiMassCookRecipeColumns - 1) * UguiMassCookRecipeCellGap)
+                / UguiMassCookRecipeColumns;
+            return Mathf.Max(36f, Mathf.Floor(w));
+        }
+
+        // Slot tiles: one per material slot of the selected recipe, laid out on the same column
+        // grid as the dishes so the two read as one surface. Compact — icon over a name, no room
+        // for anything else at a fifth of the panel width.
+        private const float UguiMassCookSlotAreaTop = 40f;   // just under the search row
+        private const float UguiMassCookSlotTileH = 52f;
+        private const float UguiMassCookSlotTileIcon = 24f;
         private const int UguiMassCookMaxSlotButtons = 12;
+
+        // With no slot tiles the grid starts right under the search row — the old fixed 72 left a
+        // band of dead panel whenever Pick Ingredients was off, which is most of the time.
+        // Grid content lives inside the scroll view (x 4 plus 4 of viewport inset); the slot tiles
+        // sit directly on the panel, so they start at 8 to line their columns up with the dishes.
+        private const float UguiMassCookSlotAreaX = 8f;
+
+        private static float UguiMassCookGridInnerWidth(UguiShellFeaturesMassCookHandle handle)
+        {
+            return handle.ContentWidth - 16f - 8f - 22f;   // panel rowW-8 minus kit viewport insets
+        }
+
+        private static void PlaceUguiSlotTile(GameObject go, int cell, float cellW)
+        {
+            PlaceUguiTopLeft(go,
+                UguiMassCookSlotAreaX + (cell % UguiMassCookRecipeColumns) * (cellW + UguiMassCookRecipeCellGap),
+                UguiMassCookSlotAreaTop + (cell / UguiMassCookRecipeColumns) * (UguiMassCookSlotTileH + UguiMassCookRecipeCellGap),
+                cellW, UguiMassCookSlotTileH);
+        }
+
+        private static float UguiMassCookRecipeGridTopFor(int slotRows)
+        {
+            if (slotRows <= 0)
+            {
+                return UguiMassCookSlotAreaTop;
+            }
+
+            return UguiMassCookSlotAreaTop + slotRows * (UguiMassCookSlotTileH + UguiMassCookRecipeCellGap) + 2f;
+        }
 
         // ----------------------------------------------------------------------------------------
         // Live layout signature — branch, dropdown-open, measured assist-card height (all three
@@ -310,7 +354,42 @@ namespace HeartopiaMod
                  | (this.netCookRecipeDropdownOpen ? 2 : 0)
                  | (this.netCookCookerTypeDropdownOpen ? 4 : 0)
                  | ((stoveTypeRows & 0x3F) << 3)
-                 | (Mathf.CeilToInt(handle.AssistTextHeight) << 9);
+                 | (Mathf.CeilToInt(handle.AssistTextHeight) << 9)
+                 // Same reasoning as the stove rows: the recipe panel grows by the slot area, so
+                 // the area's row count is a layout input. Read straight off the last slot read —
+                 // never refresh from here, that would fire AuraMono from the signature path.
+                 | ((this.GetUguiMassCookSlotAreaRowCount() & 0x7) << 20);
+        }
+
+        // Cells the slot area shows: one per material slot, plus Back while the picker is open.
+        private int GetUguiMassCookSlotAreaCellCount()
+        {
+            if (!this.netCookSlotManualMode || this.netCookRecipeId <= 0)
+            {
+                return 0;
+            }
+
+            int slots = Mathf.Min(this.netCookSlotInfoBuffer.Count, UguiMassCookMaxSlotButtons);
+            if (slots <= 0)
+            {
+                return 0;
+            }
+
+            return slots + (this.netCookSlotPickerIndex >= 0 ? 1 : 0);
+        }
+
+        private int GetUguiMassCookSlotAreaRowCount()
+        {
+            int cells = this.GetUguiMassCookSlotAreaCellCount();
+            return (cells + UguiMassCookRecipeColumns - 1) / UguiMassCookRecipeColumns;
+        }
+
+        // The panel grows by exactly what the slot tiles occupy, so turning Pick Ingredients on
+        // never costs the dish grid a row.
+        private float GetUguiFeaturesMassCookRecipePanelHeight()
+        {
+            return UguiMassCookRecipePanelHeight
+                + (UguiMassCookRecipeGridTopFor(this.GetUguiMassCookSlotAreaRowCount()) - UguiMassCookSlotAreaTop);
         }
 
         // Auto row + one row per census group; 0 while the picker is hidden.
@@ -568,44 +647,60 @@ namespace HeartopiaMod
                 new System.Action<string>(this.OnUguiFeaturesMassCookRecipeSearchChanged));
             PlaceUguiTopLeft(handle.RecipeSearchField.gameObject, 74f, 11f, rowW - 90f, 22f);
 
-            // Slot row: one button per material slot of the selected recipe, plus a back button
-            // shown only while the grid is parked on a slot. Built once at max width and shown or
-            // hidden per sync — a slot count changes with the recipe, and rebuilding buttons on
-            // every recipe click would churn GameObjects inside an open panel.
+            // Slot tiles: one per material slot of the selected recipe, each showing the ingredient
+            // that will actually go in (the pinned one, or whatever AutoFill chose), on the same
+            // column grid as the dishes. Built once at the maximum count and shown or hidden per
+            // sync — the slot count changes with every recipe, and building GameObjects inside an
+            // open panel on each recipe click would churn the hierarchy.
+            float slotCellW = UguiMassCookRecipeCellWidth(UguiMassCookGridInnerWidth(handle));
             for (int i = 0; i < UguiMassCookMaxSlotButtons; i++)
             {
                 int slotIndex = i;
-                GameObject slotBtn = this.CreateUguiSecondaryButton(handle.RecipePanel.transform,
-                    "Slot" + i, (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                GameObject tile = this.CreateUguiGo("SlotTile" + i, handle.RecipePanel.transform);
+                Image tileFill = this.AddUguiImage(tile, this.UguiKitControlFill(), true, 1.5f);
+                tileFill.raycastTarget = true;
+                Button tileBtn = tile.AddComponent<Button>();
+                tileBtn.targetGraphic = tileFill;
+                this.WireUguiClick(tileBtn.onClick,
                     new System.Action(() => this.OnUguiFeaturesMassCookSlotButtonClicked(slotIndex)));
-                PlaceUguiTopLeft(slotBtn, 18f + i * (UguiMassCookSlotButtonW + 3f), UguiMassCookSlotRowY,
-                    UguiMassCookSlotButtonW, UguiMassCookSlotButtonH);
-                SetUguiGoActive(slotBtn, false);
-                handle.SlotButtons.Add(slotBtn);
+                PlaceUguiSlotTile(tile, i, slotCellW);
+                SetUguiGoActive(tile, false);
 
-                // The pinned item's icon sits on top of the button; the number underneath shows
-                // through whenever a slot has no preference yet. raycastTarget off so the icon does
-                // not swallow the click that belongs to the button.
-                GameObject slotIconGo = this.CreateUguiGo("SlotIcon" + i, slotBtn.transform);
-                Image slotIcon = this.AddUguiImage(slotIconGo, Color.white, false, 0f);
-                slotIcon.raycastTarget = false;
-                slotIcon.enabled = false;
-                try { slotIcon.preserveAspect = true; } catch { }
-                PlaceUguiTopLeft(slotIconGo, 3f, 2f, UguiMassCookSlotButtonW - 6f, UguiMassCookSlotButtonH - 4f);
-                handle.SlotButtonIcons.Add(slotIcon);
-                handle.SlotButtonIconTexIds.Add(0);
+                // Icon starts disabled: the sprite lands asynchronously and an enabled Image with
+                // no sprite paints a white square.
+                GameObject tileIconGo = this.CreateUguiGo("Icon", tile.transform);
+                Image tileIcon = this.AddUguiImage(tileIconGo, Color.white, false, 0f);
+                tileIcon.raycastTarget = false;   // the whole tile is the button
+                tileIcon.enabled = false;
+                try { tileIcon.preserveAspect = true; } catch { }
+                PlaceUguiTopLeft(tileIconGo, (slotCellW - UguiMassCookSlotTileIcon) * 0.5f, 2f,
+                    UguiMassCookSlotTileIcon, UguiMassCookSlotTileIcon);
+
+                GameObject tileLabel = this.CreateUguiLabel(tile.transform, "Name", "", 9f,
+                    this.UguiKitTextColor(), true);
+                PlaceUguiTopLeft(tileLabel, 2f, UguiMassCookSlotTileIcon + 3f, slotCellW - 4f, 18f);
+
+                handle.SlotTiles.Add(tile);
+                handle.SlotTileFills.Add(tileFill);
+                handle.SlotTileIcons.Add(tileIcon);
+                handle.SlotTileIconTexIds.Add(0);
+                handle.SlotTileLabels.Add(tileLabel);
+                handle.SlotTileLabelShown.Add(null);
+                handle.SlotTileActiveShown.Add(-1);
             }
 
+            // Back rides in the slot area as one more cell, right after the last slot, so leaving
+            // the item grid is where the eye already is and no row of its own is spent on it.
             handle.SlotBackButton = this.CreateUguiSecondaryButton(handle.RecipePanel.transform,
                 "SlotBack", this.L("Back"), new System.Action(this.OnUguiFeaturesMassCookSlotBackClicked));
-            PlaceUguiTopLeft(handle.SlotBackButton, rowW - 90f, UguiMassCookSlotRowY, 70f, UguiMassCookSlotButtonH);
+            PlaceUguiSlotTile(handle.SlotBackButton, 0, slotCellW);
             SetUguiGoActive(handle.SlotBackButton, false);
 
             Transform recipeListContent;
             handle.RecipeListScroll = this.CreateUguiScrollView(handle.RecipePanel.transform, "RecipeList",
                 10f, out recipeListContent);
-            PlaceUguiTopLeft(handle.RecipeListScroll, 4f, UguiMassCookRecipeGridTop, rowW - 8f,
-                UguiMassCookRecipePanelHeight - UguiMassCookRecipeGridTop - 4f);
+            PlaceUguiTopLeft(handle.RecipeListScroll, 4f, UguiMassCookRecipeGridTopFor(0), rowW - 8f,
+                UguiMassCookRecipePanelHeight - UguiMassCookRecipeGridTopFor(0) - 4f);
             handle.RecipeListContent = recipeListContent;
             try
             {
@@ -828,9 +923,10 @@ namespace HeartopiaMod
                 yCur += 46f;
                 if (open)
                 {
-                    // :246 — panel at header yMax + 4 = yCur - 6; cursor += 268.
-                    PlaceUguiTopLeft(handle.RecipePanel, rowX, yCur - 6f, rowW, UguiMassCookRecipePanelHeight);
-                    yCur += UguiMassCookRecipePanelHeight + 8f;
+                    // :246 — panel at header yMax + 4 = yCur - 6; cursor += panel + 8.
+                    float recipePanelH = this.GetUguiFeaturesMassCookRecipePanelHeight();
+                    PlaceUguiTopLeft(handle.RecipePanel, rowX, yCur - 6f, rowW, recipePanelH);
+                    yCur += recipePanelH + 8f;
                 }
                 if (handle.MoveIngredientsToggle != null)
                 {
@@ -939,11 +1035,13 @@ namespace HeartopiaMod
         {
             UguiMassCookRecipeRowHandle row = new UguiMassCookRecipeRowHandle();
 
+            float cellW = UguiMassCookRecipeCellWidth(innerW);
+
             GameObject root = this.CreateUguiGo("Recipe" + index, handle.RecipeListContent);
             PlaceUguiTopLeft(root,
-                (index % UguiMassCookRecipeColumns) * (UguiMassCookRecipeCellW + UguiMassCookRecipeCellGap),
+                (index % UguiMassCookRecipeColumns) * (cellW + UguiMassCookRecipeCellGap),
                 (index / UguiMassCookRecipeColumns) * (UguiMassCookRecipeCellH + UguiMassCookRecipeCellGap),
-                UguiMassCookRecipeCellW, UguiMassCookRecipeCellH);
+                cellW, UguiMassCookRecipeCellH);
             row.Fill = this.AddUguiImage(root, this.UguiKitControlFill(), true, 1.5f);
             row.Fill.raycastTarget = true;
             Button btn = root.AddComponent<Button>();
@@ -966,16 +1064,16 @@ namespace HeartopiaMod
             row.Icon.raycastTarget = false;   // the whole tile is the button
             row.Icon.enabled = false;
             try { row.Icon.preserveAspect = true; } catch { }
-            PlaceUguiTopLeft(iconGo, (UguiMassCookRecipeCellW - 42f) * 0.5f, 8f, 42f, 42f);
+            PlaceUguiTopLeft(iconGo, (cellW - 42f) * 0.5f, 8f, 42f, 42f);
 
             // Name under the icon, centred, wrapping to the two lines the tile has room for.
             row.Label = this.CreateUguiLabel(root.transform, "Name", "", 10f, this.UguiKitTextColor(), true);
-            PlaceUguiTopLeft(row.Label, 2f, 52f, UguiMassCookRecipeCellW - 4f, 36f);
+            PlaceUguiTopLeft(row.Label, 2f, 52f, cellW - 4f, 36f);
             this.TrySetUguiLabelWrapped(row.Label);
 
             row.Badge = this.CreateUguiLabel(root.transform, "Badge", this.L("RECENT"), 8f,
                 this.UguiKitAccent(), true);
-            PlaceUguiTopLeft(row.Badge, UguiMassCookRecipeCellW - UguiMassCookRecipeBadgeWidth - 2f, 1f,
+            PlaceUguiTopLeft(row.Badge, cellW - UguiMassCookRecipeBadgeWidth - 2f, 1f,
                 UguiMassCookRecipeBadgeWidth, 14f);
             SetUguiGoActive(row.Badge, false);
             row.BadgeShown = false;
@@ -1249,7 +1347,7 @@ namespace HeartopiaMod
                 ? this.GetUguiMassCookSlotCandidateEntries()
                 : this.GetUguiMassCookRecipeGridEntries();
             int count = visible.Count;
-            float innerW = handle.ContentWidth - 16f - 8f - 22f; // panel rowW-8 minus kit viewport insets
+            float innerW = UguiMassCookGridInnerWidth(handle);
 
             for (int i = 0; i < count; i++)
             {
@@ -1798,22 +1896,34 @@ namespace HeartopiaMod
 
         // :184-207 — NO SaveKeybinds (verified absent in source — the flag is session-only, file
         // header); the cascade is field/dict mutations + a ModLogger line, no toast.
-        // Slots of the selected recipe, refreshed when the recipe changes rather than per frame:
-        // reading them runs InitCookingRecipeDetail, which re-runs the game's AutoFill.
+        // Slots of the selected recipe. NOT per frame: reading them runs InitCookingRecipeDetail,
+        // which re-runs the game's AutoFill over the whole bag. A recipe change (or a pin, which
+        // zeroes the key) re-reads at once; otherwise a slow interval keeps the "what AutoFill
+        // chose" icons honest as the bag changes under the open panel.
         private readonly List<NetCookSlotInfo> netCookSlotInfoBuffer = new List<NetCookSlotInfo>(16);
         private int netCookSlotInfoRecipeId = 0;
+        private float nextNetCookSlotInfoRefreshAt = 0f;
+        private const float NetCookSlotInfoRefreshSeconds = 1f;
 
         private void EnsureUguiMassCookSlotInfo()
         {
-            if (this.netCookSlotInfoRecipeId == this.netCookRecipeId && this.netCookSlotInfoBuffer.Count > 0)
+            // Deliberately NOT "or the buffer is empty": a recipe whose slots cannot be read
+            // would then re-run InitCookingRecipeDetail every single frame. A failed read
+            // simply retries on the interval like any other refresh.
+            bool recipeChanged = this.netCookSlotInfoRecipeId != this.netCookRecipeId;
+            if (!recipeChanged && Time.unscaledTime < this.nextNetCookSlotInfoRefreshAt)
             {
                 return;
             }
 
             this.netCookSlotInfoRecipeId = this.netCookRecipeId;
+            this.nextNetCookSlotInfoRefreshAt = Time.unscaledTime + NetCookSlotInfoRefreshSeconds;
             this.TryReadNetCookRecipeSlots(this.netCookRecipeId, this.netCookSlotInfoBuffer, out _);
         }
 
+        // One tile per material slot: the ingredient that will actually be used, pinned or not.
+        // The tile the picker is parked on is painted with the accent, exactly like a selected dish
+        // — same affordance, so there is nothing new to learn.
         private void SyncUguiFeaturesMassCookSlotRow(UguiShellFeaturesMassCookHandle handle)
         {
             bool show = this.netCookSlotManualMode && this.netCookRecipeId > 0;
@@ -1823,32 +1933,33 @@ namespace HeartopiaMod
             }
 
             int slotCount = show ? Mathf.Min(this.netCookSlotInfoBuffer.Count, UguiMassCookMaxSlotButtons) : 0;
-            for (int i = 0; i < handle.SlotButtons.Count; i++)
+            for (int i = 0; i < handle.SlotTiles.Count; i++)
             {
                 bool on = i < slotCount;
-                SetUguiGoActive(handle.SlotButtons[i], on);
+                SetUguiGoActive(handle.SlotTiles[i], on);
                 if (!on)
                 {
                     continue;
                 }
 
-                // A slot with a preference is labelled with a dot so the row shows at a glance which
-                // ones are pinned, without needing a legend.
                 NetCookSlotInfo info = this.netCookSlotInfoBuffer[i];
+                bool pinned = info.PreferredStaticId > 0;
 
-                // With an item pinned the button IS the item: its icon replaces the number. Without
-                // one it stays a numbered slot, which is also what tells you the slot is free.
+                // Pinned wins; otherwise show what AutoFill put there, so an untouched slot still
+                // tells you which ingredient it is about to spend rather than sitting blank.
+                int shownStaticId = pinned ? info.PreferredStaticId : info.FilledStaticId;
+
                 Texture2D slotTex = null;
-                if (info.PreferredStaticId > 0)
+                if (shownStaticId > 0)
                 {
-                    this.TryGetNetCookRecipeTexture(info.PreferredStaticId, out slotTex);
+                    this.TryGetNetCookRecipeTexture(shownStaticId, out slotTex);
                 }
 
                 int slotTexId = slotTex != null ? slotTex.GetInstanceID() : 0;
-                if (i < handle.SlotButtonIcons.Count && slotTexId != handle.SlotButtonIconTexIds[i])
+                if (slotTexId != handle.SlotTileIconTexIds[i])
                 {
-                    handle.SlotButtonIconTexIds[i] = slotTexId;
-                    Image icon = handle.SlotButtonIcons[i];
+                    handle.SlotTileIconTexIds[i] = slotTexId;
+                    Image icon = handle.SlotTileIcons[i];
                     if (icon != null)
                     {
                         icon.sprite = slotTex != null ? this.GetOrCreateUguiTransferSprite(slotTex) : null;
@@ -1856,17 +1967,64 @@ namespace HeartopiaMod
                     }
                 }
 
-                bool iconShown = i < handle.SlotButtonIcons.Count
-                    && handle.SlotButtonIcons[i] != null && handle.SlotButtonIcons[i].enabled;
-                string label = iconShown
-                    ? string.Empty
-                    : (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)
-                      + (info.PreferredStaticId > 0 ? "*" : string.Empty);
+                // "*" marks a pinned slot — the accent is already spoken for by the open picker,
+                // and the kit has no safe glyph set beyond ASCII for a second marker.
+                string label;
+                if (shownStaticId > 0 && this.TryResolveNetCookItemName(shownStaticId, out string itemName))
+                {
+                    label = pinned ? ("* " + itemName) : itemName;
+                }
+                else
+                {
+                    label = "#" + (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
 
-                this.SetUguiButtonLabel(handle.SlotButtons[i], label);
+                if (!string.Equals(label, handle.SlotTileLabelShown[i], StringComparison.Ordinal))
+                {
+                    handle.SlotTileLabelShown[i] = label;
+                    this.SetUguiLabelText(handle.SlotTileLabels[i], label);
+                }
+
+                int active = this.netCookSlotPickerIndex == i ? 1 : 0;
+                if (active != handle.SlotTileActiveShown[i])
+                {
+                    handle.SlotTileActiveShown[i] = active;
+                    try
+                    {
+                        if (handle.SlotTileFills[i] != null)
+                        {
+                            handle.SlotTileFills[i].color = active == 1
+                                ? this.UguiKitAccent()
+                                : this.UguiKitControlFill();
+                        }
+                    }
+                    catch { }
+                    this.SetUguiLabelColor(handle.SlotTileLabels[i], active == 1
+                        ? this.GetUiTextOnAccent(this.UguiKitAccent())
+                        : this.UguiKitTextColor());
+                }
             }
 
-            SetUguiGoActive(handle.SlotBackButton, this.netCookSlotPickerIndex >= 0);
+            bool backShown = show && this.netCookSlotPickerIndex >= 0;
+            SetUguiGoActive(handle.SlotBackButton, backShown);
+            if (backShown && handle.SlotBackCellShown != slotCount)
+            {
+                handle.SlotBackCellShown = slotCount;
+                PlaceUguiSlotTile(handle.SlotBackButton, slotCount,
+                    UguiMassCookRecipeCellWidth(UguiMassCookGridInnerWidth(handle)));
+            }
+
+            // The grid starts under whatever the slot area occupies — zero rows means it starts
+            // right under the search box instead of leaving a dead band.
+            int cells = slotCount + (backShown ? 1 : 0);
+            int slotRows = (cells + UguiMassCookRecipeColumns - 1) / UguiMassCookRecipeColumns;
+            if (slotRows != handle.SlotAreaRowsShown)
+            {
+                handle.SlotAreaRowsShown = slotRows;
+                float gridTop = UguiMassCookRecipeGridTopFor(slotRows);
+                PlaceUguiTopLeft(handle.RecipeListScroll, 4f, gridTop, handle.ContentWidth - 16f - 8f,
+                    this.GetUguiFeaturesMassCookRecipePanelHeight() - gridTop - 4f);
+            }
         }
 
         private void OnUguiFeaturesMassCookSlotButtonClicked(int slotIndex)
