@@ -5608,10 +5608,19 @@ namespace HeartopiaMod
             string search = (this.netCookRecipeSearchText ?? string.Empty).Trim();
             bool filterBySearch = !string.IsNullOrWhiteSpace(search);
 
+            // netCookRecipeCookerTypes is written wholesale with the cookware type the cache was
+            // built at, so once that type is stale EVERY tag is wrong and the filter below throws the
+            // whole list away. EnsureNetCookRecipeCache would rebuild — except it is frozen while a
+            // run is active (the early return up there), and ProcessNetCookTargets repoints the
+            // context at each target in turn, so a working set that mixes registry-synthesized
+            // stoves (cookware type 0) with scanned ones lands right on it: empty dropdown mid-run.
+            // Drop the filter instead; at a stale type it carries no information anyway.
+            bool filterByCookerType = this.netCookCookerType > 0 && this.IsNetCookRecipeCacheTypeUsable();
+
             for (int i = 0; i < this.netCookRecipeEntries.Count; i++)
             {
                 KeyValuePair<int, string> recipeEntry = this.netCookRecipeEntries[i];
-                if (this.netCookCookerType > 0)
+                if (filterByCookerType)
                 {
                     if (!this.netCookRecipeCookerTypes.TryGetValue(recipeEntry.Key, out int recipeCookerType) || recipeCookerType != this.netCookCookerType)
                     {
