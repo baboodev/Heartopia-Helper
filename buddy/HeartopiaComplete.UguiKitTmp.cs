@@ -341,6 +341,23 @@ namespace HeartopiaMod
             return true;
         }
 
+        // Grid-cell variant: wrapped, horizontally centred, and pinned to the BOTTOM of its rect.
+        // In a tile grid the names run one or two lines; aligned to the top their last lines land
+        // at different heights and the row reads as ragged. Bottom-aligned, every caption shares a
+        // baseline and the second line grows up toward the icon instead.
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private bool UguiKitTmpTrySetWrappedBottom(GameObject label)
+        {
+            TextMeshProUGUI tmp = label.GetComponent<TextMeshProUGUI>();
+            if (tmp == null)
+            {
+                return false;
+            }
+            tmp.enableWordWrapping = true;
+            tmp.alignment = TextAlignmentOptions.Bottom;   // = horizontally centred + bottom
+            return true;
+        }
+
         [MethodImpl(MethodImplOptions.NoInlining)]
         private bool UguiKitTmpTrySetRightAligned(GameObject label)
         {

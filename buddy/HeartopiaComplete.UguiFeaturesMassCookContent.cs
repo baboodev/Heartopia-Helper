@@ -1081,10 +1081,13 @@ namespace HeartopiaMod
             try { row.Icon.preserveAspect = true; } catch { }
             PlaceUguiTopLeft(iconGo, (cellW - 42f) * 0.5f, 8f, 42f, 42f);
 
-            // Name under the icon, centred, wrapping to the two lines the tile has room for.
+            // Name under the icon, centred, wrapping to the two lines the tile has room for, and
+            // anchored to the BOTTOM of its box. TrySetUguiLabelWrapped would have forced TopLeft
+            // (overriding the centred flag above), which left short names hanging under the icon
+            // while long ones reached the cell floor — a row of tiles with no shared baseline.
             row.Label = this.CreateUguiLabel(root.transform, "Name", "", 10f, this.UguiKitTextColor(), true);
             PlaceUguiTopLeft(row.Label, 2f, 52f, cellW - 4f, 36f);
-            this.TrySetUguiLabelWrapped(row.Label);
+            this.TrySetUguiLabelWrappedBottom(row.Label);
 
             row.Badge = this.CreateUguiLabel(root.transform, "Badge", this.L("RECENT"), 8f,
                 this.UguiKitAccent(), true);

@@ -1207,6 +1207,30 @@ namespace HeartopiaMod
             catch { }
         }
 
+        // Wrapped, centred horizontally, bottom-aligned vertically — tile captions, so that a
+        // one-line and a two-line name in neighbouring cells end on the same baseline.
+        private void TrySetUguiLabelWrappedBottom(GameObject label)
+        {
+            if (label == null)
+            {
+                return;
+            }
+            if (UguiTmpTypesLoadable())
+            {
+                try { if (this.UguiKitTmpTrySetWrappedBottom(label)) return; } catch { }
+            }
+            try
+            {
+                Text txt = label.GetComponent<Text>();
+                if (txt != null)
+                {
+                    txt.horizontalOverflow = HorizontalWrapMode.Wrap;
+                    txt.alignment = TextAnchor.LowerCenter;
+                }
+            }
+            catch { }
+        }
+
         private void TrySetUguiLabelWrapped(GameObject label)
         {
             if (label == null)
