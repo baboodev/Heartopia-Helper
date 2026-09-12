@@ -248,7 +248,8 @@ namespace HeartopiaMod
             public string StartShown;             // caption caches (depend on miniGameOnly)
             public string StopShown;
 
-            public GameObject SettingsCard;
+            public GameObject RadiusCard;         // top of the tab — scan radius
+            public GameObject DelayCard;          // above the recipe block — cook delay
             public GameObject DelayValueLabel;
             public string DelayShown;
             public Slider DelaySlider;
@@ -271,12 +272,13 @@ namespace HeartopiaMod
         private UguiShellFeaturesMassCookHandle uguiShellFeaturesMassCook;
 
         // Content-local fixed geometry — the source's num cursor (left 40, controlWidth 470)
-        // re-based to 8: header 8 (+42) → capture row 50 (+50) → cleanup 100 (+50) → the five
-        // toggles 150/188/226/264/302 (+38 each) → conditional region 340. Everything from 340
-        // down is owned by the relayout (both branches shift it).
-        // Seven toggles now, stepping 38 from 150: the last one sits at 378, so the
-        // conditional block below them starts one step further down than it used to.
-        private const float UguiMassCookConditionalTopY = 416f;
+        // re-based to 8. Scan Radius was pulled out of the old two-slider settings card and put
+        // at the top, because it governs CAPTURE and capture is the first thing you do here:
+        // header 8 (+36) → radius card 44 (+64) → capture row 108 (+50) → cleanup 158 (+50) →
+        // the seven toggles 208/246/284/322/360/398/436 (+38 each) → conditional region 474.
+        // Everything from 474 down is owned by the relayout (both branches shift it).
+        private const float UguiMassCookConditionalTopY = 474f;
+        private const float UguiMassCookSliderCardHeight = 56f;
         private const float UguiMassCookRecipePanelHeight = 300f;
         private const float UguiMassCookRecipeRowStep = 28f;       // :275 — 24-tall rows stepping 28
         // Stove Type panel: at most 17 rows (16 recipe cooker types + Auto), no search field, so it
@@ -478,56 +480,76 @@ namespace HeartopiaMod
             this.TrySetUguiLabelBold(handle.PillLabel);
             StretchUguiFill(handle.PillLabel, 2f, 0f, 2f, 0f);
 
+            // -------- SCAN RADIUS (first control: it decides what Capture below will take) -----
+            handle.RadiusCard = this.CreateUguiGo("RadiusCard", scrollContent);
+            this.AddUguiImage(handle.RadiusCard, this.UguiKitPanelBg(), true, 1f);
+            PlaceUguiTopLeft(handle.RadiusCard, rowX, 44f, rowW, UguiMassCookSliderCardHeight);
+            float sliderCardW = rowW - 24f;
+
+            GameObject radiusLabel = this.CreateUguiLabel(handle.RadiusCard.transform, "RadiusLabel",
+                this.L("SCAN RADIUS"), 11f, mutedTextColor, false);
+            this.TrySetUguiLabelBold(radiusLabel);
+            PlaceUguiTopLeft(radiusLabel, 12f, 10f, sliderCardW * 0.55f, 18f);
+            handle.RadiusShown = string.Format("{0:F0}m", this.netCookScanRadiusMeters);
+            handle.RadiusValueLabel = this.CreateUguiLabel(handle.RadiusCard.transform, "RadiusValue",
+                handle.RadiusShown, 12f, Color.white, false);
+            PlaceUguiTopLeft(handle.RadiusValueLabel, 12f + sliderCardW * 0.55f, 10f, sliderCardW * 0.45f, 18f);
+            // wholeNumbers=true — the source's plain Mathf.Round contract (:371, file header).
+            handle.RadiusSlider = this.CreateUguiSlider(handle.RadiusCard.transform, "RadiusSlider",
+                NetCookMinScanRadiusMeters, NetCookMaxScanRadiusMeters, this.netCookScanRadiusMeters, true,
+                new System.Action<float>(this.OnUguiFeaturesMassCookRadiusChanged));
+            PlaceUguiTopLeft(handle.RadiusSlider.gameObject, 12f, 30f, sliderCardW, 20f);
+
             // -------- Capture / Reset row (:93-124) --------
             handle.CaptureButton = this.CreateUguiPrimaryButton(scrollContent, "CaptureButton",
                 this.L("Capture Stoves"), new System.Action(this.OnUguiFeaturesMassCookCaptureClicked));
-            PlaceUguiTopLeft(handle.CaptureButton, rowX, 50f, halfW, 36f);
+            PlaceUguiTopLeft(handle.CaptureButton, rowX, 108f, halfW, 36f);
 
             // Style-flip pair (file header): same rect, same handler, SetActive by netCookEnabled.
             handle.ResetButtonDefault = this.CreateUguiSecondaryButton(scrollContent, "ResetButtonDefault",
                 this.L("Reset Capture"), new System.Action(this.OnUguiFeaturesMassCookResetClicked));
-            PlaceUguiTopLeft(handle.ResetButtonDefault, rowX + halfW + 10f, 50f, halfW, 36f);
+            PlaceUguiTopLeft(handle.ResetButtonDefault, rowX + halfW + 10f, 108f, halfW, 36f);
             handle.ResetButtonDanger = this.CreateUguiDangerButton(scrollContent, "ResetButtonDanger",
                 this.L("Reset Capture"), new System.Action(this.OnUguiFeaturesMassCookResetClicked));
-            PlaceUguiTopLeft(handle.ResetButtonDanger, rowX + halfW + 10f, 50f, halfW, 36f);
+            PlaceUguiTopLeft(handle.ResetButtonDanger, rowX + halfW + 10f, 108f, halfW, 36f);
 
             // -------- Clean Up Finished Food (:126-133) --------
             handle.CleanupButton = this.CreateUguiPrimaryButton(scrollContent, "CleanupButton",
                 this.L("Clean Up Finished Food"), new System.Action(this.OnUguiFeaturesMassCookCleanupClicked));
-            PlaceUguiTopLeft(handle.CleanupButton, rowX, 100f, rowW, 36f);
+            PlaceUguiTopLeft(handle.CleanupButton, rowX, 158f, rowW, 36f);
 
             // -------- The five toggles (:135-208) — DrawSwitchToggle localizes, so L() here --------
             handle.MiniGameOnlyToggle = this.CreateUguiCheckbox(scrollContent, "MiniGameOnlyToggle",
                 this.L("Mini Game Only"), this.netCookMiniGameOnly,
                 new System.Action<bool>(this.OnUguiFeaturesMassCookMiniGameOnlyToggled));
-            PlaceUguiTopLeft(handle.MiniGameOnlyToggle.gameObject, rowX, 150f, rowW, 24f);
+            PlaceUguiTopLeft(handle.MiniGameOnlyToggle.gameObject, rowX, 208f, rowW, 24f);
             handle.RememberStovesToggle = this.CreateUguiCheckbox(scrollContent, "RememberStovesToggle",
                 this.L("Remember Stoves"), this.netCookRememberStoves,
                 new System.Action<bool>(this.OnUguiFeaturesMassCookRememberStovesToggled));
-            PlaceUguiTopLeft(handle.RememberStovesToggle.gameObject, rowX, 188f, rowW, 24f);
+            PlaceUguiTopLeft(handle.RememberStovesToggle.gameObject, rowX, 246f, rowW, 24f);
             handle.CaptureOwnToggle = this.CreateUguiCheckbox(scrollContent, "CaptureOwnToggle",
                 this.L("Capture Own"), this.netCookCaptureOwnOnly,
                 new System.Action<bool>(this.OnUguiFeaturesMassCookCaptureOwnToggled));
-            PlaceUguiTopLeft(handle.CaptureOwnToggle.gameObject, rowX, 226f, rowW, 24f);
+            PlaceUguiTopLeft(handle.CaptureOwnToggle.gameObject, rowX, 284f, rowW, 24f);
             handle.CaptureRadiusToggle = this.CreateUguiCheckbox(scrollContent, "CaptureRadiusToggle",
                 this.L("Capture Radius"), this.netCookCaptureRadiusOnly,
                 new System.Action<bool>(this.OnUguiFeaturesMassCookCaptureRadiusToggled));
-            PlaceUguiTopLeft(handle.CaptureRadiusToggle.gameObject, rowX, 264f, rowW, 24f);
+            PlaceUguiTopLeft(handle.CaptureRadiusToggle.gameObject, rowX, 322f, rowW, 24f);
             handle.StatusDiagToggle = this.CreateUguiCheckbox(scrollContent, "StatusDiagToggle",
                 this.L("Status Diagnostics (log)"), this.netCookStatusDiagEnabled,
                 new System.Action<bool>(this.OnUguiFeaturesMassCookStatusDiagToggled));
-            PlaceUguiTopLeft(handle.StatusDiagToggle.gameObject, rowX, 302f, rowW, 24f);
+            PlaceUguiTopLeft(handle.StatusDiagToggle.gameObject, rowX, 360f, rowW, 24f);
 
             // Manual ingredients: off keeps the shipped behaviour (the game's AutoFill decides).
             handle.ManualIngredientsToggle = this.CreateUguiCheckbox(scrollContent, "ManualIngredientsToggle",
                 this.L("Pick Ingredients"), this.netCookSlotManualMode,
                 new System.Action<bool>(this.OnUguiFeaturesMassCookManualIngredientsToggled));
-            PlaceUguiTopLeft(handle.ManualIngredientsToggle.gameObject, rowX, 340f, rowW, 24f);
+            PlaceUguiTopLeft(handle.ManualIngredientsToggle.gameObject, rowX, 398f, rowW, 24f);
 
             handle.CookableOnlyToggle = this.CreateUguiCheckbox(scrollContent, "CookableOnlyToggle",
                 this.L("Only What I Can Cook"), this.netCookCookableOnly,
                 new System.Action<bool>(this.OnUguiFeaturesMassCookCookableOnlyToggled));
-            PlaceUguiTopLeft(handle.CookableOnlyToggle.gameObject, rowX, 378f, rowW, 24f);
+            PlaceUguiTopLeft(handle.CookableOnlyToggle.gameObject, rowX, 436f, rowW, 24f);
 
             // -------- ASSIST MODE card (:210-225 — mini-game branch; height via relayout) --------
             string assistModeDescription = this.L("Handles cooking mini-game prompts and auto-collects finished food. It will not prepare or start cooking.");
@@ -762,37 +784,24 @@ namespace HeartopiaMod
             handle.StopButton = this.CreateUguiDangerButton(scrollContent, "StopButton",
                 handle.StopShown, new System.Action(this.OnUguiFeaturesMassCookStartStopClicked));
 
-            // -------- Settings card (:352-377 — 112 tall; children card-local) --------
-            handle.SettingsCard = this.CreateUguiGo("SettingsCard", scrollContent);
-            this.AddUguiImage(handle.SettingsCard, this.UguiKitPanelBg(), true, 1f);
-            float settingsW = rowW - 24f;
+            // -------- Cook delay card (placed by the relayout, above the recipe block) --------
+            // Unconditional on purpose: the delay paces the mini-game assist loop too, so it must
+            // stay reachable in that branch, which is why it sits above the mini/recipe split.
+            handle.DelayCard = this.CreateUguiGo("DelayCard", scrollContent);
+            this.AddUguiImage(handle.DelayCard, this.UguiKitPanelBg(), true, 1f);
 
-            GameObject delayLabel = this.CreateUguiLabel(handle.SettingsCard.transform, "DelayLabel",
+            GameObject delayLabel = this.CreateUguiLabel(handle.DelayCard.transform, "DelayLabel",
                 this.L("COOK DELAY"), 11f, mutedTextColor, false);
             this.TrySetUguiLabelBold(delayLabel);
-            PlaceUguiTopLeft(delayLabel, 12f, 10f, settingsW * 0.55f, 18f);
+            PlaceUguiTopLeft(delayLabel, 12f, 10f, sliderCardW * 0.55f, 18f);
             handle.DelayShown = string.Format("{0:F2}s", this.netCookInterval);
-            handle.DelayValueLabel = this.CreateUguiLabel(handle.SettingsCard.transform, "DelayValue",
+            handle.DelayValueLabel = this.CreateUguiLabel(handle.DelayCard.transform, "DelayValue",
                 handle.DelayShown, 12f, Color.white, false);
-            PlaceUguiTopLeft(handle.DelayValueLabel, 12f + settingsW * 0.55f, 10f, settingsW * 0.45f, 18f);
-            handle.DelaySlider = this.CreateUguiSlider(handle.SettingsCard.transform, "DelaySlider",
+            PlaceUguiTopLeft(handle.DelayValueLabel, 12f + sliderCardW * 0.55f, 10f, sliderCardW * 0.45f, 18f);
+            handle.DelaySlider = this.CreateUguiSlider(handle.DelayCard.transform, "DelaySlider",
                 0.25f, 10f, this.netCookInterval, false,
                 new System.Action<float>(this.OnUguiFeaturesMassCookDelayChanged));
-            PlaceUguiTopLeft(handle.DelaySlider.gameObject, 12f, 30f, settingsW, 20f);
-
-            GameObject radiusLabel = this.CreateUguiLabel(handle.SettingsCard.transform, "RadiusLabel",
-                this.L("SCAN RADIUS"), 11f, mutedTextColor, false);
-            this.TrySetUguiLabelBold(radiusLabel);
-            PlaceUguiTopLeft(radiusLabel, 12f, 68f, settingsW * 0.55f, 18f);
-            handle.RadiusShown = string.Format("{0:F0}m", this.netCookScanRadiusMeters);
-            handle.RadiusValueLabel = this.CreateUguiLabel(handle.SettingsCard.transform, "RadiusValue",
-                handle.RadiusShown, 12f, Color.white, false);
-            PlaceUguiTopLeft(handle.RadiusValueLabel, 12f + settingsW * 0.55f, 68f, settingsW * 0.45f, 18f);
-            // wholeNumbers=true — the source's plain Mathf.Round contract (:371, file header).
-            handle.RadiusSlider = this.CreateUguiSlider(handle.SettingsCard.transform, "RadiusSlider",
-                NetCookMinScanRadiusMeters, NetCookMaxScanRadiusMeters, this.netCookScanRadiusMeters, true,
-                new System.Action<float>(this.OnUguiFeaturesMassCookRadiusChanged));
-            PlaceUguiTopLeft(handle.RadiusSlider.gameObject, 12f, 88f, settingsW, 20f);
+            PlaceUguiTopLeft(handle.DelaySlider.gameObject, 12f, 30f, sliderCardW, 20f);
 
             // -------- Status card (:379-402 — 118 tall; children card-local) --------
             handle.StatusCard = this.CreateUguiGo("StatusCard", scrollContent);
@@ -891,6 +900,11 @@ namespace HeartopiaMod
                 SetUguiGoActive(handle.QtyField.gameObject, !mini);
             }
 
+            // Cook delay first and outside the branch — see the build note: the mini-game branch
+            // needs it as much as the cooking one.
+            PlaceUguiTopLeft(handle.DelayCard, rowX, yCur, rowW, UguiMassCookSliderCardHeight);
+            yCur += UguiMassCookSliderCardHeight + 8f;
+
             if (mini)
             {
                 // :212-224 — card 36 + textH + 12; cursor += Ceil(cardH) + 12.
@@ -902,6 +916,32 @@ namespace HeartopiaMod
             }
             else
             {
+                // Every control now sits ABOVE the two dropdowns, so the recipe grid is the last
+                // thing before START and nothing the user has to reach for is hidden below a panel
+                // that can be 300+ tall.
+                if (handle.MoveIngredientsToggle != null)
+                {
+                    PlaceUguiTopLeft(handle.MoveIngredientsToggle.gameObject, rowX, yCur, halfW, 24f);
+                }
+                if (handle.UseAllIngredientsToggle != null)
+                {
+                    PlaceUguiTopLeft(handle.UseAllIngredientsToggle.gameObject, rowX + halfW + 10f, yCur, halfW, 24f);
+                }
+                yCur += 30f;
+                if (handle.UseUniversalIngredientToggle != null)
+                {
+                    PlaceUguiTopLeft(handle.UseUniversalIngredientToggle.gameObject, rowX, yCur, rowW, 24f);
+                }
+                yCur += 38f;
+                PlaceUguiTopLeft(handle.DishLimitLabel, rowX, yCur, rowW * 0.42f, 18f);
+                PlaceUguiTopLeft(handle.DishMaxLabel, rowX + rowW * 0.58f, yCur, rowW * 0.42f, 18f);
+                yCur += 20f;
+                if (handle.QtyField != null)
+                {
+                    PlaceUguiTopLeft(handle.QtyField.gameObject, rowX, yCur, rowW * 0.42f, 32f);
+                }
+                yCur += 42f;
+
                 if (stoveTypeVisible)
                 {
                     PlaceUguiTopLeft(handle.StoveTypeLabel, rowX, yCur, rowW, 18f);
@@ -928,36 +968,11 @@ namespace HeartopiaMod
                     PlaceUguiTopLeft(handle.RecipePanel, rowX, yCur - 6f, rowW, recipePanelH);
                     yCur += recipePanelH + 8f;
                 }
-                if (handle.MoveIngredientsToggle != null)
-                {
-                    PlaceUguiTopLeft(handle.MoveIngredientsToggle.gameObject, rowX, yCur, halfW, 24f);
-                }
-                if (handle.UseAllIngredientsToggle != null)
-                {
-                    PlaceUguiTopLeft(handle.UseAllIngredientsToggle.gameObject, rowX + halfW + 10f, yCur, halfW, 24f);
-                }
-                yCur += 30f;
-                if (handle.UseUniversalIngredientToggle != null)
-                {
-                    PlaceUguiTopLeft(handle.UseUniversalIngredientToggle.gameObject, rowX, yCur, rowW, 24f);
-                }
-                yCur += 38f;
-                PlaceUguiTopLeft(handle.DishLimitLabel, rowX, yCur, rowW * 0.42f, 18f);
-                PlaceUguiTopLeft(handle.DishMaxLabel, rowX + rowW * 0.58f, yCur, rowW * 0.42f, 18f);
-                yCur += 20f;
-                if (handle.QtyField != null)
-                {
-                    PlaceUguiTopLeft(handle.QtyField.gameObject, rowX, yCur, rowW * 0.42f, 32f);
-                }
-                yCur += 42f;
             }
 
             PlaceUguiTopLeft(handle.StartButton, rowX, yCur, rowW, 38f);
             PlaceUguiTopLeft(handle.StopButton, rowX, yCur, rowW, 38f);
             yCur += 52f;
-
-            PlaceUguiTopLeft(handle.SettingsCard, rowX, yCur, rowW, 112f);
-            yCur += 126f;
 
             PlaceUguiTopLeft(handle.StatusCard, rowX, yCur, rowW, 118f);
             yCur += 132f;
